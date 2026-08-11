@@ -1143,7 +1143,7 @@ function showMod(id, el){
 function renderAll(){
   // Cliente selecionado → garante o recorte real vindo da API (re-renderiza ao chegar).
   ensureCliScope();
-  renderVisao(); renderComp(); renderMargem(); renderCash(); renderObjetivos(); renderMetasExtra(); renderDias(); renderRank(); renderMix(); renderAbcd(); renderPlanos(); renderEstoque(); renderPagamento(); renderRiscoOport(); renderRiscoOportCat(); renderCascata(); renderQual();
+  renderVisao(); renderComp(); renderMargemCash(); renderObjetivos(); renderMetasExtra(); renderDias(); renderRank(); renderMix(); renderAbcd(); renderPlanos(); renderEstoque(); renderPagamento(); renderRiscoOport(); renderRiscoOportCat(); renderCascata(); renderQual();
 }
 
 // O mês selecionado é o mês CORRENTE? Nesse caso o realizado é parcial (só os dias
@@ -1328,19 +1328,14 @@ function renderComp(){
 }
 function round2c(v){ return Math.round((v||0)*100)/100; }
 
-// ── 3. MARGEM ─────────────────────────────────────────────────
-// ── CASCATA Gerente → Supervisor → Vendedor (aba Margem) ────────────────
+// ── 3. MARGEM & CASH MARGEM ─────────────────────────────────────
+// ── CASCATA Gerente → Supervisor → Vendedor ─────────────────────
 // por_gerente/por_supervisor/full_vendedores são dicts PLANOS, ligados só por
 // por_supervisor[].gerente e full_vendedores[].supervisor — a árvore é
 // montada aqui, não vem pronta do backend. Com mês ativo, Gerente usa o cubo
 // diário (monthlyGerenteAgg, mais fino); Supervisor/Vendedor usam
 // realizado_por_mes (mesmo cubo mensal por entidade criado para a aba Meta),
 // que já dá o valor exato do mês nesses 2 níveis — antes não existia.
-let margemHierExpanded = new Set();
-function toggleMargemHier(pathKey){
-  if (margemHierExpanded.has(pathKey)) margemHierExpanded.delete(pathKey); else margemHierExpanded.add(pathKey);
-  renderMargem();
-}
 function margemValueFor(d, level, name, mes){
   if (level==='gerente'){
     if (mes!=null){ const a = monthlyGerenteAgg(d, name, mes); return {r:a.r, c:a.c}; }
@@ -1386,6 +1381,15 @@ function prevMargemLookup(prev, level, name, mes){
   const pv = src[name];
   return pv ? {r:pv.r, c:pv.c, m:pv.m} : null;
 }
+// Meta Faturamento (meta_geral) + Meta Cash Margem (meta_valrentabilidade) de um
+// nível — Meta Margem % = Meta Cash Margem ÷ Meta Faturamento (mesma fórmula
+// (faturamento-custo)/faturamento, só que aplicada aos valores de META).
+function nodeMetaFor(d, level, name, mes){
+  const metaFat = metaGeralFor(d, level, name, mes);
+  const metaCash = metaValRentFor(d, level, name, mes);
+  const metaMargem = metaFat>0 ? +(metaCash/metaFat*100).toFixed(2) : 0;
+  return {metaFat, metaCash, metaMargem};
+}
 function buildMargemHierTree(d, mes){
   const eff = effectiveGerentes(d), effSup = effectiveSupervisores(d);
   const tree = {};
@@ -1397,78 +1401,13 @@ function buildMargemHierTree(d, mes){
       const vendChildren = {};
       Object.keys(d.full_vendedores).filter(n=>d.full_vendedores[n].supervisor===supNome && (ST.vend.length===0||ST.vend.includes(n))).forEach(vendNome=>{
         const vv = margemValueFor(d,'vendedor',vendNome,mes);
-        vendChildren[vendNome] = {r:vv.r, c:vv.c, m:margemMFrom(vv.r,vv.c), metaCash:metaValRentFor(d,'vendedor',vendNome,mes), children:null};
+        vendChildren[vendNome] = Object.assign({r:vv.r, c:vv.c, m:margemMFrom(vv.r,vv.c), children:null}, nodeMetaFor(d,'vendedor',vendNome,mes));
       });
-      supChildren[supNome] = {r:sv.r, c:sv.c, m:margemMFrom(sv.r,sv.c), metaCash:metaValRentFor(d,'supervisor',supNome,mes), children:Object.keys(vendChildren).length?vendChildren:null};
+      supChildren[supNome] = Object.assign({r:sv.r, c:sv.c, m:margemMFrom(sv.r,sv.c), children:Object.keys(vendChildren).length?vendChildren:null}, nodeMetaFor(d,'supervisor',supNome,mes));
     });
-    tree[gerNome] = {r:gv.r, c:gv.c, m:margemMFrom(gv.r,gv.c), metaCash:metaValRentFor(d,'gerente',gerNome,mes), children:Object.keys(supChildren).length?supChildren:null};
+    tree[gerNome] = Object.assign({r:gv.r, c:gv.c, m:margemMFrom(gv.r,gv.c), children:Object.keys(supChildren).length?supChildren:null}, nodeMetaFor(d,'gerente',gerNome,mes));
   });
   return tree;
-}
-function margemHierRowHtml(nome, nivel, pathKey, node, prevNode){
-  const hasChildren = node.children && Object.keys(node.children).length>0;
-  const expanded = margemHierExpanded.has(pathKey);
-  const toggle = hasChildren ? `<span class="casc-toggle" onclick="toggleMargemHier('${pathKey.replace(/'/g,"\\'")}')">${expanded?'−':'+'}</span>` : '<span class="casc-toggle-spacer"></span>';
-  const indent = nivel*18;
-  const pv = prevNode ? prevNode.r : null;
-  const pvM = prevNode ? prevNode.m : null;
-  return `<tr class="casc-lvl${nivel}"><td style="padding-left:${indent}px">${toggle}${escAttr(nome)}</td><td class="tv">${fF(node.r)}</td><td class="tv">${deltaPillSmall(node.r,pv)}</td><td class="tv">${margemBadge(node.m)}</td><td class="tv">${deltaPP(node.m,pvM,false)}</td></tr>`;
-}
-function renderMargemHierRows(prev, nodesObj, pathNames, nivel, mes, levelNames){
-  const level = levelNames[nivel];
-  const entries = Object.keys(nodesObj).map(name=>({name, node:nodesObj[name]})).sort((a,b)=>b.node.r-a.node.r);
-  let html = '';
-  entries.forEach(({name,node})=>{
-    const path = pathNames.concat([name]);
-    const pathKey = 'MARG|||'+path.join('|||');
-    const prevNode = prevMargemLookup(prev, level, name, mes);
-    html += margemHierRowHtml(name, nivel, pathKey, node, prevNode);
-    if (node.children && margemHierExpanded.has(pathKey)){
-      html += renderMargemHierRows(prev, node.children, path, nivel+1, mes, levelNames);
-    }
-  });
-  return html;
-}
-function renderMargem(){
-  const d = curPeriod();
-  const prevKey = PREV_OF[ST.per];
-  const prev = prevPeriod();
-  const eff = effectiveFor(d, ST.mes);
-  const prevEff = prev ? effectiveFor(prev, ST.mes) : null;
-  const effR = eff.r, effC = eff.c, effM = effR>0 ? 100*(1-effC/effR) : 0;
-  const prevM = prevEff ? (prevEff.r>0?100*(1-prevEff.c/prevEff.r):0) : null;
-
-  const kpiDefs = [
-    {lbl:"Margem Geral", val:fPct(effM), cur:effM, prevv:prevM},
-    {lbl:"Receita", val:fM(effR), cur:effR, prevv:prevEff?prevEff.r:null},
-    {lbl:"Custo Médio (CMV)", val:fM(effC), cur:effC, prevv:prevEff?prevEff.c:null},
-    {lbl:"Cash Margin (Receita−Custo)", val:fM(effR-effC), cur:effR-effC, prevv:prevEff?(prevEff.r-prevEff.c):null},
-  ];
-  const mgBanner = eff.monthNote ? `⚠ ${eff.monthNote}` : (eff.label?`Recortado por <strong>${eff.label}</strong>`:"");
-  document.getElementById("mg-kpis").innerHTML = (mgBanner?`<div class="alert" style="grid-column:1/-1">${mgBanner}</div>`:"") + kpiDefs.map((k,i)=>`
-    <div class="kpi k${i}"><div class="kpi-stripe"></div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div>
-      ${deltaPillSmall(k.cur,k.prevv)}
-      <div class="kpi-note">${ST.mes!=null?'vs. mesmo mês ano anterior':'vs. mesmo semestre ano anterior'}</div>
-    </div>`).join("");
-
-  const margemTree = buildMargemHierTree(d, ST.mes);
-  document.getElementById("tMargGer").innerHTML = `<thead><tr><th>Gerente / Supervisor / Vendedor</th><th class="tv">Receita</th><th class="tv">Δ vs ano ant.</th><th class="tv">Margem %</th><th class="tv">Δ Margem (ano ant.)</th></tr></thead><tbody>${
-    renderMargemHierRows(prev, margemTree, [], 0, ST.mes, ['gerente','supervisor','vendedor'])
-  }</tbody>`;
-
-  const catInfo = categoriaCascadeRowsFor(d, ST.mes);
-  const catRows = catInfo.rows.sort((a,b)=>b[1].r-a[1].r);
-  const margCatNotes = [];
-  if (catInfo.level) margCatNotes.push(`Recortado por ${catInfo.level} — <strong>${labelJoin(catInfo.names)}</strong>: valores exatos (cubo hierárquico Gerente/Supervisor/Vendedor × Categoria).`);
-  if (catInfo.monthNote) margCatNotes.push(catInfo.monthNote);
-  document.getElementById("margCatNote").innerHTML = margCatNotes.length ? `<div class="alert">${margCatNotes.join(" ")}</div>` : "";
-  document.getElementById("tMargCat").innerHTML = `<thead><tr><th>Categoria</th><th class="tv">Receita</th><th class="tv">Δ vs ano ant.</th><th class="tv">Margem %</th><th class="tv">Δ Margem (ano ant.)</th></tr></thead><tbody>${
-    catRows.map(([n,v])=>{
-      const prevEntry = ST.mes!=null ? categoriaMonthValueFor(prev, catInfo.level, catInfo.names, n, ST.mes) : categoriaValueFor(prev, catInfo.level, catInfo.names, n);
-      const pv = prevEntry ? prevEntry.r : null;
-      const pvM = prevEntry ? prevEntry.m : null;
-      return `<tr><td class="tn">${n}</td><td class="tv">${fF(v.r)}</td><td class="tv">${deltaPillSmall(v.r,pv)}</td><td class="tv">${margemBadge(v.m)}</td><td class="tv">${deltaPP(v.m,pvM,false)}</td></tr>`;
-    }).join("")}</tbody>`;
 }
 function margemBadge(m){ const cls = m>=25?"mb-hi":m>=10?"mb-md":"mb-lo"; return `<span class="${cls}">${fPct(m)}</span>`; }
 
@@ -1480,48 +1419,55 @@ function prevLookupListCash(prev, listName, nameKey, val){
   if (!x) return null;
   return x.cash_margin!=null ? x.cash_margin : (x.r - x.c);
 }
-function tblCash(rows, nameKey, prevFn){
-  return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Cash Margem</th><th class="tv">Δ vs ano ant.</th><th class="tv">Receita</th><th class="tv">Margem %</th></tr></thead><tbody>${
-    rows.map((r,i)=>{
-      const cm = r.cash_margin!=null ? r.cash_margin : (r.r-r.c);
-      const pv = prevFn?prevFn(r):null;
-      return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${r[nameKey]}</td><td class="tv tn">${fF(cm)}</td><td class="tv">${deltaPillSmall(cm,pv)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${margemBadge(r.m)}</td></tr>`;
-    }).join("")}</tbody>`;
+// Igual a prevLookupListCash, mas devolve o OBJETO inteiro (r,c,m,q,...) do item
+// no período anterior — usado quando precisamos da Margem % (não só Cash Margem).
+function prevLookupListFull(prev, listName, nameKey, val){
+  if (!prev || !prev[listName]) return null;
+  return prev[listName].find(o=>o[nameKey]===val) || null;
 }
 
-// ── 3A. CASH MARGEM ─────────────────────────────────────────────
-// Cash Margem = total (receita) − customedio (custo), em R$. Diferente de
-// Margem %, que é a RAZÃO — aqui é o valor absoluto que "fica" na empresa.
-
-// Cascata Gerente→Supervisor→Vendedor por Cash Margem — reaproveita a árvore
-// de buildMargemHierTree (aba Margem, mesmos {r,c} por nível), só troca a
-// linha renderizada (Receita/Custo/Cash Margem em vez de Margem %).
-let cashHierExpanded = new Set();
-function toggleCashHier(pathKey){
-  if (cashHierExpanded.has(pathKey)) cashHierExpanded.delete(pathKey); else cashHierExpanded.add(pathKey);
-  renderCash();
+// ── 3. MARGEM & CASH MARGEM (aba fundida) ───────────────────────
+// Cascata Gerente→Supervisor→Vendedor reaproveita a árvore de
+// buildMargemHierTree (r,c,m,metaFat,metaCash,metaMargem por nível), agora
+// numa linha só com os dois conjuntos de métrica (Cash Margem em R$ e
+// Margem em %) — antes eram 2 abas/tabelas separadas.
+let mcHierExpanded = new Set();
+function toggleMcHier(pathKey){
+  if (mcHierExpanded.has(pathKey)) mcHierExpanded.delete(pathKey); else mcHierExpanded.add(pathKey);
+  renderMargemCash();
 }
-function cashHierRowHtml(nome, nivel, pathKey, node, prevNode){
+function mcHierRowHtml(nome, nivel, pathKey, node, prevNode){
   const hasChildren = node.children && Object.keys(node.children).length>0;
-  const expanded = cashHierExpanded.has(pathKey);
-  const toggle = hasChildren ? `<span class="casc-toggle" onclick="toggleCashHier('${pathKey.replace(/'/g,"\\'")}')">${expanded?'−':'+'}</span>` : '<span class="casc-toggle-spacer"></span>';
+  const expanded = mcHierExpanded.has(pathKey);
+  const toggle = hasChildren ? `<span class="casc-toggle" onclick="toggleMcHier('${pathKey.replace(/'/g,"\\'")}')">${expanded?'−':'+'}</span>` : '<span class="casc-toggle-spacer"></span>';
   const indent = nivel*18;
   const cm = node.r-node.c;
   const pcm = prevNode ? (prevNode.r-prevNode.c) : null;
-  const ating = node.metaCash>0 ? cm/node.metaCash*100 : null;
-  return `<tr class="casc-lvl${nivel}"><td style="padding-left:${indent}px">${toggle}${escAttr(nome)}</td><td class="tv">${fF(node.r)}</td><td class="tv">${node.metaCash>0?fF(node.metaCash):'<span style="color:var(--t3)">—</span>'}</td><td class="tv tn">${fF(cm)}</td><td class="tv">${atingBadge(ating)}</td><td class="tv">${deltaPillSmall(cm,pcm)}</td></tr>`;
+  const pvM = prevNode ? prevNode.m : null;
+  const atingCash = node.metaCash>0 ? cm/node.metaCash*100 : null;
+  const atingMargem = node.metaMargem>0 ? node.m/node.metaMargem*100 : null;
+  return `<tr class="casc-lvl${nivel}"><td style="padding-left:${indent}px">${toggle}${escAttr(nome)}</td>
+    <td class="tv">${fF(node.r)}</td>
+    <td class="tv">${node.metaCash>0?fF(node.metaCash):'<span style="color:var(--t3)">—</span>'}</td>
+    <td class="tv tn">${fF(cm)}</td>
+    <td class="tv">${atingBadge(atingCash)}</td>
+    <td class="tv">${deltaPillSmall(cm,pcm)}</td>
+    <td class="tv">${node.metaMargem>0?fPct(node.metaMargem):'<span style="color:var(--t3)">—</span>'}</td>
+    <td class="tv">${margemBadge(node.m)}</td>
+    <td class="tv">${atingBadge(atingMargem)}</td>
+    <td class="tv">${deltaPP(node.m,pvM,false)}</td></tr>`;
 }
-function renderCashHierRows(prev, nodesObj, pathNames, nivel, mes, levelNames){
+function renderMcHierRows(prev, nodesObj, pathNames, nivel, mes, levelNames){
   const level = levelNames[nivel];
   const entries = Object.keys(nodesObj).map(name=>({name, node:nodesObj[name]})).sort((a,b)=>(b.node.r-b.node.c)-(a.node.r-a.node.c));
   let html = '';
   entries.forEach(({name,node})=>{
     const path = pathNames.concat([name]);
-    const pathKey = 'CASH|||'+path.join('|||');
+    const pathKey = 'MC|||'+path.join('|||');
     const prevNode = prevMargemLookup(prev, level, name, mes);
-    html += cashHierRowHtml(name, nivel, pathKey, node, prevNode);
-    if (node.children && cashHierExpanded.has(pathKey)){
-      html += renderCashHierRows(prev, node.children, path, nivel+1, mes, levelNames);
+    html += mcHierRowHtml(name, nivel, pathKey, node, prevNode);
+    if (node.children && mcHierExpanded.has(pathKey)){
+      html += renderMcHierRows(prev, node.children, path, nivel+1, mes, levelNames);
     }
   });
   return html;
@@ -1534,10 +1480,10 @@ function renderCashHierRows(prev, nodesObj, pathNames, nivel, mes, levelNames){
 let cashCliExpanded = new Set();
 function toggleCashCli(codigo){
   if (cashCliExpanded.has(codigo)) cashCliExpanded.delete(codigo); else cashCliExpanded.add(codigo);
-  renderCash();
+  renderMargemCash();
 }
 function tblCashCli(rows, d, prev){
-  return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Cash Margem</th><th class="tv">Δ vs ano ant.</th><th class="tv">Receita</th><th class="tv">Margem %</th></tr></thead><tbody>${
+  return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Cash Margem</th><th class="tv">Δ vs ano ant.</th><th class="tv">Faturamento</th><th class="tv">Margem %</th></tr></thead><tbody>${
     rows.map((r,i)=>{
       const cm = r.cash_margin!=null ? r.cash_margin : (r.r-r.c);
       const pv = prevLookupListCash(prev,"top_clientes_cash","nome",r.nome);
@@ -1558,140 +1504,189 @@ function tblCashCli(rows, d, prev){
       return html;
     }).join("")}</tbody>`;
 }
-
-// Vendedores por Cash Margem: sem filtro de hierarquia usa o Top 50 da empresa
-// (comportamento antigo); com Gerente/Supervisor/Vendedor filtrado, mostra
-// TODOS os vendedores daquele recorte (full_vendedores, sem cap de 50) — com
-// código antes do nome e tooltip do supervisor.
+// Vendedores por Cash Margem: sem filtro de hierarquia usa o Top 50 da empresa;
+// com Gerente/Supervisor/Vendedor filtrado, mostra TODOS os vendedores daquele
+// recorte (full_vendedores, sem cap) — com código antes do nome e tooltip do supervisor.
 function tblCashVend(rows){
-  return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Cash Margem</th><th class="tv">Δ vs ano ant.</th><th class="tv">Receita</th><th class="tv">Margem %</th></tr></thead><tbody>${
+  return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Cash Margem</th><th class="tv">Δ vs ano ant.</th><th class="tv">Faturamento</th><th class="tv">Margem %</th></tr></thead><tbody>${
     rows.map((r,i)=>{
       const label = (r.codigo?escAttr(r.codigo)+" - ":"") + escAttr(r.nome);
       return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn"><span class="hov-tip" data-tip="Supervisor: ${escAttr(r.supervisor||'—')}">${label}</span></td><td class="tv tn">${fF(r.cash_margin)}</td><td class="tv">${deltaPillSmall(r.cash_margin,r.prevCm)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${margemBadge(r.m)}</td></tr>`;
     }).join("")}</tbody>`;
 }
-
-// Top 50 Produtos por Cash Margem: "Receita" → "Faturamento" + coluna de
-// quantidade vendida (unidades) com comparativo vs. mesmo período ano anterior.
+// Top 50 Produtos por Cash Margem: quantidade vendida (unidades) com
+// comparativo vs. mesmo período ano anterior.
 function tblCashProd(rows, prev){
   return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Cash Margem</th><th class="tv">Δ vs ano ant.</th><th class="tv">Faturamento</th><th class="tv">Margem %</th><th class="tv">Qtde Vendida</th><th class="tv">Δ Qtde (ano ant.)</th></tr></thead><tbody>${
     rows.map((r,i)=>{
       const cm = r.cash_margin!=null ? r.cash_margin : (r.r-r.c);
-      const prevEntry = prev && prev.top_produtos_cash ? prev.top_produtos_cash.find(o=>o.nome===r.nome) : null;
+      const prevEntry = prevLookupListFull(prev,"top_produtos_cash","nome",r.nome);
       const pv = prevEntry ? (prevEntry.cash_margin!=null?prevEntry.cash_margin:(prevEntry.r-prevEntry.c)) : null;
       const pq = prevEntry ? prevEntry.q : null;
       return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${escAttr(r.nome)}</td><td class="tv tn">${fF(cm)}</td><td class="tv">${deltaPillSmall(cm,pv)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${margemBadge(r.m)}</td><td class="tv">${fN(r.q)}</td><td class="tv">${deltaPillSmall(r.q,pq)}</td></tr>`;
     }).join("")}</tbody>`;
 }
 
-function renderCash(){
+// ── Top 50 por MARGEM % — ranking SEPARADO do Top 50 por Cash Margem: um
+// cliente/produto/vendedor de faturamento baixo e margem alta entra aqui e
+// pode não entrar no Top 50 por Cash Margem (e vice-versa). Sem meta por
+// Cliente/Produto individual no ERP — só Vendedor (nível de hierarquia real)
+// tem Meta Margem/%Ating; Cliente/Produto mostram só Margem realizada + Δ.
+function tblMargemCli(rows, prev){
+  return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Margem %</th><th class="tv">Δ Margem (p.p.)</th><th class="tv">Faturamento</th><th class="tv">Cash Margem</th></tr></thead><tbody>${
+    rows.map((r,i)=>{
+      const prevFull = prevLookupListFull(prev,"top_clientes_margem","nome",r.nome);
+      const cm = r.cash_margin!=null ? r.cash_margin : (r.r-r.c);
+      return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${escAttr(r.nome)}</td><td class="tv tn">${margemBadge(r.m)}</td><td class="tv">${deltaPP(r.m,prevFull?prevFull.m:null,false)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${fF(cm)}</td></tr>`;
+    }).join("")}</tbody>`;
+}
+function tblMargemProd(rows, prev){
+  return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Margem %</th><th class="tv">Δ Margem (p.p.)</th><th class="tv">Faturamento</th><th class="tv">Cash Margem</th><th class="tv">Qtde Vendida</th><th class="tv">Δ Qtde (ano ant.)</th></tr></thead><tbody>${
+    rows.map((r,i)=>{
+      const prevFull = prevLookupListFull(prev,"top_produtos_margem","nome",r.nome);
+      const cm = r.cash_margin!=null ? r.cash_margin : (r.r-r.c);
+      return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${escAttr(r.nome)}</td><td class="tv tn">${margemBadge(r.m)}</td><td class="tv">${deltaPP(r.m,prevFull?prevFull.m:null,false)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${fF(cm)}</td><td class="tv">${fN(r.q)}</td><td class="tv">${deltaPillSmall(r.q,prevFull?prevFull.q:null)}</td></tr>`;
+    }).join("")}</tbody>`;
+}
+function tblMargemVend(rows){
+  return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Margem %</th><th class="tv">Meta Margem %</th><th class="tv">% Ating.</th><th class="tv">Δ Margem (p.p.)</th><th class="tv">Faturamento</th><th class="tv">Cash Margem</th></tr></thead><tbody>${
+    rows.map((r,i)=>{
+      const label = (r.codigo?escAttr(r.codigo)+" - ":"") + escAttr(r.nome);
+      const cm = r.cash_margin!=null ? r.cash_margin : (r.r-r.c);
+      const ating = r.metaMargem>0 ? r.m/r.metaMargem*100 : null;
+      return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn"><span class="hov-tip" data-tip="Supervisor: ${escAttr(r.supervisor||'—')}">${label}</span></td><td class="tv tn">${margemBadge(r.m)}</td><td class="tv">${r.metaMargem>0?fPct(r.metaMargem):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${atingBadge(ating)}</td><td class="tv">${deltaPP(r.m,r.prevM,false)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${fF(cm)}</td></tr>`;
+    }).join("")}</tbody>`;
+}
+
+function renderMargemCash(){
   const d = curPeriod();
-  const prevKey = PREV_OF[ST.per];
   const prev = prevPeriod();
   const eff = effectiveFor(d, ST.mes);
   const prevEff = prev ? effectiveFor(prev, ST.mes) : null;
   const effR = eff.r, effC = eff.c, cash = effR - effC;
+  const effM = effR>0 ? 100*(1-effC/effR) : 0;
   const prevCash = prevEff ? (prevEff.r - prevEff.c) : null;
+  const prevM = prevEff ? (prevEff.r>0?100*(1-prevEff.c/prevEff.r):0) : null;
   const cashPerCliente = d.n_cli>0 ? cash/d.n_cli : 0;
 
-  // Meta de rentabilidade = meta de receita x % de margem alvo (metacategoria.permargem).
-  // Com filtro de Mês ativo usa meta.por_mes[mes], senão o total do período.
+  // Meta de rentabilidade (R$) = meta de receita x % de margem alvo — Meta Margem
+  // (%) é a MESMA fórmula do usuário (faturamento-custo)/faturamento aplicada à
+  // meta: como custo-meta = faturamento-meta − cash-margem-meta, isso se reduz a
+  // metaRent.permargem (já vem ponderado por metaRentabilidade, não é média simples).
   const metaRent = metaRentabilidade(d, ST.mes);
   const metaValRent = metaRent.valor;
+  const metaMargemPct = metaRent.permargem!=null ? metaRent.permargem*100 : null;
+  const atingMargem = metaMargemPct>0 ? effM/metaMargemPct*100 : null;
 
   const kpiDefs = [
-    {lbl:"Cash Margem Total", val:fM(cash), delta: prevEff?fDelta(cash,prevCash):null},
-    // metacategoria.valrentabilidade está zerada na origem para alguns períodos
-    // (ex.: 2026 S1) — deixamos explícito que é meta não cadastrada, não erro.
-    {lbl:"Meta de Rentabilidade", val:metaValRent>0?fM(metaValRent):"—",
-     note:metaValRent>0
-       ? `meta de receita × margem alvo${metaRent.permargem?" ("+(metaRent.permargem*100).toFixed(1)+"%)":""}`
-       : "sem meta de margem cadastrada no ERP p/ este período", cls:"k3"},
-    // Em mês corrente o atingimento contra a meta cheia é sempre baixo; mostramos
-    // também o atingimento proporcional aos dias já decorridos.
-    {lbl:"Atingimento (Rentabilidade)", val:metaValRent>0?fPct(cash/metaValRent*100):"—",
-     note:metaValRent>0
-       ? (mesParcialInfo()
-           ? `${fPct(cash/(metaValRent*mesParcialInfo().pct)*100)} da meta proporcional (${mesParcialInfo().dia}/${mesParcialInfo().diasNoMes} dias)`
-           : `margem realizada ${effR>0?((1-effC/effR)*100).toFixed(1)+"%":"—"} vs alvo ${metaRent.permargem?(metaRent.permargem*100).toFixed(1)+"%":"—"}`)
-       : "depende da meta de margem", cls:"k0"},
-    {lbl:"Receita", val:fM(effR), delta: prevEff?fDelta(effR,prevEff.r):null},
-    {lbl:"Custo (CMV)", val:fM(effC), delta: prevEff?fDelta(effC,prevEff.c):null},
-    // O divisor acompanha o recorte (d.n_cli vem do /recorte quando há filtro ativo),
-    // então a nota antiga ("período inteiro, não recortável") não valia mais.
+    {lbl:"Faturamento", val:fM(effR), cur:effR, prevv:prevEff?prevEff.r:null},
+    {lbl:"Realizado Margem %", val:fPct(effM), cur:effM, prevv:prevM},
+    {lbl:"Meta Margem %", val:metaMargemPct>0?fPct(metaMargemPct):"—",
+     note:metaMargemPct>0?"meta cash margem ÷ meta faturamento":"sem meta de margem cadastrada no ERP p/ este período"},
+    {lbl:"% Atingimento Margem", val:atingMargem!=null?fPct(atingMargem):"—",
+     note:atingMargem!=null?`margem realizada ${fPct(effM)} vs meta ${fPct(metaMargemPct)}`:"depende da meta de margem"},
+    {lbl:"Cash Margem Total", val:fM(cash), cur:cash, prevv:prevCash},
+    {lbl:"Meta Cash Margem", val:metaValRent>0?fM(metaValRent):"—",
+     note:metaValRent>0?`meta de receita × margem alvo (${fPct(metaMargemPct)})`:"sem meta cadastrada no ERP p/ este período"},
+    {lbl:"% Atingimento Cash Margem", val:metaValRent>0?fPct(cash/metaValRent*100):"—",
+     note:metaValRent>0 && mesParcialInfo() ? `${fPct(cash/(metaValRent*mesParcialInfo().pct)*100)} da meta proporcional (${mesParcialInfo().dia}/${mesParcialInfo().diasNoMes} dias)` : ""},
     {lbl:"Cash Margem / Cliente Ativo", val:fF(cashPerCliente),
      note:`${fM(cash)} ÷ ${fN(d.n_cli)} clientes${d._recorte?" do recorte":" (empresa)"}`},
   ];
-  const cashBanner = eff.monthNote ? `⚠ ${eff.monthNote}` : (eff.label?`Recortado por <strong>${eff.label}</strong>`:"");
-  document.getElementById("cash-kpis").innerHTML = (cashBanner?`<div class="alert" style="grid-column:1/-1">${cashBanner}</div>`:"") + kpiDefs.map((k,i)=>`
-    <div class="kpi ${i===0?'k6':'k'+i}"><div class="kpi-stripe"></div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div>
-      ${k.delta?`<span class="kpi-delta ${k.delta.c}">${k.delta.s}</span>`:''}
-      <div class="kpi-note">${k.note || (k.delta?(ST.mes!=null?'vs. mesmo mês ano anterior':'vs. mesmo semestre ano anterior'):'')}</div>
+  const mcBanner = eff.monthNote ? `⚠ ${eff.monthNote}` : (eff.label?`Recortado por <strong>${eff.label}</strong>`:"");
+  document.getElementById("mc-kpis").innerHTML = (mcBanner?`<div class="alert" style="grid-column:1/-1">${mcBanner}</div>`:"") + kpiDefs.map((k,i)=>`
+    <div class="kpi k${i%7}"><div class="kpi-stripe"></div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div>
+      ${k.cur!=null?deltaPillSmall(k.cur,k.prevv):''}
+      <div class="kpi-note">${k.note || (k.cur!=null?(ST.mes!=null?'vs. mesmo mês ano anterior':'vs. mesmo semestre ano anterior'):'')}</div>
     </div>`).join("");
 
-  const cashTree = buildMargemHierTree(d, ST.mes);
-  document.getElementById("tCashGer").innerHTML = `<thead><tr><th>Gerente / Supervisor / Vendedor</th><th class="tv">Faturamento</th><th class="tv">Meta Cash Margem</th><th class="tv">Cash Margem</th><th class="tv">% Ating.</th><th class="tv">Δ vs ano ant.</th></tr></thead><tbody>${
-    renderCashHierRows(prev, cashTree, [], 0, ST.mes, ['gerente','supervisor','vendedor'])
+  const mcTree = buildMargemHierTree(d, ST.mes);
+  document.getElementById("tMcGer").innerHTML = `<thead><tr><th>Gerente / Supervisor / Vendedor</th><th class="tv">Faturamento</th><th class="tv">Meta Cash Margem</th><th class="tv">Cash Margem</th><th class="tv">% Ating.</th><th class="tv">Δ vs ano ant.</th><th class="tv">Meta Margem %</th><th class="tv">Margem %</th><th class="tv">% Ating.</th><th class="tv">Δ Margem (p.p.)</th></tr></thead><tbody>${
+    renderMcHierRows(prev, mcTree, [], 0, ST.mes, ['gerente','supervisor','vendedor'])
   }</tbody>`;
 
-  const catInfoCash = categoriaCascadeRowsFor(d, ST.mes);
-  const catRows = catInfoCash.rows.sort((a,b)=>(b[1].r-b[1].c)-(a[1].r-a[1].c));
-  const cashCatNotes = [];
-  if (catInfoCash.level) cashCatNotes.push(`Recortado por ${catInfoCash.level} — <strong>${labelJoin(catInfoCash.names)}</strong>: Faturamento/Cash Margem exatos (cubo hierárquico Gerente/Supervisor/Vendedor × Categoria); Meta Cash Margem continua no nível empresa (meta não tem essa quebra).`);
-  if (catInfoCash.monthNote) cashCatNotes.push(catInfoCash.monthNote);
-  document.getElementById("cashCatNote").innerHTML = cashCatNotes.length ? `<div class="alert">${cashCatNotes.join(" ")}</div>` : "";
+  const catInfo = categoriaCascadeRowsFor(d, ST.mes);
+  const catRows = catInfo.rows.sort((a,b)=>(b[1].r-b[1].c)-(a[1].r-a[1].c));
+  const mcCatNotes = [];
+  if (catInfo.level) mcCatNotes.push(`Recortado por ${catInfo.level} — <strong>${labelJoin(catInfo.names)}</strong>: Faturamento/Cash Margem/Margem exatos (cubo hierárquico Gerente/Supervisor/Vendedor × Categoria); Meta continua no nível empresa (meta não tem essa quebra).`);
+  if (catInfo.monthNote) mcCatNotes.push(catInfo.monthNote);
+  document.getElementById("mcCatNote").innerHTML = mcCatNotes.length ? `<div class="alert">${mcCatNotes.join(" ")}</div>` : "";
   const metaCashCat = metaValRentCategoriaFor(d, ST.mes);
-  document.getElementById("tCashCat").innerHTML = `<thead><tr><th>Categoria</th><th class="tv">Faturamento</th><th class="tv">Meta Cash Margem</th><th class="tv">Cash Margem</th><th class="tv">% Ating.</th><th class="tv">Δ vs ano ant.</th></tr></thead><tbody>${
+  const metaFatCat = ST.mes!=null ? ((d.meta.por_mes_categoria&&d.meta.por_mes_categoria[ST.mes])||{}) : (d.meta.por_categoria||{});
+  document.getElementById("tMcCat").innerHTML = `<thead><tr><th>Categoria</th><th class="tv">Faturamento</th><th class="tv">Meta Cash Margem</th><th class="tv">Cash Margem</th><th class="tv">% Ating.</th><th class="tv">Δ vs ano ant.</th><th class="tv">Meta Margem %</th><th class="tv">Margem %</th><th class="tv">% Ating.</th><th class="tv">Δ Margem (p.p.)</th></tr></thead><tbody>${
     catRows.map(([n,v])=>{
       const cm = v.r-v.c;
       const metaCash = metaCashCat[n]||0;
-      const ating = metaCash>0 ? cm/metaCash*100 : null;
-      const pe = ST.mes!=null ? categoriaMonthValueFor(prev, catInfoCash.level, catInfoCash.names, n, ST.mes) : categoriaValueFor(prev, catInfoCash.level, catInfoCash.names, n);
+      const metaFat = metaFatCat[n]||0;
+      const metaMargemCat = metaFat>0 ? metaCash/metaFat*100 : 0;
+      const atingCash = metaCash>0 ? cm/metaCash*100 : null;
+      const atingMargemCat = metaMargemCat>0 ? v.m/metaMargemCat*100 : null;
+      const pe = ST.mes!=null ? categoriaMonthValueFor(prev, catInfo.level, catInfo.names, n, ST.mes) : categoriaValueFor(prev, catInfo.level, catInfo.names, n);
       const pcm = pe ? (pe.r-pe.c) : null;
-      return `<tr><td class="tn">${n}</td><td class="tv">${fF(v.r)}</td><td class="tv">${metaCash>0?fF(metaCash):'<span style="color:var(--t3)">—</span>'}</td><td class="tv tn">${fF(cm)}</td><td class="tv">${atingBadge(ating)}</td><td class="tv">${deltaPillSmall(cm,pcm)}</td></tr>`;
+      const pvM = pe ? pe.m : null;
+      return `<tr><td class="tn">${n}</td><td class="tv">${fF(v.r)}</td><td class="tv">${metaCash>0?fF(metaCash):'<span style="color:var(--t3)">—</span>'}</td><td class="tv tn">${fF(cm)}</td><td class="tv">${atingBadge(atingCash)}</td><td class="tv">${deltaPillSmall(cm,pcm)}</td><td class="tv">${metaMargemCat>0?fPct(metaMargemCat):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${margemBadge(v.m)}</td><td class="tv">${atingBadge(atingMargemCat)}</td><td class="tv">${deltaPP(v.m,pvM,false)}</td></tr>`;
     }).join("")}</tbody>`;
 
   const level = hierLevelActive();
   const names = level ? hierSelectedNames(level) : [];
-  let cliList, prodList;
+  let cliList, prodList, cliListM, prodListM;
   const mesTopNote = ST.mes!=null ? ' Os rankings de Cliente/Produto/Vendedor abaixo não têm dado mensal neste cubo — mostram o semestre inteiro, independente do filtro de Mês.' : '';
   if (level){
     cliList = topClientesFonte(d, level, names).slice().sort((a,b)=>(b.r-b.c)-(a.r-a.c));
     prodList = topProdutosFonte(d, level, names).slice().sort((a,b)=>(b.r-b.c)-(a.r-a.c));
-    document.getElementById("cashHierNote").innerHTML = `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: Cliente/Produto usam o Top 50 por Receita reordenado por Cash Margem (aproximação — ver aviso acima).${mesTopNote}</div>`;
+    cliListM = topClientesFonte(d, level, names).slice().sort((a,b)=>b.m-a.m);
+    prodListM = topProdutosFonte(d, level, names).slice().sort((a,b)=>b.m-a.m);
+    document.getElementById("cashHierNote").innerHTML = `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: Cliente/Produto usam o Top 50 por Receita daquele recorte, reordenado por Cash Margem ou por Margem % (aproximação — o recorte pode não conter o cliente/produto de maior margem/cash margem da empresa como um todo).${mesTopNote}</div>`;
   } else {
     cliList = filtrarClientes(d.top_clientes_cash);
     prodList = d.top_produtos_cash.filter(p=>ST.cat.length===0||ST.cat.includes(p.categoria));
+    cliListM = filtrarClientes(d.top_clientes_margem);
+    prodListM = d.top_produtos_margem.filter(p=>ST.cat.length===0||ST.cat.includes(p.categoria));
     document.getElementById("cashHierNote").innerHTML = mesTopNote ? `<div class="alert">⚠${mesTopNote}</div>` : "";
   }
-  // Vendedor: sem filtro usa o Top 50 da empresa (comportamento antigo); com
-  // Gerente/Supervisor/Vendedor filtrado, mostra TODOS os vendedores daquele
-  // recorte (full_vendedores, sem cap), comparados ao mesmo vendedor no
-  // período anterior (full_vendedores do prev, também sem cap — mais preciso
-  // que procurar num Top 50 antigo que pode não conter o vendedor).
+  // Vendedor: sem filtro usa o Top 50 da empresa; com Gerente/Supervisor/Vendedor
+  // filtrado, mostra TODOS os vendedores daquele recorte (full_vendedores, sem
+  // cap), comparados ao mesmo vendedor no período anterior (full_vendedores do
+  // prev, também sem cap — mais preciso que procurar num Top 50 que pode não
+  // conter o vendedor).
   const effGerVend = effectiveGerentes(d), effSupVend = effectiveSupervisores(d);
-  let vendRowsCash, vendSubTxt;
+  let vendRowsCash, vendRowsMargem, vendSubTxt;
   if (level){
-    vendRowsCash = Object.entries(d.full_vendedores)
+    const baseVendRows = Object.entries(d.full_vendedores)
       .filter(([n,v])=>(!effGerVend||effGerVend.has(gerenteDoVendedor(d,n)))&&(!effSupVend||effSupVend.has(v.supervisor))&&(ST.vend.length===0||ST.vend.includes(n)))
       .map(([n,v])=>{
         const pe = prev && prev.full_vendedores ? prev.full_vendedores[n] : null;
-        return { nome:n, codigo:v.codigo, supervisor:v.supervisor, r:v.r, c:v.c, m:v.m, cash_margin:v.r-v.c, prevCm: pe?(pe.r-pe.c):null };
-      })
-      .sort((a,b)=>b.cash_margin-a.cash_margin);
-    vendSubTxt = `${vendRowsCash.length} vendedores — recortado por ${level}: ${labelJoin(names)}`;
+        const metaFat = metaGeralFor(d,'vendedor',n,ST.mes), metaCash = metaValRentFor(d,'vendedor',n,ST.mes);
+        return { nome:n, codigo:v.codigo, supervisor:v.supervisor, r:v.r, c:v.c, m:v.m, cash_margin:v.r-v.c,
+          prevCm: pe?(pe.r-pe.c):null, prevM: pe?pe.m:null, metaFat, metaCash, metaMargem: metaFat>0?metaCash/metaFat*100:0 };
+      });
+    vendRowsCash = baseVendRows.slice().sort((a,b)=>b.cash_margin-a.cash_margin);
+    vendRowsMargem = baseVendRows.slice().sort((a,b)=>b.m-a.m);
+    vendSubTxt = `${baseVendRows.length} vendedores — recortado por ${level}: ${labelJoin(names)}`;
   } else {
     vendRowsCash = d.top_vendedores_cash
       .filter(v=>(ST.sup.length===0||ST.sup.includes(v.supervisor))&&(ST.vend.length===0||ST.vend.includes(v.nome)))
       .slice(0,50)
       .map(v=>({...v, prevCm: prevLookupListCash(prev,"top_vendedores_cash","nome",v.nome)}));
+    vendRowsMargem = d.top_vendedores_margem
+      .filter(v=>(ST.sup.length===0||ST.sup.includes(v.supervisor))&&(ST.vend.length===0||ST.vend.includes(v.nome)))
+      .slice(0,50)
+      .map(v=>{
+        const prevFull = prevLookupListFull(prev,"top_vendedores_margem","nome",v.nome);
+        const metaFat = metaGeralFor(d,'vendedor',v.nome,ST.mes), metaCash = metaValRentFor(d,'vendedor',v.nome,ST.mes);
+        return {...v, prevM: prevFull?prevFull.m:null, metaFat, metaCash, metaMargem: metaFat>0?metaCash/metaFat*100:0};
+      });
     vendSubTxt = "Top 50 (empresa)";
   }
   document.getElementById("cashVendSub").textContent = vendSubTxt;
+  document.getElementById("margemVendSub").textContent = vendSubTxt;
 
   document.getElementById("tCashCli").innerHTML = tblCashCli(cliList.slice(0,50), d, prev);
   document.getElementById("tCashProd").innerHTML = tblCashProd(prodList.slice(0,50), prev);
   document.getElementById("tCashVend").innerHTML = tblCashVend(vendRowsCash);
+  document.getElementById("tMargemCli").innerHTML = tblMargemCli(cliListM.slice(0,50), prev);
+  document.getElementById("tMargemProd").innerHTML = tblMargemProd(prodListM.slice(0,50), prev);
+  document.getElementById("tMargemVend").innerHTML = tblMargemVend(vendRowsMargem);
 }
 
 // ── 3B. META X REALIZADO ───────────────────────────────────────

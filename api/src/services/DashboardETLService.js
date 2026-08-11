@@ -169,6 +169,15 @@ class DashboardETLService {
         GROUP BY CodCli, CodVen, Vendedor, supervisor ORDER BY CodCli, SUM(Total) DESC`, [topCliCashCodes]) : [];
       const topProdCash = await q(`SELECT Codigo codigo, Descricao nome, categoria, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq FROM tmp_base_vendas WHERE Descricao IS NOT NULL GROUP BY Codigo, Descricao, categoria ORDER BY (SUM(Total)-SUM(customedio)) DESC LIMIT 50`);
       const topVendCash = await q(`SELECT CodVen codigo, Vendedor nome, supervisor, SUM(Total) r, SUM(customedio) c FROM tmp_base_vendas WHERE Vendedor IS NOT NULL GROUP BY CodVen, Vendedor, supervisor ORDER BY (SUM(Total)-SUM(customedio)) DESC LIMIT 50`);
+      // Top 50 por MARGEM % (razão), não por Cash Margem (R$) — rankings diferentes
+      // (cliente/produto/vendedor com faturamento pequeno e margem alta entra aqui
+      // e pode não entrar no Top 50 por Cash Margem). HAVING SUM(Total)>=500 evita
+      // que uma única venda de poucos reais (ex.: baixa de avaria) domine o Top 50
+      // só por ter custo perto de zero — sem o piso, os 4-5 primeiros lugares eram
+      // sempre itens de R$5-30 com 100% de margem, sem relevância de negócio.
+      const topCliMargem = await q(`SELECT CodCli codigo, Cliente nome, SUM(Total) r, SUM(customedio) c FROM tmp_base_vendas WHERE Cliente IS NOT NULL AND Total>0 GROUP BY CodCli, Cliente HAVING SUM(Total)>=500 ORDER BY (1-SUM(customedio)/SUM(Total)) DESC LIMIT 50`);
+      const topProdMargem = await q(`SELECT Codigo codigo, Descricao nome, categoria, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq FROM tmp_base_vendas WHERE Descricao IS NOT NULL AND Total>0 GROUP BY Codigo, Descricao, categoria HAVING SUM(Total)>=500 ORDER BY (1-SUM(customedio)/SUM(Total)) DESC LIMIT 50`);
+      const topVendMargem = await q(`SELECT CodVen codigo, Vendedor nome, supervisor, SUM(Total) r, SUM(customedio) c FROM tmp_base_vendas WHERE Vendedor IS NOT NULL AND Total>0 GROUP BY CodVen, Vendedor, supervisor ORDER BY (1-SUM(customedio)/SUM(Total)) DESC LIMIT 50`);
       const pag = await q(`SELECT categoria, tipo, tipocob, SUM(Total) v FROM tmp_base_vendas WHERE categoria IS NOT NULL GROUP BY categoria, tipo, tipocob`);
       const janRange = (await q(`SELECT MIN(DataPed) ini, MAX(DataPed) fim FROM tmp_base_vendas`))[0];
       const janProd = await q(`SELECT Codigo codigo, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq FROM tmp_base_vendas WHERE DataPed >= (SELECT MAX(DataPed) FROM tmp_base_vendas) - INTERVAL '89 days' GROUP BY Codigo`);
@@ -211,7 +220,8 @@ class DashboardETLService {
         resumo, porMes, porGer, porSup, porCat, porGrp, topVend, topCli, topProd, porDia, porDiaCat,
         porGerMes, porSupMes, porVendMes,
         porMesCli, porMesCatCli, porMesFumo, porMesFumoTotal, realFumoGer, realFumoSup, realFumoVend, fullVend, qual,
-        topCliCash, topCliCashCat, topCliCashVend, topProdCash, topVendCash, pag, janRange, janProd, abcdCli,
+        topCliCash, topCliCashCat, topCliCashVend, topProdCash, topVendCash,
+        topCliMargem, topProdMargem, topVendMargem, pag, janRange, janProd, abcdCli,
         hierTopCli, hierTopProd, hierCat, hierPag, hierAbcdRows, hierDiaGer, hierDiaCatGer, meta,
         cascCat, cascGrp, cascForn, cascProd,
         porCanal, porInadimplente, porStatus
@@ -445,6 +455,10 @@ class DashboardETLService {
     const top_clientes_cash = mapCash(d.topCliCash);
     const top_produtos_cash = mapCash(d.topProdCash, row => ({ categoria: row.categoria, q: round2(num(row.qq)) }));
     const top_vendedores_cash = mapCash(d.topVendCash, row => ({ supervisor: row.supervisor }));
+    // Top 50 por Margem % (razão) — ranking separado do Top 50 por Cash Margem (R$).
+    const top_clientes_margem = mapCash(d.topCliMargem);
+    const top_produtos_margem = mapCash(d.topProdMargem, row => ({ categoria: row.categoria, q: round2(num(row.qq)) }));
+    const top_vendedores_margem = mapCash(d.topVendMargem, row => ({ supervisor: row.supervisor }));
 
     // top_clientes_cash_detalhe[codcli] = { categorias:{cat:{r,c}}, vendedor:{codigo,nome,supervisor} }
     // — cascata da aba Cash Margem (Top 50 Clientes): só cobre os 50 clientes de
@@ -494,6 +508,7 @@ class DashboardETLService {
       top_vendedores, top_clientes, top_produtos, por_dia, por_dia_categoria,
       por_mes_clientes, por_mes_categoria_clientes, por_mes_fumokg, por_mes_fumokg_total, realizado_fumokg, full_vendedores, realizado_por_mes, qualidade,
       top_clientes_cash, top_clientes_cash_detalhe, top_produtos_cash, top_vendedores_cash,
+      top_clientes_margem, top_produtos_margem, top_vendedores_margem,
       pagamento_por_categoria, hier_pagamento_por_categoria,
       janela90, por_produto_janela90, abcd,
       hier_top_clientes, hier_top_produtos, hier_por_categoria, hier_abcd, hier_por_dia, hier_por_dia_categoria,

@@ -109,8 +109,7 @@
       <div style="font-size:9px;text-transform:uppercase;letter-spacing:1.2px;color:var(--t3);padding:8px 8px 5px;font-weight:700">Módulos</div>
       <div class="nav-item on"  data-mod="m-visao"   onclick="showMod('m-visao',this)"><span class="nav-ico">▦</span><span class="nav-txt">Visão Geral</span></div>
       <div class="nav-item"     data-mod="m-comp"    onclick="showMod('m-comp',this)"><span class="nav-ico">⇆</span><span class="nav-txt">Comparativos</span></div>
-      <div class="nav-item"     data-mod="m-margem"  onclick="showMod('m-margem',this)"><span class="nav-ico">◎</span><span class="nav-txt">Margem &amp; Rentabilidade</span></div>
-      <div class="nav-item"     data-mod="m-cash"    onclick="showMod('m-cash',this)"><span class="nav-ico">◍</span><span class="nav-txt">Cash Margem</span></div>
+      <div class="nav-item"     data-mod="m-mc"      onclick="showMod('m-mc',this)"><span class="nav-ico">◎</span><span class="nav-txt">Margem &amp; Cash Margem</span></div>
       <div class="nav-item"     data-mod="m-obj"     onclick="showMod('m-obj',this)"><span class="nav-ico">◉</span><span class="nav-txt">Acompanhamento Objetivos</span></div>
       <div class="nav-item"     data-mod="m-meta-extra" onclick="showMod('m-meta-extra',this)"><span class="nav-ico">◈</span><span class="nav-txt">Metas KG Fumo, Papel e Estratégico</span></div>
       <div class="nav-item"     data-mod="m-dias"    onclick="showMod('m-dias',this)"><span class="nav-ico">∿</span><span class="nav-txt">Sazonalidade (Semanal)</span></div>
@@ -178,29 +177,30 @@
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Receita por categoria — atual vs. ano anterior</div></div></div><canvas id="cCompCat" height="130"></canvas></div></div>
 </div>
 
-<!-- 3. MARGEM -->
-<div class="mod" id="m-margem">
-  <div class="mod-header"><div><div class="mod-title">Margem &amp; Rentabilidade</div><div class="mod-sub">Margem = (Receita − Custo Médio) / Receita</div></div></div>
-  <div class="kpi-grid" id="mg-kpis"></div>
-  <div id="margCatNote"></div>
-  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Margem % por Gerente → Supervisor → Vendedor</div><div class="card-sub">Clique em + para expandir</div></div></div><div class="tbl-wrap"><table id="tMargGer"></table></div></div></div>
-  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Margem % por Categoria</div></div></div><div class="tbl-wrap"><table id="tMargCat"></table></div></div></div>
-</div>
+<!-- 3. MARGEM & CASH MARGEM (fusão de "Margem & Rentabilidade" + "Cash Margem") -->
+<div class="mod" id="m-mc">
+  <div class="mod-header"><div><div class="mod-title">Margem &amp; Cash Margem</div><div class="mod-sub">Margem % = (Faturamento − Custo) / Faturamento · Cash Margem = Faturamento − Custo, em R$ — Meta Margem % = Meta Cash Margem ÷ Meta Faturamento (mesma fórmula aplicada à meta)</div></div></div>
+  <div class="kpi-grid" id="mc-kpis"></div>
+  <div id="mcCatNote"></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Margem &amp; Cash Margem por Gerente → Supervisor → Vendedor</div><div class="card-sub">Clique em + para expandir</div></div></div><div class="tbl-wrap"><table id="tMcGer"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Margem &amp; Cash Margem por Categoria</div></div></div><div class="tbl-wrap"><table id="tMcCat"></table></div></div></div>
 
-<!-- 3A. CASH MARGEM -->
-<div class="mod" id="m-cash">
-  <div class="mod-header"><div><div class="mod-title">Cash Margem</div><div class="mod-sub">Cash Margin = Receita (total) − Custo (customedio), em R$ — o "dinheiro que fica", não a razão percentual</div></div></div>
-  <div class="kpi-grid" id="cash-kpis"></div>
-  <div id="cashCatNote"></div>
-  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Cash Margem por Gerente → Supervisor → Vendedor</div><div class="card-sub">Clique em + para expandir</div></div></div><div class="tbl-wrap"><table id="tCashGer"></table></div></div></div>
-  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Cash Margem por Categoria</div></div></div><div class="tbl-wrap"><table id="tCashCat"></table></div></div></div>
-  <div class="alert">⚠ Os rankings abaixo são reordenados por Cash Margem (R$), não por Receita — por isso a ordem pode diferir da aba Rankings. Sem filtro de hierarquia, Cliente/Produto vêm de um Top 50 calculado direto na base (cobre corretamente clientes/produtos de menor receita mas margem alta). <strong>Com filtro de Gerente/Supervisor/Vendedor</strong>, Cliente/Produto usam o Top 50 por Receita daquele recorte reordenado por Cash Margem — uma aproximação (pode não incluir um cliente de baixa receita e altíssima margem que ficou fora do Top 50 por receita daquela entidade). <strong>Vendedor não usa Top 50</strong>: sem filtro mostra o Top 50 da empresa; com filtro de Gerente/Supervisor/Vendedor mostra <strong>todos</strong> os vendedores daquele recorte.</div>
+  <div class="alert">⚠ <strong>Top 50 por Cash Margem</strong> e <strong>Top 50 por Margem %</strong> são rankings diferentes — um cliente/produto/vendedor de faturamento baixo e margem alta pode entrar no ranking por Margem % e não entrar no por Cash Margem (R$), e vice-versa. O ranking por Margem % (Cliente/Produto, sem filtro de hierarquia) exige faturamento ≥ R$ 500 no período — sem esse piso, uma única venda de poucos reais com custo perto de zero (ex.: baixa de avaria) dominava os primeiros lugares com 100% de margem, sem relevância de negócio. Sem filtro de hierarquia, Cliente/Produto vêm de um Top 50 calculado direto na base para cada critério. <strong>Com filtro de Gerente/Supervisor/Vendedor</strong>, Cliente/Produto usam o Top 50 por Receita daquele recorte reordenado pelo critério da seção — uma aproximação. <strong>Vendedor não usa Top 50</strong>: sem filtro mostra o Top 50 da empresa; com filtro de Gerente/Supervisor/Vendedor mostra <strong>todos</strong> os vendedores daquele recorte. Meta Margem/% Ating. só existem para Vendedor (nível de hierarquia real) — Cliente/Produto não têm meta individual no ERP.</div>
   <div id="cashHierNote"></div>
+
+  <div class="mod-sub" style="margin:10px 0 4px;font-weight:700">Por Cash Margem (R$)</div>
   <div class="row2">
     <div class="card"><div class="card-h"><div><div class="card-title">Top 50 Clientes por Cash Margem</div><div class="card-sub">Clique em + para ver o faturamento por categoria e o vendedor/supervisor responsável</div></div></div><div class="tbl-wrap"><table id="tCashCli"></table></div></div>
     <div class="card"><div class="card-h"><div><div class="card-title">Top 50 Produtos por Cash Margem</div></div></div><div class="tbl-wrap"><table id="tCashProd"></table></div></div>
   </div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Vendedores por Cash Margem</div><div class="card-sub" id="cashVendSub">—</div></div></div><div class="tbl-wrap"><table id="tCashVend"></table></div></div></div>
+
+  <div class="mod-sub" style="margin:16px 0 4px;font-weight:700">Por Margem %</div>
+  <div class="row2">
+    <div class="card"><div class="card-h"><div><div class="card-title">Top 50 Clientes por Margem %</div></div></div><div class="tbl-wrap"><table id="tMargemCli"></table></div></div>
+    <div class="card"><div class="card-h"><div><div class="card-title">Top 50 Produtos por Margem %</div></div></div><div class="tbl-wrap"><table id="tMargemProd"></table></div></div>
+  </div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Vendedores por Margem %</div><div class="card-sub" id="margemVendSub">—</div></div></div><div class="tbl-wrap"><table id="tMargemVend"></table></div></div></div>
 </div>
 
 <!-- 3B. ACOMPANHAMENTO OBJETIVOS (fusão de "Meta x Realizado" + "Acompanhamento de Meta") -->
