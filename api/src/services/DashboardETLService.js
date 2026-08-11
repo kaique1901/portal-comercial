@@ -265,14 +265,17 @@ class DashboardETLService {
       LEFT JOIN cifalcomercial.supervisor s ON s.codsupervisor=e.codsupervisor
       LEFT JOIN cifalcomercial.gerente g ON g.codgerente=s.codgerente`,
       [ano, mesIni, mesFim]);
+    // permargem aqui dá a Meta Cash Margem POR CATEGORIA (meta receita x margem
+    // alvo daquela categoria) — mesma conta já usada para a meta de rentabilidade
+    // da empresa/gerente/supervisor/vendedor, só que sem misturar categorias.
     const catRows = await q(`
-      SELECT c.descategoriaprod categoria, SUM(mc.valor) meta
+      SELECT c.descategoriaprod categoria, SUM(mc.valor) meta, MAX(${normPermargem('mc.permargem')}) permargem
       FROM cifalcomercial.metacategoria mc
       JOIN cifalcomercial.categoriasproduto c ON c.codcategoriaprod=mc.codmetacategoria
       WHERE mc.ano=$1 AND mc.mes BETWEEN $2 AND $3 AND mc.codmetacategoria IN (${inCats})
       GROUP BY c.descategoriaprod`, [ano, mesIni, mesFim]);
     const mesCatRows = await q(`
-      SELECT mc.mes, c.descategoriaprod categoria, SUM(mc.valor) meta
+      SELECT mc.mes, c.descategoriaprod categoria, SUM(mc.valor) meta, MAX(${normPermargem('mc.permargem')}) permargem
       FROM cifalcomercial.metacategoria mc
       JOIN cifalcomercial.categoriasproduto c ON c.codcategoriaprod=mc.codmetacategoria
       WHERE mc.ano=$1 AND mc.mes BETWEEN $2 AND $3 AND mc.codmetacategoria IN (${inCats})
@@ -325,9 +328,20 @@ class DashboardETLService {
       for (const k in dict) for (const campo of SOMAVEIS) dict[k][campo] = round2(dict[k][campo]);
     }
     const por_categoria = {};
-    for (const r of catRows) por_categoria[r.categoria] = round2(num(r.meta));
+    const por_categoria_valrentabilidade = {};
+    for (const r of catRows) {
+      const metaVal = round2(num(r.meta));
+      por_categoria[r.categoria] = metaVal;
+      por_categoria_valrentabilidade[r.categoria] = round2(metaVal * num(r.permargem));
+    }
     const por_mes_categoria = {};
-    for (const r of mesCatRows) { const m = String(r.mes); (por_mes_categoria[m] = por_mes_categoria[m] || {})[r.categoria] = round2(num(r.meta)); }
+    const por_mes_categoria_valrentabilidade = {};
+    for (const r of mesCatRows) {
+      const m = String(r.mes);
+      const metaVal = round2(num(r.meta));
+      (por_mes_categoria[m] = por_mes_categoria[m] || {})[r.categoria] = metaVal;
+      (por_mes_categoria_valrentabilidade[m] = por_mes_categoria_valrentabilidade[m] || {})[r.categoria] = round2(metaVal * num(r.permargem));
+    }
 
     // por_mes = { "7": { gerente:{nome:{...}}, supervisor:{...}, vendedor:{...} } }
     const CAMPOS_MES = ['meta_geral', 'meta_valrentabilidade', 'meta_papel', 'meta_kg', 'meta_estrategico'];
@@ -349,7 +363,7 @@ class DashboardETLService {
       for (const k of CAMPOS_MES) o[k] = round2(o[k]);
       o.meta_permargem = round2(o.meta_permargem);
     }
-    return { linhas: vendRows.length, por_gerente, por_supervisor, por_vendedor, por_categoria, por_mes_categoria, por_mes };
+    return { linhas: vendRows.length, por_gerente, por_supervisor, por_vendedor, por_categoria, por_categoria_valrentabilidade, por_mes_categoria, por_mes_categoria_valrentabilidade, por_mes };
   }
 
   _montarJson(periodo, d) {

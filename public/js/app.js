@@ -1356,6 +1356,23 @@ function margemValueFor(d, level, name, mes){
   const v = src[name]; return v ? {r:v.r, c:v.c} : {r:0,c:0};
 }
 function margemMFrom(r,c){ return r>0 ? +(100*(1-c/r)).toFixed(2) : 0; }
+// Meta Cash Margem (R$) de um nível — meta_valrentabilidade já vem pronta do
+// ETL (meta de receita x margem alvo), com quebra mensal em meta.por_mes.
+function metaValRentFor(d, level, name, mes){
+  if (mes!=null){
+    const mesKey = String(mes);
+    const m = d.meta.por_mes && d.meta.por_mes[mesKey] && d.meta.por_mes[mesKey][level] && d.meta.por_mes[mesKey][level][name];
+    return (m && m.meta_valrentabilidade) || 0;
+  }
+  const src = level==='gerente'?d.meta.por_gerente:level==='supervisor'?d.meta.por_supervisor:d.meta.por_vendedor;
+  return (src[name] && src[name].meta_valrentabilidade) || 0;
+}
+// Meta Cash Margem por CATEGORIA — meta de receita da categoria x margem alvo
+// daquela categoria especificamente (não a margem média da empresa).
+function metaValRentCategoriaFor(d, mes){
+  if (mes!=null) return (d.meta.por_mes_categoria_valrentabilidade && d.meta.por_mes_categoria_valrentabilidade[String(mes)]) || {};
+  return d.meta.por_categoria_valrentabilidade || {};
+}
 function prevMargemLookup(prev, level, name, mes){
   if (!prev) return null;
   if (level==='gerente') return mes!=null ? gerenteMonthValueFor(prev, name, mes) : (prev.por_gerente[name] ? {r:prev.por_gerente[name].r, c:prev.por_gerente[name].c, m:prev.por_gerente[name].m} : null);
@@ -1380,11 +1397,11 @@ function buildMargemHierTree(d, mes){
       const vendChildren = {};
       Object.keys(d.full_vendedores).filter(n=>d.full_vendedores[n].supervisor===supNome && (ST.vend.length===0||ST.vend.includes(n))).forEach(vendNome=>{
         const vv = margemValueFor(d,'vendedor',vendNome,mes);
-        vendChildren[vendNome] = {r:vv.r, c:vv.c, m:margemMFrom(vv.r,vv.c), children:null};
+        vendChildren[vendNome] = {r:vv.r, c:vv.c, m:margemMFrom(vv.r,vv.c), metaCash:metaValRentFor(d,'vendedor',vendNome,mes), children:null};
       });
-      supChildren[supNome] = {r:sv.r, c:sv.c, m:margemMFrom(sv.r,sv.c), children:Object.keys(vendChildren).length?vendChildren:null};
+      supChildren[supNome] = {r:sv.r, c:sv.c, m:margemMFrom(sv.r,sv.c), metaCash:metaValRentFor(d,'supervisor',supNome,mes), children:Object.keys(vendChildren).length?vendChildren:null};
     });
-    tree[gerNome] = {r:gv.r, c:gv.c, m:margemMFrom(gv.r,gv.c), children:Object.keys(supChildren).length?supChildren:null};
+    tree[gerNome] = {r:gv.r, c:gv.c, m:margemMFrom(gv.r,gv.c), metaCash:metaValRentFor(d,'gerente',gerNome,mes), children:Object.keys(supChildren).length?supChildren:null};
   });
   return tree;
 }
@@ -1491,7 +1508,8 @@ function cashHierRowHtml(nome, nivel, pathKey, node, prevNode){
   const indent = nivel*18;
   const cm = node.r-node.c;
   const pcm = prevNode ? (prevNode.r-prevNode.c) : null;
-  return `<tr class="casc-lvl${nivel}"><td style="padding-left:${indent}px">${toggle}${escAttr(nome)}</td><td class="tv">${fF(node.r)}</td><td class="tv">${fF(node.c)}</td><td class="tv tn">${fF(cm)}</td><td class="tv">${deltaPillSmall(cm,pcm)}</td></tr>`;
+  const ating = node.metaCash>0 ? cm/node.metaCash*100 : null;
+  return `<tr class="casc-lvl${nivel}"><td style="padding-left:${indent}px">${toggle}${escAttr(nome)}</td><td class="tv">${fF(node.r)}</td><td class="tv">${node.metaCash>0?fF(node.metaCash):'<span style="color:var(--t3)">—</span>'}</td><td class="tv tn">${fF(cm)}</td><td class="tv">${atingBadge(ating)}</td><td class="tv">${deltaPillSmall(cm,pcm)}</td></tr>`;
 }
 function renderCashHierRows(prev, nodesObj, pathNames, nivel, mes, levelNames){
   const level = levelNames[nivel];
@@ -1612,22 +1630,25 @@ function renderCash(){
     </div>`).join("");
 
   const cashTree = buildMargemHierTree(d, ST.mes);
-  document.getElementById("tCashGer").innerHTML = `<thead><tr><th>Gerente / Supervisor / Vendedor</th><th class="tv">Receita</th><th class="tv">Custo</th><th class="tv">Cash Margem</th><th class="tv">Δ vs ano ant.</th></tr></thead><tbody>${
+  document.getElementById("tCashGer").innerHTML = `<thead><tr><th>Gerente / Supervisor / Vendedor</th><th class="tv">Faturamento</th><th class="tv">Meta Cash Margem</th><th class="tv">Cash Margem</th><th class="tv">% Ating.</th><th class="tv">Δ vs ano ant.</th></tr></thead><tbody>${
     renderCashHierRows(prev, cashTree, [], 0, ST.mes, ['gerente','supervisor','vendedor'])
   }</tbody>`;
 
   const catInfoCash = categoriaCascadeRowsFor(d, ST.mes);
   const catRows = catInfoCash.rows.sort((a,b)=>(b[1].r-b[1].c)-(a[1].r-a[1].c));
   const cashCatNotes = [];
-  if (catInfoCash.level) cashCatNotes.push(`Recortado por ${catInfoCash.level} — <strong>${labelJoin(catInfoCash.names)}</strong>: valores exatos (cubo hierárquico Gerente/Supervisor/Vendedor × Categoria).`);
+  if (catInfoCash.level) cashCatNotes.push(`Recortado por ${catInfoCash.level} — <strong>${labelJoin(catInfoCash.names)}</strong>: Faturamento/Cash Margem exatos (cubo hierárquico Gerente/Supervisor/Vendedor × Categoria); Meta Cash Margem continua no nível empresa (meta não tem essa quebra).`);
   if (catInfoCash.monthNote) cashCatNotes.push(catInfoCash.monthNote);
   document.getElementById("cashCatNote").innerHTML = cashCatNotes.length ? `<div class="alert">${cashCatNotes.join(" ")}</div>` : "";
-  document.getElementById("tCashCat").innerHTML = `<thead><tr><th>Categoria</th><th class="tv">Receita</th><th class="tv">Custo</th><th class="tv">Cash Margem</th><th class="tv">Δ vs ano ant.</th></tr></thead><tbody>${
+  const metaCashCat = metaValRentCategoriaFor(d, ST.mes);
+  document.getElementById("tCashCat").innerHTML = `<thead><tr><th>Categoria</th><th class="tv">Faturamento</th><th class="tv">Meta Cash Margem</th><th class="tv">Cash Margem</th><th class="tv">% Ating.</th><th class="tv">Δ vs ano ant.</th></tr></thead><tbody>${
     catRows.map(([n,v])=>{
       const cm = v.r-v.c;
+      const metaCash = metaCashCat[n]||0;
+      const ating = metaCash>0 ? cm/metaCash*100 : null;
       const pe = ST.mes!=null ? categoriaMonthValueFor(prev, catInfoCash.level, catInfoCash.names, n, ST.mes) : categoriaValueFor(prev, catInfoCash.level, catInfoCash.names, n);
       const pcm = pe ? (pe.r-pe.c) : null;
-      return `<tr><td class="tn">${n}</td><td class="tv">${fF(v.r)}</td><td class="tv">${fF(v.c)}</td><td class="tv tn">${fF(cm)}</td><td class="tv">${deltaPillSmall(cm,pcm)}</td></tr>`;
+      return `<tr><td class="tn">${n}</td><td class="tv">${fF(v.r)}</td><td class="tv">${metaCash>0?fF(metaCash):'<span style="color:var(--t3)">—</span>'}</td><td class="tv tn">${fF(cm)}</td><td class="tv">${atingBadge(ating)}</td><td class="tv">${deltaPillSmall(cm,pcm)}</td></tr>`;
     }).join("")}</tbody>`;
 
   const level = hierLevelActive();
