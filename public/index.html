@@ -110,6 +110,8 @@
       <div class="nav-item on"  data-mod="m-visao"   onclick="showMod('m-visao',this)"><span class="nav-ico">▦</span><span class="nav-txt">Visão Geral</span></div>
       <div class="nav-item"     data-mod="m-comp"    onclick="showMod('m-comp',this)"><span class="nav-ico">⇆</span><span class="nav-txt">Comparativos</span></div>
       <div class="nav-item"     data-mod="m-mc"      onclick="showMod('m-mc',this)"><span class="nav-ico">◎</span><span class="nav-txt">Margem &amp; Cash Margem</span></div>
+      <div class="nav-item"     data-mod="m-top-cash" onclick="showMod('m-top-cash',this)"><span class="nav-ico">◍</span><span class="nav-txt">Top 50 Cash Margem</span></div>
+      <div class="nav-item"     data-mod="m-top-margem" onclick="showMod('m-top-margem',this)"><span class="nav-ico">◈</span><span class="nav-txt">Top 50 Margem %</span></div>
       <div class="nav-item"     data-mod="m-obj"     onclick="showMod('m-obj',this)"><span class="nav-ico">◉</span><span class="nav-txt">Acompanhamento Objetivos</span></div>
       <div class="nav-item"     data-mod="m-meta-extra" onclick="showMod('m-meta-extra',this)"><span class="nav-ico">◈</span><span class="nav-txt">Metas KG Fumo, Papel e Estratégico</span></div>
       <div class="nav-item"     data-mod="m-dias"    onclick="showMod('m-dias',this)"><span class="nav-ico">∿</span><span class="nav-txt">Sazonalidade (Semanal)</span></div>
@@ -184,18 +186,24 @@
   <div id="mcCatNote"></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Margem &amp; Cash Margem por Gerente → Supervisor → Vendedor</div><div class="card-sub">Clique em + para expandir</div></div></div><div class="tbl-wrap"><table id="tMcGer"></table></div></div></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Margem &amp; Cash Margem por Categoria</div></div></div><div class="tbl-wrap"><table id="tMcCat"></table></div></div></div>
+</div>
 
-  <div class="alert">⚠ <strong>Top 50 por Cash Margem</strong> e <strong>Top 50 por Margem %</strong> são rankings diferentes — um cliente/produto/vendedor de faturamento baixo e margem alta pode entrar no ranking por Margem % e não entrar no por Cash Margem (R$), e vice-versa. O ranking por Margem % (Cliente/Produto, sem filtro de hierarquia) exige faturamento ≥ R$ 500 no período — sem esse piso, uma única venda de poucos reais com custo perto de zero (ex.: baixa de avaria) dominava os primeiros lugares com 100% de margem, sem relevância de negócio. Sem filtro de hierarquia, Cliente/Produto vêm de um Top 50 calculado direto na base para cada critério. <strong>Com filtro de Gerente/Supervisor/Vendedor</strong>, Cliente/Produto usam o Top 50 por Receita daquele recorte reordenado pelo critério da seção — uma aproximação. <strong>Vendedor não usa Top 50</strong>: sem filtro mostra o Top 50 da empresa; com filtro de Gerente/Supervisor/Vendedor mostra <strong>todos</strong> os vendedores daquele recorte. Meta Margem/% Ating. só existem para Vendedor (nível de hierarquia real) — Cliente/Produto não têm meta individual no ERP.</div>
+<!-- 3A. TOP 50 CASH MARGEM -->
+<div class="mod" id="m-top-cash">
+  <div class="mod-header"><div><div class="mod-title">Top 50 Cash Margem</div><div class="mod-sub">Ranking por Cash Margem (R$) — o "dinheiro que fica", valor absoluto</div></div></div>
+  <div class="alert">⚠ Sem filtro de hierarquia, Cliente/Produto vêm de um Top 50 por Cash Margem calculado direto na base (cobre corretamente clientes/produtos de menor faturamento mas margem alta). <strong>Com filtro de Gerente/Supervisor/Vendedor</strong>, Cliente/Produto usam o Top 50 por Receita daquele recorte reordenado por Cash Margem — uma aproximação (pode não incluir um cliente de baixo faturamento e altíssima margem que ficou fora do Top 50 por receita daquela entidade). <strong>Vendedor não usa Top 50</strong>: sem filtro mostra o Top 50 da empresa; com filtro de Gerente/Supervisor/Vendedor mostra <strong>todos</strong> os vendedores daquele recorte.</div>
   <div id="cashHierNote"></div>
-
-  <div class="mod-sub" style="margin:10px 0 4px;font-weight:700">Por Cash Margem (R$)</div>
   <div class="row2">
     <div class="card"><div class="card-h"><div><div class="card-title">Top 50 Clientes por Cash Margem</div><div class="card-sub">Clique em + para ver o faturamento por categoria e o vendedor/supervisor responsável</div></div></div><div class="tbl-wrap"><table id="tCashCli"></table></div></div>
     <div class="card"><div class="card-h"><div><div class="card-title">Top 50 Produtos por Cash Margem</div></div></div><div class="tbl-wrap"><table id="tCashProd"></table></div></div>
   </div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Vendedores por Cash Margem</div><div class="card-sub" id="cashVendSub">—</div></div></div><div class="tbl-wrap"><table id="tCashVend"></table></div></div></div>
+</div>
 
-  <div class="mod-sub" style="margin:16px 0 4px;font-weight:700">Por Margem %</div>
+<!-- 3B. TOP 50 MARGEM % -->
+<div class="mod" id="m-top-margem">
+  <div class="mod-header"><div><div class="mod-title">Top 50 Margem %</div><div class="mod-sub">Ranking por Margem % (razão) — diferente do Top 50 por Cash Margem: um cliente/produto/vendedor de faturamento baixo e margem alta entra aqui e pode não entrar no ranking por Cash Margem, e vice-versa</div></div></div>
+  <div class="alert">⚠ O ranking por Margem % (Cliente/Produto, sem filtro de hierarquia) exige faturamento ≥ R$ 500 no período — sem esse piso, uma única venda de poucos reais com custo perto de zero (ex.: baixa de avaria) dominava os primeiros lugares com 100% de margem, sem relevância de negócio. <strong>Com filtro de Gerente/Supervisor/Vendedor</strong>, Cliente/Produto usam o Top 50 por Receita daquele recorte reordenado por Margem % — uma aproximação. <strong>Vendedor não usa Top 50</strong>: sem filtro mostra o Top 50 da empresa; com filtro de Gerente/Supervisor/Vendedor mostra <strong>todos</strong> os vendedores daquele recorte. Meta Margem %/% Ating. só existem para Vendedor (nível de hierarquia real) — Cliente/Produto não têm meta individual no ERP.</div>
   <div class="row2">
     <div class="card"><div class="card-h"><div><div class="card-title">Top 50 Clientes por Margem %</div></div></div><div class="tbl-wrap"><table id="tMargemCli"></table></div></div>
     <div class="card"><div class="card-h"><div><div class="card-title">Top 50 Produtos por Margem %</div></div></div><div class="tbl-wrap"><table id="tMargemProd"></table></div></div>
