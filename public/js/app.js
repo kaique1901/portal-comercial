@@ -1507,11 +1507,31 @@ function tblCashCli(rows, d, prev){
 // Vendedores por Cash Margem: sem filtro de hierarquia usa o Top 50 da empresa;
 // com Gerente/Supervisor/Vendedor filtrado, mostra TODOS os vendedores daquele
 // recorte (full_vendedores, sem cap) — com código antes do nome e tooltip do supervisor.
-function tblCashVend(rows){
+// Cascata: expande p/ mostrar Gerente/Supervisor + faturamento por categoria
+// daquele vendedor (hier_por_categoria.vendedor, já existe no cubo hierárquico).
+let cashVendExpanded = new Set();
+function toggleCashVend(nome){
+  if (cashVendExpanded.has(nome)) cashVendExpanded.delete(nome); else cashVendExpanded.add(nome);
+  renderMargemCash();
+}
+function tblCashVend(rows, d){
   return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Cash Margem</th><th class="tv">Δ vs ano ant.</th><th class="tv">Faturamento</th><th class="tv">Margem %</th></tr></thead><tbody>${
     rows.map((r,i)=>{
       const label = (r.codigo?escAttr(r.codigo)+" - ":"") + escAttr(r.nome);
-      return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn"><span class="hov-tip" data-tip="Supervisor: ${escAttr(r.supervisor||'—')}">${label}</span></td><td class="tv tn">${fF(r.cash_margin)}</td><td class="tv">${deltaPillSmall(r.cash_margin,r.prevCm)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${margemBadge(r.m)}</td></tr>`;
+      const cats = d.hier_por_categoria && d.hier_por_categoria.vendedor && d.hier_por_categoria.vendedor[r.nome];
+      const hasDet = cats && Object.keys(cats).length;
+      const expanded = hasDet && cashVendExpanded.has(r.nome);
+      const toggle = hasDet ? `<span class="casc-toggle" onclick="toggleCashVend('${r.nome.replace(/'/g,"\\'")}')">${expanded?'−':'+'}</span>` : '<span class="casc-toggle-spacer"></span>';
+      let html = `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${toggle}<span class="hov-tip" data-tip="Supervisor: ${escAttr(r.supervisor||'—')}">${label}</span></td><td class="tv tn">${fF(r.cash_margin)}</td><td class="tv">${deltaPillSmall(r.cash_margin,r.prevCm)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${margemBadge(r.m)}</td></tr>`;
+      if (expanded){
+        const gerente = gerenteDoVendedor(d, r.nome);
+        html += `<tr class="casc-info"><td></td><td colspan="5" style="padding-left:24px">Gerente: <strong>${escAttr(gerente||'—')}</strong> · Supervisor: <strong>${escAttr(r.supervisor||'—')}</strong></td></tr>`;
+        Object.entries(cats).sort((a,b)=>b[1].r-a[1].r).forEach(([cat,v])=>{
+          const cmCat = v.r-v.c;
+          html += `<tr class="casc-lvl1"><td></td><td style="padding-left:24px">${escAttr(cat)}</td><td class="tv">${fF(cmCat)}</td><td class="tv"></td><td class="tv">${fF(v.r)}</td><td class="tv">${margemBadge(v.m)}</td></tr>`;
+        });
+      }
+      return html;
     }).join("")}</tbody>`;
 }
 // Top 50 Produtos por Cash Margem: quantidade vendida (unidades) com
@@ -1532,12 +1552,34 @@ function tblCashProd(rows, prev){
 // pode não entrar no Top 50 por Cash Margem (e vice-versa). Sem meta por
 // Cliente/Produto individual no ERP — só Vendedor (nível de hierarquia real)
 // tem Meta Margem/%Ating; Cliente/Produto mostram só Margem realizada + Δ.
-function tblMargemCli(rows, prev){
+let margemCliExpanded = new Set();
+function toggleMargemCli(codigo){
+  if (margemCliExpanded.has(codigo)) margemCliExpanded.delete(codigo); else margemCliExpanded.add(codigo);
+  renderMargemCash();
+}
+// Cascata igual à de tblCashCli (categoria + vendedor/supervisor responsável),
+// mas usando top_clientes_margem_detalhe — clientes diferentes do Top 50 por
+// Cash Margem, então precisam do próprio detalhe.
+function tblMargemCli(rows, d, prev){
   return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Margem %</th><th class="tv">Δ Margem (p.p.)</th><th class="tv">Faturamento</th><th class="tv">Cash Margem</th></tr></thead><tbody>${
     rows.map((r,i)=>{
       const prevFull = prevLookupListFull(prev,"top_clientes_margem","nome",r.nome);
       const cm = r.cash_margin!=null ? r.cash_margin : (r.r-r.c);
-      return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${escAttr(r.nome)}</td><td class="tv tn">${margemBadge(r.m)}</td><td class="tv">${deltaPP(r.m,prevFull?prevFull.m:null,false)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${fF(cm)}</td></tr>`;
+      const det = d.top_clientes_margem_detalhe && d.top_clientes_margem_detalhe[r.codigo];
+      const hasDet = det && (Object.keys(det.categorias||{}).length || det.vendedor);
+      const expanded = hasDet && margemCliExpanded.has(r.codigo);
+      const toggle = hasDet ? `<span class="casc-toggle" onclick="toggleMargemCli('${r.codigo}')">${expanded?'−':'+'}</span>` : '<span class="casc-toggle-spacer"></span>';
+      let html = `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${toggle}${escAttr(r.nome)}</td><td class="tv tn">${margemBadge(r.m)}</td><td class="tv">${deltaPP(r.m,prevFull?prevFull.m:null,false)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${fF(cm)}</td></tr>`;
+      if (expanded){
+        if (det.vendedor){
+          html += `<tr class="casc-info"><td></td><td colspan="5" style="padding-left:24px">Vendedor: <strong>${escAttr(det.vendedor.codigo)} - ${escAttr(det.vendedor.nome)}</strong> · Supervisor: <strong>${escAttr(det.vendedor.supervisor)}</strong></td></tr>`;
+        }
+        Object.entries(det.categorias||{}).sort((a,b)=>b[1].r-a[1].r).forEach(([cat,v])=>{
+          const cmCat = v.r-v.c;
+          html += `<tr class="casc-lvl1"><td></td><td style="padding-left:24px">${escAttr(cat)}</td><td class="tv">${margemBadge(margemMFrom(v.r,v.c))}</td><td class="tv"></td><td class="tv">${fF(v.r)}</td><td class="tv">${fF(cmCat)}</td></tr>`;
+        });
+      }
+      return html;
     }).join("")}</tbody>`;
 }
 function tblMargemProd(rows, prev){
@@ -1548,13 +1590,32 @@ function tblMargemProd(rows, prev){
       return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${escAttr(r.nome)}</td><td class="tv tn">${margemBadge(r.m)}</td><td class="tv">${deltaPP(r.m,prevFull?prevFull.m:null,false)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${fF(cm)}</td><td class="tv">${fN(r.q)}</td><td class="tv">${deltaPillSmall(r.q,prevFull?prevFull.q:null)}</td></tr>`;
     }).join("")}</tbody>`;
 }
-function tblMargemVend(rows){
+let margemVendExpanded = new Set();
+function toggleMargemVend(nome){
+  if (margemVendExpanded.has(nome)) margemVendExpanded.delete(nome); else margemVendExpanded.add(nome);
+  renderMargemCash();
+}
+// Cascata igual à de tblCashVend (Gerente/Supervisor + faturamento por categoria).
+function tblMargemVend(rows, d){
   return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Margem %</th><th class="tv">Meta Margem %</th><th class="tv">% Ating.</th><th class="tv">Δ Margem (p.p.)</th><th class="tv">Faturamento</th><th class="tv">Cash Margem</th></tr></thead><tbody>${
     rows.map((r,i)=>{
       const label = (r.codigo?escAttr(r.codigo)+" - ":"") + escAttr(r.nome);
       const cm = r.cash_margin!=null ? r.cash_margin : (r.r-r.c);
       const ating = r.metaMargem>0 ? r.m/r.metaMargem*100 : null;
-      return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn"><span class="hov-tip" data-tip="Supervisor: ${escAttr(r.supervisor||'—')}">${label}</span></td><td class="tv tn">${margemBadge(r.m)}</td><td class="tv">${r.metaMargem>0?fPct(r.metaMargem):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${atingBadge(ating)}</td><td class="tv">${deltaPP(r.m,r.prevM,false)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${fF(cm)}</td></tr>`;
+      const cats = d.hier_por_categoria && d.hier_por_categoria.vendedor && d.hier_por_categoria.vendedor[r.nome];
+      const hasDet = cats && Object.keys(cats).length;
+      const expanded = hasDet && margemVendExpanded.has(r.nome);
+      const toggle = hasDet ? `<span class="casc-toggle" onclick="toggleMargemVend('${r.nome.replace(/'/g,"\\'")}')">${expanded?'−':'+'}</span>` : '<span class="casc-toggle-spacer"></span>';
+      let html = `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${toggle}<span class="hov-tip" data-tip="Supervisor: ${escAttr(r.supervisor||'—')}">${label}</span></td><td class="tv tn">${margemBadge(r.m)}</td><td class="tv">${r.metaMargem>0?fPct(r.metaMargem):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${atingBadge(ating)}</td><td class="tv">${deltaPP(r.m,r.prevM,false)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${fF(cm)}</td></tr>`;
+      if (expanded){
+        const gerente = gerenteDoVendedor(d, r.nome);
+        html += `<tr class="casc-info"><td></td><td colspan="7" style="padding-left:24px">Gerente: <strong>${escAttr(gerente||'—')}</strong> · Supervisor: <strong>${escAttr(r.supervisor||'—')}</strong></td></tr>`;
+        Object.entries(cats).sort((a,b)=>b[1].r-a[1].r).forEach(([cat,v])=>{
+          const cmCat = v.r-v.c;
+          html += `<tr class="casc-lvl1"><td></td><td style="padding-left:24px">${escAttr(cat)}</td><td class="tv">${margemBadge(v.m)}</td><td class="tv"></td><td class="tv"></td><td class="tv"></td><td class="tv">${fF(v.r)}</td><td class="tv">${fF(cmCat)}</td></tr>`;
+        });
+      }
+      return html;
     }).join("")}</tbody>`;
 }
 
@@ -1683,10 +1744,10 @@ function renderMargemCash(){
 
   document.getElementById("tCashCli").innerHTML = tblCashCli(cliList.slice(0,50), d, prev);
   document.getElementById("tCashProd").innerHTML = tblCashProd(prodList.slice(0,50), prev);
-  document.getElementById("tCashVend").innerHTML = tblCashVend(vendRowsCash);
-  document.getElementById("tMargemCli").innerHTML = tblMargemCli(cliListM.slice(0,50), prev);
+  document.getElementById("tCashVend").innerHTML = tblCashVend(vendRowsCash, d);
+  document.getElementById("tMargemCli").innerHTML = tblMargemCli(cliListM.slice(0,50), d, prev);
   document.getElementById("tMargemProd").innerHTML = tblMargemProd(prodListM.slice(0,50), prev);
-  document.getElementById("tMargemVend").innerHTML = tblMargemVend(vendRowsMargem);
+  document.getElementById("tMargemVend").innerHTML = tblMargemVend(vendRowsMargem, d);
 }
 
 // ── 3B. META X REALIZADO ───────────────────────────────────────

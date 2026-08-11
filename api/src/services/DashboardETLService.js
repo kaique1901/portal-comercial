@@ -177,6 +177,18 @@ class DashboardETLService {
       // sempre itens de R$5-30 com 100% de margem, sem relevância de negócio.
       const topCliMargem = await q(`SELECT CodCli codigo, Cliente nome, SUM(Total) r, SUM(customedio) c FROM tmp_base_vendas WHERE Cliente IS NOT NULL AND Total>0 GROUP BY CodCli, Cliente HAVING SUM(Total)>=500 ORDER BY (1-SUM(customedio)/SUM(Total)) DESC LIMIT 50`);
       const topProdMargem = await q(`SELECT Codigo codigo, Descricao nome, categoria, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq FROM tmp_base_vendas WHERE Descricao IS NOT NULL AND Total>0 GROUP BY Codigo, Descricao, categoria HAVING SUM(Total)>=500 ORDER BY (1-SUM(customedio)/SUM(Total)) DESC LIMIT 50`);
+      // Mesma cascata do Top 50 Clientes por Cash Margem (categoria + vendedor/
+      // supervisor), agora para os codcli do Top 50 por MARGEM % — são clientes
+      // DIFERENTES do Top 50 por Cash Margem (rankings não se sobrepõem).
+      const topCliMargemCodes = topCliMargem.map(r => r.codigo);
+      const topCliMargemCat = topCliMargemCodes.length ? await q(`
+        SELECT CodCli codigo, categoria, SUM(Total) r, SUM(customedio) c
+        FROM tmp_base_vendas WHERE CodCli = ANY($1::int[]) AND categoria IS NOT NULL
+        GROUP BY CodCli, categoria`, [topCliMargemCodes]) : [];
+      const topCliMargemVend = topCliMargemCodes.length ? await q(`
+        SELECT CodCli codigo, CodVen vcodigo, Vendedor vnome, supervisor, SUM(Total) r
+        FROM tmp_base_vendas WHERE CodCli = ANY($1::int[]) AND Vendedor IS NOT NULL
+        GROUP BY CodCli, CodVen, Vendedor, supervisor ORDER BY CodCli, SUM(Total) DESC`, [topCliMargemCodes]) : [];
       const topVendMargem = await q(`SELECT CodVen codigo, Vendedor nome, supervisor, SUM(Total) r, SUM(customedio) c FROM tmp_base_vendas WHERE Vendedor IS NOT NULL AND Total>0 GROUP BY CodVen, Vendedor, supervisor ORDER BY (1-SUM(customedio)/SUM(Total)) DESC LIMIT 50`);
       const pag = await q(`SELECT categoria, tipo, tipocob, SUM(Total) v FROM tmp_base_vendas WHERE categoria IS NOT NULL GROUP BY categoria, tipo, tipocob`);
       const janRange = (await q(`SELECT MIN(DataPed) ini, MAX(DataPed) fim FROM tmp_base_vendas`))[0];
@@ -221,7 +233,7 @@ class DashboardETLService {
         porGerMes, porSupMes, porVendMes,
         porMesCli, porMesCatCli, porMesFumo, porMesFumoTotal, realFumoGer, realFumoSup, realFumoVend, fullVend, qual,
         topCliCash, topCliCashCat, topCliCashVend, topProdCash, topVendCash,
-        topCliMargem, topProdMargem, topVendMargem, pag, janRange, janProd, abcdCli,
+        topCliMargem, topCliMargemCat, topCliMargemVend, topProdMargem, topVendMargem, pag, janRange, janProd, abcdCli,
         hierTopCli, hierTopProd, hierCat, hierPag, hierAbcdRows, hierDiaGer, hierDiaCatGer, meta,
         cascCat, cascGrp, cascForn, cascProd,
         porCanal, porInadimplente, porStatus
@@ -479,6 +491,23 @@ class DashboardETLService {
       entry.vendedor = { codigo: String(row.vcodigo), nome: row.vnome, supervisor: row.supervisor };
     }
 
+    // Mesma cascata, para os clientes do Top 50 por MARGEM % (codcli diferentes
+    // dos de top_clientes_cash_detalhe acima).
+    const top_clientes_margem_detalhe = {};
+    for (const row of d.topCliMargemCat || []) {
+      const k = String(row.codigo);
+      const entry = top_clientes_margem_detalhe[k] || (top_clientes_margem_detalhe[k] = { categorias: {}, vendedor: null });
+      entry.categorias[row.categoria] = { r: round2(num(row.r)), c: round2(num(row.c)) };
+    }
+    const vendCliMargemSeen = new Set();
+    for (const row of d.topCliMargemVend || []) {
+      const k = String(row.codigo);
+      if (vendCliMargemSeen.has(k)) continue;
+      vendCliMargemSeen.add(k);
+      const entry = top_clientes_margem_detalhe[k] || (top_clientes_margem_detalhe[k] = { categorias: {}, vendedor: null });
+      entry.vendedor = { codigo: String(row.vcodigo), nome: row.vnome, supervisor: row.supervisor };
+    }
+
     const pagamento_por_categoria = buildPag(d.pag);
     const hier_pagamento_por_categoria = {}; for (const lvl of Object.keys(d.hierPag)) hier_pagamento_por_categoria[lvl] = buildPagHier(d.hierPag[lvl]);
 
@@ -508,7 +537,7 @@ class DashboardETLService {
       top_vendedores, top_clientes, top_produtos, por_dia, por_dia_categoria,
       por_mes_clientes, por_mes_categoria_clientes, por_mes_fumokg, por_mes_fumokg_total, realizado_fumokg, full_vendedores, realizado_por_mes, qualidade,
       top_clientes_cash, top_clientes_cash_detalhe, top_produtos_cash, top_vendedores_cash,
-      top_clientes_margem, top_produtos_margem, top_vendedores_margem,
+      top_clientes_margem, top_clientes_margem_detalhe, top_produtos_margem, top_vendedores_margem,
       pagamento_por_categoria, hier_pagamento_por_categoria,
       janela90, por_produto_janela90, abcd,
       hier_top_clientes, hier_top_produtos, hier_por_categoria, hier_abcd, hier_por_dia, hier_por_dia_categoria,
