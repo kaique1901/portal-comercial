@@ -1747,7 +1747,10 @@ function prevRealGeralFor(prev, level, name, mesKey){
 // atual. Todo cálculo desta aba soma exatamente objMesesSelecionados() —
 // nunca o semestre inteiro (reaproveita meta.por_mes/realizado_por_mes, os
 // mesmos cubos mensais por entidade criados para corrigir a Meta Geral).
-let OBJ = { modo:'mes', mes:null, bim:null, quad:null, custom:[] };
+// 'mes' NÃO tem estado próprio — espelha o filtro global de Mês do topo da
+// tela (ST.mes), o mesmo usado por todas as outras abas. Sem isso, trocar o
+// mês no filtro principal não mudava nada aqui (aba presa no mês default).
+let OBJ = { modo:'mes', bim:null, quad:null, custom:[] };
 let _objGrupos = [];
 function objSemesterMonths(){ return ST.per && ST.per.endsWith('_1') ? [1,2,3,4,5,6] : [7,8,9,10,11,12]; }
 function objAvailableMonths(d){ return Object.keys((d&&d.por_mes)||{}).map(Number).sort((a,b)=>a-b); }
@@ -1755,7 +1758,7 @@ function objBimestres(){ const m=objSemesterMonths(); const out=[]; for(let i=0;
 function objQuadrimestres(){ const m=objSemesterMonths(); const out=[]; for(let i=0;i<m.length;i+=4){ const g=m.slice(i,i+4); if(g.length===4) out.push(g); } return out; }
 function objLabelMeses(meses){ return meses.map(m=>MESES_NOME[m].slice(0,3)).join("/"); }
 function objMesesSelecionados(){
-  if (OBJ.modo==='mes') return OBJ.mes!=null ? [OBJ.mes] : [];
+  if (OBJ.modo==='mes') return ST.mes!=null ? [ST.mes] : [];
   if (OBJ.modo==='bim') return OBJ.bim || [];
   if (OBJ.modo==='quad') return OBJ.quad || [];
   if (OBJ.modo==='custom') return (OBJ.custom||[]).slice().sort((a,b)=>a-b);
@@ -1776,8 +1779,9 @@ function populateObjSubFiltro(d){
   const wrap = document.getElementById('objSubFiltroWrap');
   const months = objAvailableMonths(d);
   if (OBJ.modo==='mes'){
-    if (OBJ.mes==null || !months.includes(OBJ.mes)) OBJ.mes = months.length?months[months.length-1]:null;
-    wrap.innerHTML = `<select class="fsel" id="fObjSub" onchange="OBJ.mes=+this.value;renderObjetivos()">${months.map(m=>`<option value="${m}" ${m===OBJ.mes?'selected':''}>${MESES_NOME[m]}</option>`).join("")}</select>`;
+    wrap.innerHTML = ST.mes!=null
+      ? `<span style="font-size:11px;color:var(--t3)">Usando o mês do filtro geral (topo da tela): <strong style="color:var(--t1)">${MESES_NOME[ST.mes]}</strong></span>`
+      : `<span style="font-size:11px;color:var(--t3)">Nenhum mês selecionado no filtro geral (topo da tela).</span>`;
   } else if (OBJ.modo==='bim'){
     _objGrupos = objBimestres();
     if (!OBJ.bim || !_objGrupos.some(g=>g.join(',')===OBJ.bim.join(','))) OBJ.bim = _objGrupos[0]||null;
