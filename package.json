@@ -1,0 +1,12 @@
+{
+  "name": "portal-comercial",
+  "version": "1.0.0",
+  "description": "Portal Comercial Executivo",
+  "main": "index.html",
+  "scripts": {
+    "start": "npx serve public"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {}
+}

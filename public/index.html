@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Portal Comercial Executivo — Cifal</title>
+<script src="js/chart.umd.min.js"></script>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div id="api-loading" style="position:fixed;inset:0;z-index:9999;display:none;align-items:center;justify-content:center;flex-direction:column;gap:14px;background:rgba(14,42,28,.85);backdrop-filter:blur(3px);color:#eef5f0;font:600 14px 'Segoe UI',system-ui,sans-serif">
+  <div style="width:42px;height:42px;border:3px solid rgba(255,255,255,.2);border-top-color:#4fd497;border-radius:50%;animation:apispin .8s linear infinite"></div>
+  <div id="api-loading-txt">Carregando dados da API…</div>
+</div>
+<div id="api-error" style="position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:10000;display:none;background:#b3261e;color:#fff;padding:10px 16px;border-radius:8px;font:600 12px 'Segoe UI',system-ui,sans-serif;box-shadow:0 6px 22px rgba(0,0,0,.3)"></div>
+<style>@keyframes apispin{to{transform:rotate(360deg)}}</style>
+
+<!-- TELA DE LOGIN -->
+<div id="login-overlay" style="display:none;position:fixed;inset:0;z-index:99999;background:var(--bg);color:var(--t1);align-items:center;justify-content:center;">
+  <div class="login-box">
+    <div class="login-logo">
+      <div class="logo-ico" style="font-size:32px;color:var(--acc)">◈</div>
+      <div style="font-size:20px;font-weight:700">Portal Comercial</div>
+    </div>
+    <form id="loginForm" onsubmit="event.preventDefault(); window.doLogin();">
+      <div class="login-field">
+        <label>Cargo</label>
+        <select id="loginRole" class="login-input" required>
+          <option value="supervisor">Supervisor</option>
+          <option value="gerente">Gerente</option>
+        </select>
+      </div>
+      <div class="login-field">
+        <label>Usuário</label>
+        <input type="text" id="loginUser" class="login-input" placeholder="Digite seu usuário" required>
+      </div>
+      <div class="login-field">
+        <label>Senha</label>
+        <input type="password" id="loginPass" class="login-input" placeholder="Digite sua senha" required>
+      </div>
+      <button type="submit" id="loginBtn" class="login-btn">Entrar</button>
+      <div id="loginError" class="login-error"></div>
+    </form>
+  </div>
+</div>
+
+<aside id="sb">
+  <div class="sb-head">
+    <div class="logo-wrap">
+      <div class="logo-ico">◈</div>
+      <div class="logo-txt">
+        <div>Portal Comercial</div>
+        <div>Dados em tempo real via API</div>
+      </div>
+    </div>
+    <button class="sb-tog" id="sbTog" title="Recolher">‹</button>
+  </div>
+
+  <div class="sb-filters">
+    <div class="sb-sec">
+      <div class="sb-sec-title">Mês</div>
+      <select class="fsel" id="fMesGlobal" onchange="onMesGlobalChange()"></select>
+      <div class="sb-lbl" id="mesGlobalNote"></div>
+      <!-- Seletor de semestre removido: o painel opera por MÊS. O período (semestre)
+           continua existindo internamente porque o cubo é montado assim, mas é
+           derivado do mês escolhido. -->
+      <select class="fsel" id="fPeriodo" style="display:none"></select>
+    </div>
+
+    <div class="sb-sec">
+      <div class="sb-sec-title">Hierarquia Comercial <span style="font-weight:400;text-transform:none;letter-spacing:0">(múltipla)</span></div>
+      <div class="ms-wrap" id="ms-ger"></div>
+      <div class="ms-wrap" id="ms-sup"></div>
+      <div class="ms-wrap" id="ms-vend"></div>
+    </div>
+
+    <div class="sb-sec">
+      <div class="sb-sec-title">Produto <span style="font-weight:400;text-transform:none;letter-spacing:0">(múltipla)</span></div>
+      <div class="ms-wrap" id="ms-cat"></div>
+      <div class="ms-wrap" id="ms-grp"></div>
+    </div>
+
+    <div class="sb-sec">
+      <div class="sb-sec-title">Cliente <span style="font-weight:400;text-transform:none;letter-spacing:0">(múltipla)</span></div>
+      <div class="ms-wrap" id="ms-cli"></div>
+    </div>
+
+    <div class="sb-sec">
+      <div class="sb-sec-title">Canal de Vendas <span style="font-weight:400;text-transform:none;letter-spacing:0">(múltipla)</span></div>
+      <div class="ms-wrap" id="ms-canal"></div>
+    </div>
+
+    <div class="sb-sec">
+      <div class="sb-sec-title">Inadimplente <span style="font-weight:400;text-transform:none;letter-spacing:0">(múltipla)</span></div>
+      <div class="ms-wrap" id="ms-inadimplente"></div>
+    </div>
+
+    <div class="sb-sec">
+      <div class="sb-sec-title">Status Cliente <span style="font-weight:400;text-transform:none;letter-spacing:0">(múltipla)</span></div>
+      <div class="ms-wrap" id="ms-status"></div>
+    </div>
+
+    <div class="sb-sec" style="border-bottom:none">
+      <button class="btn-rst" onclick="resetFiltros()">↺ Limpar filtros</button>
+    </div>
+
+    <div class="sb-nav">
+      <div style="font-size:9px;text-transform:uppercase;letter-spacing:1.2px;color:var(--t3);padding:8px 8px 5px;font-weight:700">Módulos</div>
+      <div class="nav-item on"  data-mod="m-visao"   onclick="showMod('m-visao',this)"><span class="nav-ico">▦</span><span class="nav-txt">Visão Geral</span></div>
+      <div class="nav-item"     data-mod="m-comp"    onclick="showMod('m-comp',this)"><span class="nav-ico">⇆</span><span class="nav-txt">Comparativos</span></div>
+      <div class="nav-item"     data-mod="m-margem"  onclick="showMod('m-margem',this)"><span class="nav-ico">◎</span><span class="nav-txt">Margem &amp; Rentabilidade</span></div>
+      <div class="nav-item"     data-mod="m-cash"    onclick="showMod('m-cash',this)"><span class="nav-ico">◍</span><span class="nav-txt">Cash Margem</span></div>
+      <div class="nav-item"     data-mod="m-obj"     onclick="showMod('m-obj',this)"><span class="nav-ico">◉</span><span class="nav-txt">Acompanhamento Objetivos</span></div>
+      <div class="nav-item"     data-mod="m-meta-extra" onclick="showMod('m-meta-extra',this)"><span class="nav-ico">◈</span><span class="nav-txt">Metas KG Fumo, Papel e Estratégico</span></div>
+      <div class="nav-item"     data-mod="m-dias"    onclick="showMod('m-dias',this)"><span class="nav-ico">∿</span><span class="nav-txt">Sazonalidade (Semanal)</span></div>
+      <div class="nav-item"     data-mod="m-rank"    onclick="showMod('m-rank',this)"><span class="nav-ico">▲</span><span class="nav-txt">Rankings</span></div>
+      <div class="nav-item"     data-mod="m-mix"     onclick="showMod('m-mix',this)"><span class="nav-ico">◈</span><span class="nav-txt">Mix &amp; Positivação</span></div>
+      <div class="nav-item"     data-mod="m-abcd"    onclick="showMod('m-abcd',this)"><span class="nav-ico">◐</span><span class="nav-txt">Clientes A/B/C/D</span></div>
+      <div class="nav-item"     data-mod="m-planos"  onclick="showMod('m-planos',this)"><span class="nav-ico">✚</span><span class="nav-txt">Planos de Ação</span></div>
+      <div class="nav-item"     data-mod="m-estoque" onclick="showMod('m-estoque',this)"><span class="nav-ico">▣</span><span class="nav-txt">Estoque x Venda (90 dias)</span></div>
+      <div class="nav-item"     data-mod="m-pagamento" onclick="showMod('m-pagamento',this)"><span class="nav-ico">◫</span><span class="nav-txt">Vendas por Tipo de Pagamento</span></div>
+      <div class="nav-item"     data-mod="m-risco"   onclick="showMod('m-risco',this)"><span class="nav-ico">⚡</span><span class="nav-txt">Riscos &amp; Oportunidades</span></div>
+      <div class="nav-item"     data-mod="m-risco-cat" onclick="showMod('m-risco-cat',this)"><span class="nav-ico">⬡</span><span class="nav-txt">Riscos &amp; Oport. por Categoria</span></div>
+      <div class="nav-item"     data-mod="m-cascata" onclick="showMod('m-cascata',this)"><span class="nav-ico">⛛</span><span class="nav-txt">Análise em Cascata</span></div>
+      <div class="nav-item"     data-mod="m-qual"    onclick="showMod('m-qual',this)"><span class="nav-ico">⚠</span><span class="nav-txt">Qualidade dos Dados</span></div>
+    </div>
+  </div>
+
+  <div class="sb-foot">
+    <button class="btn-exp" onclick="exportCSV()">⬇ Exportar CSV (visão atual)</button>
+    <button class="btn-exp" onclick="window.print()">⬇ Exportar PDF</button>
+    <div class="sb-foot-txt" id="sbFootTxt">—</div>
+  </div>
+</aside>
+
+<div id="topbar">
+  <div class="top-left">
+    <button class="mob-btn" onclick="document.getElementById('sb').classList.toggle('open')">☰</button>
+    <span class="top-section" id="topSection">Visão Geral</span>
+  </div>
+  <div class="top-right">
+    <button class="theme-tog" id="logoutBtn" onclick="window.doLogout()" title="Sair (Logout)" style="margin-right:10px; font-size:14px; width:auto; padding:0 10px;">Sair</button>
+    <button class="theme-tog" id="themeTog" onclick="toggleTheme()" title="Alternar tema claro/escuro">🌙</button>
+    <span class="top-badge" id="topPeriodo">—</span>
+  </div>
+</div>
+
+<main id="main">
+
+<!-- 1. VISÃO GERAL -->
+<div class="mod on" id="m-visao">
+  <div class="alert">⚠ <div>Dados 100% reais servidos pela <strong>API</strong> (agregação direta do banco PostgreSQL). Os recortes por Top 50 de cada dimensão são pré-agregados na API; combinar dimensões diferentes usa a dimensão mais específica.</div></div>
+  <div class="mod-header">
+    <div><div class="mod-title">Visão Geral Executiva</div><div class="mod-sub" id="vg-sub">—</div></div>
+    <span class="mod-meta" id="vg-meta">—</span>
+  </div>
+  <div class="kpi-grid" id="vg-kpis"></div>
+  <div class="row2">
+    <div class="card"><div class="card-h"><div><div class="card-title">Receita por Mês</div><div class="card-sub" id="vgMesNote">Período selecionado</div></div></div><canvas id="cVgMes" height="170"></canvas></div>
+    <div class="card"><div class="card-h"><div><div class="card-title">Mix por Categoria</div><div class="card-sub">Participação na receita</div></div></div><canvas id="cVgCat" height="170"></canvas></div>
+  </div>
+  <div class="row2">
+    <div class="card"><div class="card-h"><div><div class="card-title">Receita por Gerente</div><div class="card-sub">Contribuição regional</div></div></div><canvas id="cVgGer" height="170"></canvas></div>
+    <div class="card"><div class="card-h"><div><div class="card-title">Top 8 Grupos de Produto</div><div class="card-sub" id="vgGrpNote">Receita no período</div></div></div><canvas id="cVgGrp" height="170"></canvas></div>
+  </div>
+</div>
+
+<!-- 2. COMPARATIVOS -->
+<div class="mod" id="m-comp">
+  <div class="mod-header"><div><div class="mod-title">Comparativos</div><div class="mod-sub">Semestre atual vs. mesmo semestre do ano anterior</div></div></div>
+  <div class="comp-grid" id="comp-cards"></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Receita mensal — atual vs. ano anterior (mesmo mês)</div></div></div><canvas id="cCompMes" height="130"></canvas></div></div>
+  <div class="row2">
+    <div class="card"><div class="card-h"><div><div class="card-title">Margem % mensal — atual vs. ano anterior</div></div></div><canvas id="cCompMargem" height="150"></canvas></div>
+    <div class="card"><div class="card-h"><div><div class="card-title">Cash Margem mensal — atual vs. ano anterior</div></div></div><canvas id="cCompCash" height="150"></canvas></div>
+  </div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Receita por categoria — atual vs. ano anterior</div></div></div><canvas id="cCompCat" height="130"></canvas></div></div>
+</div>
+
+<!-- 3. MARGEM -->
+<div class="mod" id="m-margem">
+  <div class="mod-header"><div><div class="mod-title">Margem &amp; Rentabilidade</div><div class="mod-sub">Margem = (Receita − Custo Médio) / Receita</div></div></div>
+  <div class="kpi-grid" id="mg-kpis"></div>
+  <div id="margCatNote"></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Margem % por Gerente → Supervisor → Vendedor</div><div class="card-sub">Clique em + para expandir</div></div></div><div class="tbl-wrap"><table id="tMargGer"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Margem % por Categoria</div></div></div><div class="tbl-wrap"><table id="tMargCat"></table></div></div></div>
+</div>
+
+<!-- 3A. CASH MARGEM -->
+<div class="mod" id="m-cash">
+  <div class="mod-header"><div><div class="mod-title">Cash Margem</div><div class="mod-sub">Cash Margin = Receita (total) − Custo (customedio), em R$ — o "dinheiro que fica", não a razão percentual</div></div></div>
+  <div class="kpi-grid" id="cash-kpis"></div>
+  <div id="cashCatNote"></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Cash Margem por Gerente → Supervisor → Vendedor</div><div class="card-sub">Clique em + para expandir</div></div></div><div class="tbl-wrap"><table id="tCashGer"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Cash Margem por Categoria</div></div></div><div class="tbl-wrap"><table id="tCashCat"></table></div></div></div>
+  <div class="alert">⚠ Os rankings abaixo são reordenados por Cash Margem (R$), não por Receita — por isso a ordem pode diferir da aba Rankings. Sem filtro de hierarquia, Cliente/Produto vêm de um Top 50 calculado direto na base (cobre corretamente clientes/produtos de menor receita mas margem alta). <strong>Com filtro de Gerente/Supervisor/Vendedor</strong>, Cliente/Produto usam o Top 50 por Receita daquele recorte reordenado por Cash Margem — uma aproximação (pode não incluir um cliente de baixa receita e altíssima margem que ficou fora do Top 50 por receita daquela entidade). <strong>Vendedor não usa Top 50</strong>: sem filtro mostra o Top 50 da empresa; com filtro de Gerente/Supervisor/Vendedor mostra <strong>todos</strong> os vendedores daquele recorte.</div>
+  <div id="cashHierNote"></div>
+  <div class="row2">
+    <div class="card"><div class="card-h"><div><div class="card-title">Top 50 Clientes por Cash Margem</div><div class="card-sub">Clique em + para ver o faturamento por categoria e o vendedor/supervisor responsável</div></div></div><div class="tbl-wrap"><table id="tCashCli"></table></div></div>
+    <div class="card"><div class="card-h"><div><div class="card-title">Top 50 Produtos por Cash Margem</div></div></div><div class="tbl-wrap"><table id="tCashProd"></table></div></div>
+  </div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Vendedores por Cash Margem</div><div class="card-sub" id="cashVendSub">—</div></div></div><div class="tbl-wrap"><table id="tCashVend"></table></div></div></div>
+</div>
+
+<!-- 3B. ACOMPANHAMENTO OBJETIVOS (fusão de "Meta x Realizado" + "Acompanhamento de Meta") -->
+<div class="mod" id="m-obj">
+  <div class="mod-header">
+    <div><div class="mod-title">Acompanhamento Objetivos</div><div class="mod-sub" id="objSub">—</div></div>
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+      <div><label style="font-size:10px;color:var(--t3);margin-right:6px;display:block">Período</label><select class="fsel" id="fObjModo" onchange="onObjModoChange()">
+        <option value="mes">Mês</option>
+        <option value="bim">Bimestre</option>
+        <option value="quad">Quadrimestre</option>
+        <option value="custom">Personalizado</option>
+      </select></div>
+      <div id="objSubFiltroWrap"></div>
+    </div>
+  </div>
+  <div class="alert">⚠ Todas as tabelas desta aba (Geral, por Gerente/Supervisor/Vendedor, por Categoria, Cash Margem &amp; Positivação) somam exatamente os meses escolhidos no filtro de <strong>Período</strong> acima — nunca o semestre inteiro. <strong>Bimestre/Quadrimestre são sempre dentro do semestre selecionado no topo da tela</strong> (ex.: no 2º semestre, "1º Bim" = Jul/Ago); um quadrimestre que cruzasse dois semestres (ex. Mai-Ago) não é suportado porque o cubo é montado por semestre — use <strong>Personalizado</strong> para escolher qualquer combinação de meses. <strong>Tendência</strong> = projeção do(s) mês(es) ainda em curso pelo ritmo diário observado (meses já fechados usam o valor real) — só existe no nível empresa, não com filtro de Gerente/Supervisor/Vendedor. A meta não tem granularidade por Grupo/Cliente. KG Fumo, Papel e Produto Estratégico são <strong>parte</strong> da Meta Geral (não somam a ela) e têm aba própria — ver "Metas KG Fumo, Papel e Estratégico" no menu.</div>
+  <div class="kpi-grid" id="obj-kpis"></div>
+  <div id="objCashNote"></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Meta x Realizado x Tendência por Categoria</div></div></div><div class="tbl-wrap"><table id="tObjCat"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Meta x Realizado por Gerente</div></div></div><div class="tbl-wrap"><table id="tObjGer"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Meta x Realizado por Supervisor</div></div></div><div class="tbl-wrap"><table id="tObjSup"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Meta x Realizado por Vendedor</div><div class="card-sub" id="objVendSub">—</div></div></div><div class="tbl-wrap"><table id="tObjVend"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Cash Margem &amp; Positivação por Categoria</div><div class="card-sub">Estoque Box = fotografia atual (não recortável por período, mesma fonte da aba Estoque x Venda)</div></div></div><div class="tbl-wrap"><table id="tObjCash"></table></div></div></div>
+</div>
+
+<!-- 3B3. METAS KG FUMO, PAPEL E PRODUTO ESTRATÉGICO -->
+<div class="mod" id="m-meta-extra">
+  <div class="mod-header"><div><div class="mod-title">Metas KG Fumo, Papel e Produto Estratégico</div><div class="mod-sub">Fonte: tabelas de meta do banco (via API) — mesmo cubo da aba Meta x Realizado</div></div></div>
+  <div class="alert">⚠ Estas 3 metas são <strong>parte</strong> da Meta Geral — o próprio ERP as cadastra como categorias de meta separadas (12=Produto Estratégico, 13=FUMO KG, 14=Papel) e o cálculo da Meta Geral já as exclui, então <strong>não devem ser somadas</strong> a ela nesta ou em nenhuma outra aba. <strong>KG Fumo</strong> é medido em kg (peso). <strong>Papel</strong> é medido em <strong>quantidade</strong> (unidade de embalagem padrão do produto), não em R$. <strong>Produto Estratégico</strong>: o realizado soma o valor vendido dos produtos da lista oficial (`produtos_estrategicos`) em <strong>todas as categorias</strong> em que aparecerem, não só em uma categoria específica. Com um mês selecionado, meta e realizado usam o valor exato daquele mês (não o semestre inteiro). Esta aba não tem granularidade por Grupo/Cliente — só por Gerente/Supervisor/Vendedor/Mês.</div>
+  <div class="kpi-grid" id="metaExtra-kpis"></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">KG Fumo, Papel e Estratégico por Gerente</div></div></div><div class="tbl-wrap"><table id="tMetaExtraGer"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">KG Fumo, Papel e Estratégico por Supervisor</div></div></div><div class="tbl-wrap"><table id="tMetaExtraSup"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">KG Fumo, Papel e Estratégico por Vendedor</div><div class="card-sub" id="metaExtraVendSub">—</div></div></div><div class="tbl-wrap"><table id="tMetaExtraVend"></table></div></div></div>
+</div>
+
+<!-- 3C. SAZONALIDADE (SEMANAL) -->
+<div class="mod" id="m-dias">
+  <div class="mod-header"><div><div class="mod-title">Sazonalidade — Semanal</div><div class="mod-sub" id="diaSemanaSub">—</div></div></div>
+  <div class="alert">⚠ Agregação por <strong>semana do calendário</strong> (segunda a domingo) usando a data real de cada pedido (dataped). Cada coluna "S1, S2, …" é uma semana do período, na ordem. A coluna "Média/semana" é a média das semanas. A variação abaixo de cada célula compara com a semana de <strong>mesma ordem</strong> no mesmo período do ano anterior (S1 vs S1 do ano anterior, e assim por diante), quando houver base.</div>
+  <div id="diasHierNote"></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Receita por semana</div><div class="card-sub">Geral — barras = período atual · linha tracejada = ano anterior (alinhado por ordem da semana)</div></div></div><canvas id="cDiaSemana" height="150"></canvas></div></div>
+
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Receita — Geral e por Categoria</div></div></div><div class="tbl-wrap"><table id="tDiaSemanaReceita"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Cash Margem — Geral e por Categoria</div></div></div><div class="tbl-wrap"><table id="tDiaSemanaCash"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Margem % — Geral e por Categoria</div></div></div><div class="tbl-wrap"><table id="tDiaSemanaMargem"></table></div></div></div>
+</div>
+
+<!-- (Módulo "Motivos da Variação" removido a pedido) -->
+
+<!-- 4. RANKINGS -->
+<div class="mod" id="m-rank">
+  <div class="mod-header"><div><div class="mod-title">Rankings — Top 50</div><div class="mod-sub">Ofensores e geradores de resultado</div></div></div>
+  <div class="alert">⚠ A coluna "Δ vs ano ant." busca o mesmo nome no Top 50 do período anterior. Se o item cresceu para o Top 50 agora mas não estava entre os maiores no ano passado, aparece "sem hist." (a receita antiga existe na base, só não está nesse recorte pré-agregado).</div>
+  <div id="rankHierNote"></div>
+  <div class="row2">
+    <div class="card"><div class="card-h"><div><div class="card-title">Top 50 Clientes por Receita</div></div></div><div class="tbl-wrap"><table id="tTopCli"></table></div></div>
+    <div class="card"><div class="card-h"><div><div class="card-title">Top 50 Produtos por Receita</div></div></div><div class="tbl-wrap"><table id="tTopProd"></table></div></div>
+  </div>
+  <div class="row2">
+    <div class="card"><div class="card-h"><div><div class="card-title">Top 50 Vendedores por Receita</div></div></div><div class="tbl-wrap"><table id="tTopVend"></table></div></div>
+    <div class="card"><div class="card-h"><div><div class="card-title">50 piores margens (entre Top 50 clientes)</div></div></div><div class="tbl-wrap"><table id="tOfensores"></table></div></div>
+  </div>
+</div>
+
+<!-- 5. MIX & POSITIVAÇÃO -->
+<div class="mod" id="m-mix">
+  <div class="mod-header"><div><div class="mod-title">Mix &amp; Positivação</div><div class="mod-sub">Amplitude de categorias e meses ativos — Top 50 clientes por receita</div></div></div>
+  <div class="alert">⚠ Sem uma base de clientes cadastrados (universo total), a "positivação" aqui é um proxy: nº de meses do semestre em que o cliente comprou. Cross-referência com o cadastro completo de clientes é necessária para o indicador oficial.</div>
+  <div id="mixHierNote"></div>
+  <div class="tbl-wrap"><table id="tMix"></table></div>
+</div>
+
+<!-- 6. ABCD -->
+<div class="mod" id="m-abcd">
+  <div class="mod-header"><div><div class="mod-title">Classificação de Clientes A/B/C/D</div><div class="mod-sub" id="abcd-sub">Corte pela mediana de receita e de margem entre clientes com receita &gt; 0</div></div></div>
+  <div class="abcd-wrap" id="abcd-boxes"></div>
+  <div class="row2w" id="abcd-examples"></div>
+</div>
+
+<!-- 6B. PLANOS DE AÇÃO POR CATEGORIA -->
+<div class="mod" id="m-planos">
+  <div class="mod-header"><div><div class="mod-title">Planos de Ação por Categoria</div><div class="mod-sub">3 planos por categoria — Faturamento, Margem e Positivação — cada um citando o número real que motiva a recomendação</div></div></div>
+  <div class="alert">⚠ Positivação de categoria aqui = % dos clientes ativos do período que compraram pelo menos 1 item dessa categoria (dado real, não estimado). Os planos são gerados a partir de regras objetivas sobre os números do próprio período (comparação com a média da empresa e com o ano anterior) — não é IA analisando texto, é lógica determinística sobre os dados.</div>
+  <div id="planosHierNote"></div>
+  <div class="opp-grid" id="planos-cards"></div>
+</div>
+
+<!-- 6C. ESTOQUE X VENDA (90 DIAS) -->
+<div class="mod" id="m-estoque">
+  <div class="mod-header"><div><div class="mod-title">Estoque x Venda — Cobertura em Dias</div><div class="mod-sub" id="estoqueSub">—</div></div></div>
+  <div class="alert">⚠ Fonte do estoque: tabela de posição de estoque por vendedor do banco (via API) — é uma <strong>fotografia atual</strong> do que cada vendedor carrega, não recortável por período. A "venda média/dia" usa os últimos 90 dias corridos do <strong>período selecionado no filtro de Período</strong> (mesma janela da aba Sazonalidade), por produto (dados reais). <strong>Dias de cobertura</strong> = valor de estoque ÷ valor médio vendido por dia dos mesmos produtos — se um produto não vendeu nada nos últimos 90 dias, aparece como "sem venda" (pior que 90 dias). Alguns códigos de vendedor no estoque são centros de distribuição/contas de teste (ex.: "CD - SAO PAULO"), não vendedores de campo — mantidos aqui porque representam estoque físico real.</div>
+  <div class="kpi-grid" id="estoque-kpis"></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Cobertura em Cascata — Categoria → Grupo → Produto</div><div class="card-sub">Clique em ⊞ para expandir</div></div></div><div class="tbl-wrap"><table id="tEstoqueCat"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Cobertura em Cascata — Gerente → Supervisor → Vendedor</div><div class="card-sub" id="estoqueVendSub">Clique em ⊞ para expandir</div></div></div><div class="tbl-wrap"><table id="tEstoqueHier"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Estoque parado (&gt;90 dias) em Cascata — Categoria → Grupo → Produto</div><div class="card-sub" id="estoque90Sub">—</div></div></div><div class="tbl-wrap"><table id="tEstoque90"></table></div></div></div>
+</div>
+
+<!-- 6C2. VENDAS POR TIPO DE PAGAMENTO -->
+<div class="mod" id="m-pagamento">
+  <div class="mod-header"><div><div class="mod-title">Vendas por Tipo de Pagamento</div><div class="mod-sub">Valor de venda (campo "total") discriminado por documento fiscal e forma de pagamento</div></div></div>
+  <div class="alert">⚠ Fonte: colunas reais da base de vendas — <strong>tipo</strong> (documento fiscal: <strong>Danfe</strong> = Nota Fiscal Eletrônica / <strong>Cupom</strong> = Cupom Fiscal) e <strong>tipocob</strong> (forma de pagamento: <strong>BOLETO, DINHEIRO, PIX, CHEQUE, OUTROS</strong> — os 5 valores reais encontrados na base, "OUTROS" incluído por completude). Comparativo vs. mesmo semestre do ano anterior. Respeita os filtros globais de Categoria/Gerente/Supervisor/Vendedor já usados no resto do portal (mesma cascata Gerente → Supervisor → Vendedor).</div>
+  <div id="pagFilterNote"></div>
+  <div class="kpi-grid" id="pag-kpis"></div>
+
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Por Categoria — NF (Danfe)</div></div></div><div class="tbl-wrap"><table id="tPagCatNF"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Por Categoria — Cupom</div></div></div><div class="tbl-wrap"><table id="tPagCatCupom"></table></div></div></div>
+
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Por Gerente — NF (Danfe)</div></div></div><div class="tbl-wrap"><table id="tPagGerNF"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Por Gerente — Cupom</div></div></div><div class="tbl-wrap"><table id="tPagGerCupom"></table></div></div></div>
+
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Por Supervisor — NF (Danfe)</div></div></div><div class="tbl-wrap"><table id="tPagSupNF"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Por Supervisor — Cupom</div></div></div><div class="tbl-wrap"><table id="tPagSupCupom"></table></div></div></div>
+
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Por Vendedor — NF (Danfe)</div><div class="card-sub" id="pagVendSub">—</div></div></div><div class="tbl-wrap"><table id="tPagVendNF"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Por Vendedor — Cupom</div></div></div><div class="tbl-wrap"><table id="tPagVendCupom"></table></div></div></div>
+</div>
+
+<!-- 6D. RISCOS & OPORTUNIDADES (GERAL) -->
+<div class="mod" id="m-risco">
+  <div class="mod-header"><div><div class="mod-title">Riscos &amp; Oportunidades — Visão Geral da Empresa</div><div class="mod-sub">Leitura executiva dos principais riscos e oportunidades, gerada por regras determinísticas sobre os dados reais do período selecionado</div></div></div>
+  <div class="alert">⚠ Cada card é calculado diretamente dos números do período (concentração de portfólio, variação de clientes ativos, classificação A/B/C/D, margem por categoria, estoque parado) comparados à média da empresa e/ou ao mesmo semestre do ano anterior — não é um texto genérico, é lógica objetiva sobre a base real.</div>
+  <div id="riscoGeralNote"></div>
+  <div class="row2">
+    <div>
+      <div class="ro-header riscos">▼ Riscos Identificados</div>
+      <div class="risk-grid" id="riscos-geral-list" style="grid-template-columns:1fr"></div>
+    </div>
+    <div>
+      <div class="ro-header oport">▲ Oportunidades Prioritárias</div>
+      <div class="risk-grid" id="oport-geral-list" style="grid-template-columns:1fr"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 6E. RISCOS & OPORTUNIDADES POR CATEGORIA -->
+<div class="mod" id="m-risco-cat">
+  <div class="mod-header"><div><div class="mod-title">Riscos &amp; Oportunidades — Por Categoria</div><div class="mod-sub">Para cada categoria: o risco mais relevante e a melhor oportunidade identificada, na mesma lógica da visão geral</div></div></div>
+  <div id="riscoCatNote"></div>
+  <div class="row2">
+    <div>
+      <div class="ro-header riscos">▼ Riscos por Categoria</div>
+      <div class="risk-grid" id="riscos-cat-list" style="grid-template-columns:1fr"></div>
+    </div>
+    <div>
+      <div class="ro-header oport">▲ Oportunidades por Categoria</div>
+      <div class="risk-grid" id="oport-cat-list" style="grid-template-columns:1fr"></div>
+    </div>
+  </div>
+</div>
+
+<!-- 6G. ANÁLISE EM CASCATA (Categoria > Grupo > Fornecedor > Produto) -->
+<div class="mod" id="m-cascata">
+  <div class="mod-header">
+    <div><div class="mod-title">Análise em Cascata</div><div class="mod-sub" id="cascataSub">—</div></div>
+    <div><label style="font-size:10px;color:var(--t3);margin-right:6px">Ordem da hierarquia</label><select class="fsel" id="fCascataOrdem" onchange="onCascataOrdemChange()">
+      <option value="grupo,fornecedor,produto">Grupo → Fornecedor → Produto (padrão, exato)</option>
+      <option value="fornecedor,grupo,produto">Fornecedor → Grupo → Produto</option>
+      <option value="produto,fornecedor,grupo">Produto → Fornecedor → Grupo</option>
+    </select></div>
+  </div>
+  <div class="alert">⚠ Hierarquia real: <strong>Categoria → Grupo → Fornecedor → Produto</strong> (coluna "fornecedor" da base de vendas, nunca usada nas outras abas). Clique em <strong>⊞</strong> para expandir. <strong>Positivação</strong> = clientes distintos reais em cada nível; <strong>Mix</strong> = nº de grupos/fornecedores/produtos distintos abaixo daquele nó (nível Produto não tem Mix). Por limite de tamanho do arquivo, cada Fornecedor mostra até 20 por Grupo e até 8 Produtos por Fornecedor (os maiores por Faturamento — "n_prod"/"n_for" no tooltip do nó mostram o total real, mesmo quando a lista é maior que isso). Esta aba não é recortável por Gerente/Supervisor/Vendedor/Grupo/Cliente/Mês neste cubo (só Categoria, via o filtro global) — comparativo sempre vs. mesmo semestre do ano anterior.</div>
+  <div id="cascataFilterNote"></div>
+  <div id="cascataOrdemNote"></div>
+  <div class="tbl-wrap"><table id="tCascata"></table></div>
+</div>
+
+<!-- 7. QUALIDADE -->
+<div class="mod" id="m-qual">
+  <div class="mod-header"><div><div class="mod-title">Qualidade dos Dados</div><div class="mod-sub">Checagens automáticas sobre as 2.926.378 linhas das 3 abas</div></div></div>
+  <div id="qualFilterNote"></div>
+  <div class="qual-grid" id="qual-cards"></div>
+</div>
+
+</main>
+
+<script src="js/app.js"></script>
+</body>
+</html>

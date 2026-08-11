@@ -1,0 +1,115 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pipeline de Dados</title>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script type="module">
+      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+      mermaid.initialize({ startOnLoad: false });
+      
+      const content = document.getElementById('markdown-source').textContent;
+      document.getElementById('content').innerHTML = marked.parse(content);
+      mermaid.run({
+        querySelector: '.language-mermaid',
+      });
+    </script>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, sans-serif; line-height: 1.6; color: #333; max-width: 900px; margin: 0 auto; padding: 40px 20px; background-color: #f9f9f9; }
+        .container { background-color: #fff; padding: 40px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        h1, h2, h3 { color: #2c3e50; }
+        h1 { border-bottom: 2px solid #3498db; padding-bottom: 10px; }
+        h2 { margin-top: 30px; border-bottom: 1px solid #eee; padding-bottom: 5px; }
+        code { background-color: #f4f4f4; padding: 2px 5px; border-radius: 3px; color: #d63200; }
+        pre code { display: block; padding: 15px; overflow-x: auto; background-color: #f4f4f4; border-radius: 8px; color: #333; }
+        table { border-collapse: collapse; width: 100%; margin: 20px 0; }
+        th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+        th { background-color: #f2f2f2; }
+    </style>
+</head>
+<body>
+    <div class="container" id="content">Carregando documento...</div>
+
+    <script type="text/markdown" id="markdown-source">
+# Pipeline de Dados e Mapeamento de Campos
+
+Este documento descreve o fluxo atual de dados do projeto web e especifica quais campos da base de dados (PostgreSQL) são consumidos para gerar os indicadores (JSON), servindo como base para a futura construção de uma API.
+
+## Fluxo Atual (Pipeline)
+
+O Portal consome TODOS os dados da API, que agrega direto do banco PostgreSQL. Não há mais planilhas Excel nem arquivos estáticos no caminho:
+
+```mermaid
+graph TD
+    A[(PostgreSQL: DB_CifalComercial)] -->|ETL: queries GROUP BY| B(API Node/Express<br/>cache em memória)
+    B -->|GET /api/v1/dashboard/full| C[Portal Web<br/>Dashboard, Gráficos, Tabelas]
+```
+
+A API materializa o cubo de vendas do período numa TEMP TABLE e faz o JOIN das tabelas transacionais (Pedidos, Vendedores) com as de classificação (Produtos, Categorias, Grupos) direto na origem, devolvendo o JSON já agregado que o Portal renderiza em tempo real.
+
+O projeto web **não** lê os dados granulares (linha a linha). Ele consome o JSON **já agregado** servido pela API (somado e consolidado por mês, por dia, por categoria, por gerente, etc.).
+
+O Dashboard web consulta os dados agregados diretamente da API, que por sua vez consulta o Banco de Dados — em tempo real, sem etapa de planilhas ou arquivos estáticos.
+
+## Mapeamento de Campos: Regra de Negócio vs. Banco de Dados
+
+Para garantir a precisão total na construção da futura API, abaixo está o mapeamento exato de como as métricas e dimensões de negócio se traduzem em tabelas e campos do banco PostgreSQL (`DB_CifalComercial`), conforme a query SQL original.
+
+### 1. Campos de Valor e Medida (Métricas)
+Estes campos requerem cálculos e somas em nível de banco de dados.
+- **Receita / Faturamento:** Calculado subtraindo o desconto do valor total dos itens. 
+  - *Tabela:* `ItensPedido`
+  - *Fórmula SQL:* `(ItensPedido.Qtde * ItensPedido.ValUni) * (1 - (TotDescontoNota/TotProdutos))` (Nomeado como `Total`)
+- **Custo:** Valor de custo do item vendido.
+  - *Tabela:* `ItensPedido`
+  - *Fórmula SQL:* `itenspedido.qtde * itenspedido.customedio` (Nomeado como `customedio`)
+- **Quantidade:** Quantidade vendida considerando o fator de embalagem padrão.
+  - *Tabelas:* `ItensPedido` JOIN `UnidadeAlt`
+  - *Fórmula SQL:* `(ItensPedido.Qtde * UnidadeAlt.QdeEmb) / upadrao.qdeemb` (Nomeado como `Qtde`)
+- **Peso:** Peso físico líquido do produto vendido.
+  - *Tabelas:* `ItensPedido` JOIN `UnidadeAlt`
+  - *Fórmula SQL:* `ItensPedido.Qtde * UnidadeAlt.PesoLiq` (Nomeado como `Peso`)
+
+### 2. Campos de Dimensão e Tempo (Agrupadores)
+Usados para agrupar as somas e filtrar dados por períodos e responsáveis.
+- **Data de Faturamento:** 
+  - *Tabela:* `Pedidos`
+  - *Campo SQL:* `Pedidos.DataFechamento` (Nomeado como `DataPed`)
+- **Gerente:** 
+  - *Tabela:* `Gerente`
+  - *Campo SQL:* `gerente.nomegerente` (Nomeado como `gerente`)
+- **Supervisor:** 
+  - *Tabela:* `Supervisor`
+  - *Campo SQL:* `supervisor.nomesupervisor` (Nomeado como `supervisor`)
+
+### 3. Campos de Classificação (Dimensões de Produtos)
+Esses campos dispensam mapeamentos manuais (PROCVs), pois já vêm nativamente consolidados via `JOINs`.
+- **Categoria do Produto:**
+  - *Tabela:* `categoriasproduto`
+  - *Campo SQL:* `descategoriaprod` (Nomeado como `categoria`)
+- **Grupo do Produto:** 
+  - *Tabela:* `SubGrupos`
+  - *Campo SQL:* `DesSubGrupo` (Nomeado como `Grupo`)
+
+### 4. Campos de Identificação Única (Contagens Distintas)
+Usados para as contagens unívocas no Dashboard (KPIs como total de pedidos, total de clientes positivados, etc).
+- **ID do Pedido:** `Pedidos.NroPedido` (Nomeado como `NroPed`)
+- **ID do Cliente:** `Pedidos.CodCliente` (Nomeado como `CodCli`)
+- **ID do Vendedor:** `Pedidos.CodVendedor` (Nomeado como `CodVen`)
+- **ID do Produto:** `ItensPedido.CodProduto` (Nomeado como `Codigo`)
+
+## Visão da Estrutura da Futura API
+
+Quando a API for desenvolvida, ela terá *endpoints* que farão o trabalho de agregação que hoje é feito antes de gerar o arquivo JSON. As queries da API farão os `JOINs` supracitados e aplicarão um `GROUP BY` conforme a dimensão requisitada.
+
+**Exemplo de Arquitetura da API:**
+- `GET /api/v1/dashboard/resumo?periodo=2026_1` -> Retorna totais gerais consolidados.
+- `GET /api/v1/dashboard/vendas-por-dia?periodo=2026_1` -> Retorna array de dias com receita e custo (usando `GROUP BY Pedidos.DataFechamento`).
+- `GET /api/v1/dashboard/categorias?periodo=2026_1` -> Retorna as agregações por categoria (usando `GROUP BY descategoriaprod`).
+- `GET /api/v1/dashboard/hierarquia?periodo=2026_1` -> Retorna dados de Gerentes e Supervisores (usando `GROUP BY gerente.nomegerente, supervisor.nomesupervisor`).
+
+A API alimenta o Dashboard em tempo real, direto do banco de dados.
+    </script>
+</body>
+</html>

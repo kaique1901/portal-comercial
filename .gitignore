@@ -1,0 +1,4 @@
+node_modules/
+api/.env
+*.log
+.claude/

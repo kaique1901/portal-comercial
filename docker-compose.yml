@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: cifal_api
+    restart: unless-stopped
+    ports:
+      - "4001:4001"
+    env_file:
+      - ./api/.env
+    networks:
+      - cifal_network
+
+  frontend:
+    build:
+      context: ./public
+      dockerfile: Dockerfile
+    container_name: cifal_frontend
+    restart: unless-stopped
+    ports:
+      - "3006:80"
+    networks:
+      - cifal_network
+
+networks:
+  cifal_network:
+    driver: bridge
