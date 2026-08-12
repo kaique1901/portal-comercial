@@ -219,20 +219,20 @@
       <div><label style="font-size:10px;color:var(--t3);margin-right:6px;display:block">Período</label><select class="fsel" id="fObjModo" onchange="onObjModoChange()">
         <option value="mes">Mês</option>
         <option value="bim">Bimestre</option>
-        <option value="quad">Quadrimestre</option>
+        <option value="sem">Semestre</option>
         <option value="custom">Personalizado</option>
       </select></div>
       <div id="objSubFiltroWrap"></div>
     </div>
   </div>
-  <div class="alert">⚠ Todas as tabelas desta aba (Geral, por Gerente/Supervisor/Vendedor, por Categoria, Cash Margem &amp; Positivação) somam exatamente os meses escolhidos no filtro de <strong>Período</strong> acima — nunca o semestre inteiro. <strong>Bimestre/Quadrimestre são sempre dentro do semestre selecionado no topo da tela</strong> (ex.: no 2º semestre, "1º Bim" = Jul/Ago); um quadrimestre que cruzasse dois semestres (ex. Mai-Ago) não é suportado porque o cubo é montado por semestre — use <strong>Personalizado</strong> para escolher qualquer combinação de meses. <strong>Tendência</strong> = projeção do(s) mês(es) ainda em curso pelo ritmo diário observado (meses já fechados usam o valor real) — só existe no nível empresa, não com filtro de Gerente/Supervisor/Vendedor. A meta não tem granularidade por Grupo/Cliente. KG Fumo, Papel e Produto Estratégico são <strong>parte</strong> da Meta Geral (não somam a ela) e têm aba própria — ver "Metas KG Fumo, Papel e Estratégico" no menu.</div>
+  <div class="alert">⚠ Todas as tabelas desta aba (Geral, por Gerente/Supervisor/Vendedor, por Categoria) somam exatamente os meses escolhidos no filtro de <strong>Período</strong> acima. <strong>Bimestre segue a numeração real do calendário</strong> (1º Bim = Jan/Fev ... 6º Bim = Nov/Dez) — no 2º semestre os bimestres disponíveis são 4º, 5º e 6º. <strong>Semestre</strong> = os 6 meses do semestre selecionado no topo da tela. Não há opção de Quadrimestre: o 2º Quadrimestre do calendário (Mai-Ago) cruzaria os dois semestres, que são cubos de dados separados — use <strong>Personalizado</strong> para esse caso. <strong>Tendência</strong> = projeção do(s) mês(es) ainda em curso pelo ritmo diário observado (meses já fechados usam o valor real) — só existe no nível empresa, não com filtro de Gerente/Supervisor/Vendedor. A meta não tem granularidade por Grupo/Cliente. KG Fumo, Papel e Produto Estratégico são <strong>parte</strong> da Meta Geral (não somam a ela) e têm aba própria — ver "Metas KG Fumo, Papel e Estratégico" no menu.</div>
   <div class="kpi-grid" id="obj-kpis"></div>
   <div id="objCashNote"></div>
-  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Meta x Realizado x Tendência por Categoria</div></div></div><div class="tbl-wrap"><table id="tObjCat"></table></div></div></div>
-  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Meta x Realizado por Gerente</div></div></div><div class="tbl-wrap"><table id="tObjGer"></table></div></div></div>
-  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Meta x Realizado por Supervisor</div></div></div><div class="tbl-wrap"><table id="tObjSup"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Meta x Realizado x Margem x Positivação por Categoria</div><div class="card-sub">Estoque Box = fotografia atual (não recortável por período, mesma fonte da aba Estoque x Venda) · Bonificação ainda sem fonte de dados integrada</div></div></div><div class="tbl-wrap"><table id="tObjCat"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Meta x Realizado por Gerente</div><div class="card-sub">Clique num gerente para ver o detalhe por categoria abaixo (efeito cascata)</div></div></div><div class="tbl-wrap"><table id="tObjGer"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Meta x Realizado por Supervisor</div><div class="card-sub" id="objSupSub">—</div></div></div><div class="tbl-wrap"><table id="tObjSup"></table></div></div></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Meta x Realizado por Vendedor</div><div class="card-sub" id="objVendSub">—</div></div></div><div class="tbl-wrap"><table id="tObjVend"></table></div></div></div>
-  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Cash Margem &amp; Positivação por Categoria</div><div class="card-sub">Estoque Box = fotografia atual (não recortável por período, mesma fonte da aba Estoque x Venda)</div></div></div><div class="tbl-wrap"><table id="tObjCash"></table></div></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Detalhe por Categoria — seleção da cascata acima</div><div class="card-sub" id="objFocoSub">Selecione um Gerente, Supervisor ou Vendedor nas tabelas acima para ver o detalhe por categoria.</div></div></div><div class="tbl-wrap"><table id="tObjFoco"></table></div></div></div>
 </div>
 
 <!-- 3B3. METAS KG FUMO, PAPEL E PRODUTO ESTRATÉGICO -->

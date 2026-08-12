@@ -1816,12 +1816,17 @@ function atingBadge(pct){
   const cls = pct>=100?'mb-hi':pct>=90?'mb-md':'mb-lo';
   return `<span class="${cls}">${pct.toFixed(1)}%</span>`;
 }
-function metaTable(names, fn){
+// level (opcional): quando informado, cada linha fica clicável — chama
+// objFocusToggle(level, nome) para acionar o efeito cascata da aba
+// Acompanhamento Objetivos (linha selecionada fica destacada).
+function metaTable(names, fn, level){
   return `<thead><tr><th>Nome</th><th class="tv">Meta Geral</th><th class="tv">Δ Meta</th><th class="tv">Realizado</th><th class="tv">Δ Realizado</th><th class="tv">% Ating.</th></tr></thead><tbody>${
     names.map(n=>{
       const v = fn(n);
       const ating = v.meta>0 ? v.real/v.meta*100 : null;
-      return `<tr><td class="tn">${n}</td><td class="tv">${fF(v.meta)}</td><td class="tv">${deltaPillSmall(v.meta,v.prevMeta)}</td><td class="tv">${fF(v.real)}</td><td class="tv">${deltaPillSmall(v.real,v.prevReal)}</td><td class="tv">${atingBadge(ating)}</td></tr>`;
+      const selected = level && objFocus[level==='gerente'?'ger':level==='supervisor'?'sup':'vend']===n;
+      const trAttrs = level ? ` class="obj-focus-row${selected?' obj-focus-sel':''}" style="cursor:pointer" onclick="objFocusToggle('${level}','${n.replace(/'/g,"\\'")}')"` : '';
+      return `<tr${trAttrs}><td class="tn">${n}</td><td class="tv">${fF(v.meta)}</td><td class="tv">${deltaPillSmall(v.meta,v.prevMeta)}</td><td class="tv">${fF(v.real)}</td><td class="tv">${deltaPillSmall(v.real,v.prevReal)}</td><td class="tv">${atingBadge(ating)}</td></tr>`;
     }).join("")}</tbody>`;
 }
 // Meta/Realizado de um nível (gerente/supervisor/vendedor) para um NOME —
@@ -1883,17 +1888,22 @@ function prevRealGeralFor(prev, level, name, mesKey){
 // 'mes' NÃO tem estado próprio — espelha o filtro global de Mês do topo da
 // tela (ST.mes), o mesmo usado por todas as outras abas. Sem isso, trocar o
 // mês no filtro principal não mudava nada aqui (aba presa no mês default).
-let OBJ = { modo:'mes', bim:null, quad:null, custom:[] };
+let OBJ = { modo:'mes', bim:null, custom:[] };
 let _objGrupos = [];
 function objSemesterMonths(){ return ST.per && ST.per.endsWith('_1') ? [1,2,3,4,5,6] : [7,8,9,10,11,12]; }
 function objAvailableMonths(d){ return Object.keys((d&&d.por_mes)||{}).map(Number).sort((a,b)=>a-b); }
+// Bimestre numerado pelo calendário real (1º=Jan/Fev ... 6º=Nov/Dez), não
+// reiniciando em "1º" a cada semestre — no 2º semestre os índices disponíveis
+// são 4º,5º,6º. Quadrimestre foi removido: o 2º Quadrimestre do calendário
+// (Mai-Ago) cruzaria os dois cubos de semestre, que são bases de dados
+// separadas — sem suporte nesta arquitetura (usar Personalizado nesse caso).
 function objBimestres(){ const m=objSemesterMonths(); const out=[]; for(let i=0;i<m.length;i+=2) out.push(m.slice(i,i+2)); return out; }
-function objQuadrimestres(){ const m=objSemesterMonths(); const out=[]; for(let i=0;i<m.length;i+=4){ const g=m.slice(i,i+4); if(g.length===4) out.push(g); } return out; }
+function objBimestreOffset(){ return ST.per && ST.per.endsWith('_2') ? 3 : 0; }
 function objLabelMeses(meses){ return meses.map(m=>MESES_NOME[m].slice(0,3)).join("/"); }
 function objMesesSelecionados(){
   if (OBJ.modo==='mes') return ST.mes!=null ? [ST.mes] : [];
   if (OBJ.modo==='bim') return OBJ.bim || [];
-  if (OBJ.modo==='quad') return OBJ.quad || [];
+  if (OBJ.modo==='sem') return objSemesterMonths();
   if (OBJ.modo==='custom') return (OBJ.custom||[]).slice().sort((a,b)=>a-b);
   return [];
 }
@@ -1905,7 +1915,7 @@ function objToggleCustomMes(mes, checked){
 }
 function objSetGrupo(idx){
   const g = _objGrupos[idx];
-  if (OBJ.modo==='bim') OBJ.bim = g; else if (OBJ.modo==='quad') OBJ.quad = g;
+  if (OBJ.modo==='bim') OBJ.bim = g;
   renderObjetivos();
 }
 function populateObjSubFiltro(d){
@@ -1917,15 +1927,12 @@ function populateObjSubFiltro(d){
       : `<span style="font-size:11px;color:var(--t3)">Nenhum mês selecionado no filtro geral (topo da tela).</span>`;
   } else if (OBJ.modo==='bim'){
     _objGrupos = objBimestres();
+    const offset = objBimestreOffset();
     if (!OBJ.bim || !_objGrupos.some(g=>g.join(',')===OBJ.bim.join(','))) OBJ.bim = _objGrupos[0]||null;
-    wrap.innerHTML = `<select class="fsel" id="fObjSub" onchange="objSetGrupo(this.selectedIndex)">${_objGrupos.map((g,i)=>`<option value="${i}" ${OBJ.bim&&OBJ.bim.join(',')===g.join(',')?'selected':''}>${i+1}º Bim (${objLabelMeses(g)})</option>`).join("")}</select>`;
-  } else if (OBJ.modo==='quad'){
-    _objGrupos = objQuadrimestres();
-    if (!_objGrupos.length){ wrap.innerHTML = `<span style="font-size:11px;color:var(--t3)">Sem quadrimestre completo neste semestre — use Personalizado.</span>`; OBJ.quad=null; }
-    else {
-      if (!OBJ.quad || !_objGrupos.some(g=>g.join(',')===OBJ.quad.join(','))) OBJ.quad = _objGrupos[0];
-      wrap.innerHTML = `<select class="fsel" id="fObjSub" onchange="objSetGrupo(this.selectedIndex)">${_objGrupos.map((g,i)=>`<option value="${i}" ${OBJ.quad&&OBJ.quad.join(',')===g.join(',')?'selected':''}>${i+1}º Quadr. (${objLabelMeses(g)})</option>`).join("")}</select>`;
-    }
+    wrap.innerHTML = `<select class="fsel" id="fObjSub" onchange="objSetGrupo(this.selectedIndex)">${_objGrupos.map((g,i)=>`<option value="${i}" ${OBJ.bim&&OBJ.bim.join(',')===g.join(',')?'selected':''}>${offset+i+1}º Bim (${objLabelMeses(g)})</option>`).join("")}</select>`;
+  } else if (OBJ.modo==='sem'){
+    const sem = objSemesterMonths();
+    wrap.innerHTML = `<span style="font-size:11px;color:var(--t3)">Semestre inteiro: <strong style="color:var(--t1)">${objLabelMeses(sem)}</strong></span>`;
   } else {
     const sem = objSemesterMonths();
     if (!OBJ.custom.length && months.length) OBJ.custom = [months[months.length-1]];
@@ -1958,14 +1965,14 @@ function renderObjetivos(){
   populateObjSubFiltro(d);
   if (!d.meta){
     document.getElementById('obj-kpis').innerHTML = '<div class="alert">Sem dados de meta para este período.</div>';
-    ['tObjCat','tObjGer','tObjSup','tObjVend','tObjCash'].forEach(id=>document.getElementById(id).innerHTML='');
+    ['tObjCat','tObjGer','tObjSup','tObjVend','tObjFoco'].forEach(id=>document.getElementById(id).innerHTML='');
     return;
   }
   const meses = objMesesSelecionados();
   if (!meses.length){
     document.getElementById('objSub').textContent = "Selecione ao menos um mês no filtro de Período.";
     document.getElementById('obj-kpis').innerHTML = '';
-    ['tObjCat','tObjGer','tObjSup','tObjVend','tObjCash'].forEach(id=>document.getElementById(id).innerHTML='');
+    ['tObjCat','tObjGer','tObjSup','tObjVend','tObjFoco'].forEach(id=>document.getElementById(id).innerHTML='');
     return;
   }
   const ano = meses.map(m=>monthYearFor(d,m)).find(Boolean);
@@ -2046,66 +2053,51 @@ function renderObjetivos(){
         ${k.cur!=null?deltaPillSmall(k.cur,k.prevv):''}
         <div class="kpi-note">${k.cur!=null?'vs. mesmo(s) mês(es) ano anterior':''}</div></div>`).join(""));
 
-  // ── por Gerente / Supervisor / Vendedor (Meta Geral, somada nos meses selecionados) ──
+  // ── por Gerente / Supervisor / Vendedor (Meta Geral, somada nos meses
+  // selecionados) — cada linha é clicável (efeito cascata): clicar num Gerente
+  // filtra a tabela de Supervisor abaixo aos seus supervisores, clicar num
+  // Supervisor filtra a de Vendedor, e a entidade mais profunda selecionada
+  // alimenta o painel "Detalhe por Categoria" no rodapé (objFocus).
   const effGerMeta = effectiveGerentes(d);
   const gerRows = Object.keys(d.meta.por_gerente).filter(n=>!effGerMeta||effGerMeta.has(n)).sort((a,b)=>objMetaGeralFor(d,'gerente',b,meses)-objMetaGeralFor(d,'gerente',a,meses));
   document.getElementById('tObjGer').innerHTML = metaTable(gerRows, n=>({
     meta:objMetaGeralFor(d,'gerente',n,meses), real:objRealGeralFor(d,'gerente',n,meses),
     prevMeta: objPrevMetaGeralFor(prev,'gerente',n,meses), prevReal: objPrevRealGeralFor(prev,'gerente',n,meses),
-  }));
+  }), 'gerente');
 
   const effSupMeta = effectiveSupervisores(d);
-  const supRows = Object.keys(d.meta.por_supervisor).filter(n=>(!effSupMeta||effSupMeta.has(n))&&(!effGerMeta||effGerMeta.has(d.meta.por_supervisor[n].gerente))).sort((a,b)=>objMetaGeralFor(d,'supervisor',b,meses)-objMetaGeralFor(d,'supervisor',a,meses));
+  const supRowsAll = Object.keys(d.meta.por_supervisor).filter(n=>(!effSupMeta||effSupMeta.has(n))&&(!effGerMeta||effGerMeta.has(d.meta.por_supervisor[n].gerente)));
+  const supRows = supRowsAll.filter(n=>!objFocus.ger || d.meta.por_supervisor[n].gerente===objFocus.ger).sort((a,b)=>objMetaGeralFor(d,'supervisor',b,meses)-objMetaGeralFor(d,'supervisor',a,meses));
+  document.getElementById('objSupSub').textContent = objFocus.ger ? `Supervisores de ${objFocus.ger}` : `${supRows.length} supervisores`;
   document.getElementById('tObjSup').innerHTML = metaTable(supRows, n=>({
     meta:objMetaGeralFor(d,'supervisor',n,meses), real:objRealGeralFor(d,'supervisor',n,meses),
     prevMeta: objPrevMetaGeralFor(prev,'supervisor',n,meses), prevReal: objPrevRealGeralFor(prev,'supervisor',n,meses),
-  }));
+  }), 'supervisor');
 
-  const vendRows = Object.keys(d.meta.por_vendedor).filter(n=>(ST.vend.length===0||ST.vend.includes(n))&&(!effSupMeta||effSupMeta.has(d.meta.por_vendedor[n].supervisor))).sort((a,b)=>objMetaGeralFor(d,'vendedor',b,meses)-objMetaGeralFor(d,'vendedor',a,meses));
-  document.getElementById('objVendSub').textContent = `${vendRows.length} vendedores com meta cadastrada no período`;
+  const vendRowsAll = Object.keys(d.meta.por_vendedor).filter(n=>(ST.vend.length===0||ST.vend.includes(n))&&(!effSupMeta||effSupMeta.has(d.meta.por_vendedor[n].supervisor)));
+  const vendRows = vendRowsAll.filter(n=>{
+    if (objFocus.sup) return d.meta.por_vendedor[n].supervisor===objFocus.sup;
+    if (objFocus.ger) return supRowsAll.filter(s=>d.meta.por_supervisor[s].gerente===objFocus.ger).includes(d.meta.por_vendedor[n].supervisor);
+    return true;
+  }).sort((a,b)=>objMetaGeralFor(d,'vendedor',b,meses)-objMetaGeralFor(d,'vendedor',a,meses));
+  document.getElementById('objVendSub').textContent = `${vendRows.length} vendedores com meta cadastrada no período` + (objFocus.sup?` — de ${objFocus.sup}`:objFocus.ger?` — de ${objFocus.ger}`:'');
   document.getElementById('tObjVend').innerHTML = metaTable(vendRows, n=>({
     meta:objMetaGeralFor(d,'vendedor',n,meses), real:objRealGeralFor(d,'vendedor',n,meses),
     prevMeta: objPrevMetaGeralFor(prev,'vendedor',n,meses), prevReal: objPrevRealGeralFor(prev,'vendedor',n,meses),
-  }));
+  }), 'vendedor');
 
-  // ── por Categoria, com Tendência ──
-  function catRow(nome, metaVal, r, c, prevR, prevC, trend){
-    const pctReal = metaVal>0 ? r/metaVal*100 : null;
-    const pctTrend = metaVal>0 ? trend/metaVal*100 : null;
-    const margem = r>0 ? 100*(1-c/r) : null;
-    const prevMargem = (prevR!=null && prevR>0) ? 100*(1-prevC/prevR) : null;
-    const pesoMeta = totalMetaCat>0 ? metaVal/totalMetaCat*100 : 0;
-    const pesoReal = totalRealCat>0 ? r/totalRealCat*100 : 0;
-    return `<tr><td class="tv">${pesoMeta.toFixed(1)}%</td><td class="tv">${pesoReal.toFixed(1)}%</td><td class="tn">${nome}</td>
-      <td class="tv">${fF(metaVal)}</td><td class="tv">${fF(r)}</td><td class="tv">${atingBadge(pctReal)}</td>
-      <td class="tv">${fF(trend)}</td><td class="tv">${atingBadge(pctTrend)}</td>
-      <td class="tv">${margem!=null?margemBadge(margem):'<span style="color:var(--t3)">—</span>'}</td>
-      <td class="tv">${prevR!=null?fF(prevR):'<span style="color:var(--t3)">sem base</span>'}</td>
-      <td class="tv">${deltaPillSmall(r,prevR)}</td>
-      <td class="tv">${prevMargem!=null?fPct(prevMargem):'<span style="color:var(--t3)">sem base</span>'}</td>
-      <td class="tv">${(margem!=null&&prevMargem!=null)?deltaPP(margem,prevMargem,false):'<span style="color:var(--t3)">sem base</span>'}</td></tr>`;
-  }
-  const catBodyRows = catNames.slice().sort((a,b)=>(metaCatSel[b]||0)-(metaCatSel[a]||0)).map(cat=>{
-    const agg = realCatSel[cat]||{r:0,c:0}; const pagg = prevRealCatSel[cat];
-    const trend = perMes.reduce((s,pm)=>s+tendencia((pm.catAgg[cat]&&pm.catAgg[cat].r)||0, d, pm.mes),0);
-    return catRow(cat, metaCatSel[cat]||0, agg.r, agg.c, pagg?pagg.r:null, pagg?pagg.c:null, trend);
-  }).join("");
-  const totalRow = `<tr style="font-weight:700"><td class="tv">100,0%</td><td class="tv">100,0%</td><td class="tn">TOTAL GERAL</td>
-    <td class="tv">${fF(totalMetaCat)}</td><td class="tv">${fF(totalRealCat)}</td><td class="tv">${atingBadge(totalMetaCat>0?totalRealCat/totalMetaCat*100:null)}</td>
-    <td class="tv">${fF(totalTrend)}</td><td class="tv">${atingBadge(totalMetaCat>0?totalTrend/totalMetaCat*100:null)}</td>
-    <td class="tv">${totalMargemGeral!=null?margemBadge(totalMargemGeral):'<span style="color:var(--t3)">—</span>'}</td>
-    <td class="tv">${prev?fF(prevTotalRealCat):'<span style="color:var(--t3)">sem base</span>'}</td>
-    <td class="tv">${deltaPillSmall(totalRealCat,prev?prevTotalRealCat:null)}</td>
-    <td class="tv">${prevTotalMargemGeral!=null?fPct(prevTotalMargemGeral):'<span style="color:var(--t3)">sem base</span>'}</td>
-    <td class="tv">${(totalMargemGeral!=null&&prevTotalMargemGeral!=null)?deltaPP(totalMargemGeral,prevTotalMargemGeral,false):'<span style="color:var(--t3)">sem base</span>'}</td></tr>`;
-  document.getElementById('tObjCat').innerHTML = `<thead><tr><th>% Peso Meta</th><th>% Peso Real</th><th>Categoria</th><th class="tv">Meta</th><th class="tv">Realizado</th><th class="tv">% Real</th><th class="tv">Tendência</th><th class="tv">% Tendência</th><th class="tv">Margem</th><th class="tv">Realizado ano ant.</th><th class="tv">Δ Fat. vs ano ant.</th><th class="tv">Margem ano ant.</th><th class="tv">Δ Margem vs ano ant.</th></tr></thead><tbody>${catBodyRows}${totalRow}</tbody>`;
-
-  // ── Cash Margem & Positivação por Categoria ──
+  // ── por Categoria: Meta/Realizado/Tendência/Margem/Cash Margem/Positivação —
+  // modelo de referência do usuário (planilha). Bonificação/%Bonif x Venda
+  // ficam como placeholder "—": não existe fonte de dados para isso no ETL
+  // atual (nenhuma tabela de bonificação/rebate é lida pelo BASE_CTE).
+  const metaCashCatSel = {};
+  meses.forEach(mes=>{
+    const mc = metaValRentCategoriaFor(d, mes) || {};
+    Object.keys(mc).forEach(cat=>{ metaCashCatSel[cat]=(metaCashCatSel[cat]||0)+mc[cat]; });
+  });
   // Positivação (clientes ativos) é COUNT DISTINCT por mês — somar vários meses
   // conta 2x um cliente que comprou em mais de um mês (não há como deduplicar
   // no front sem a lista de clientes por mês); avisamos quando isso se aplica.
-  const nCliSel = meses.reduce((s,mes)=>s+((d.por_mes_clientes&&d.por_mes_clientes[mes])||0),0);
-  const prevNCliSel = prev ? meses.reduce((s,mes)=>s+((prev.por_mes_clientes&&prev.por_mes_clientes[mes])||0),0) : null;
   const nCliCatSel = {};
   meses.forEach(mes=>{
     const mc = (d.por_mes_categoria_clientes && d.por_mes_categoria_clientes[mes]) || {};
@@ -2119,19 +2111,117 @@ function renderObjetivos(){
   document.getElementById('objCashNote').innerHTML = meses.length>1
     ? `<div class="alert">⚠ Positivação somada de ${meses.length} meses (${objLabelMeses(meses)}) — não deduplicada entre meses: um cliente que comprou em mais de um mês do período é contado mais de uma vez.</div>`
     : '';
-  const cashRows = catNames.slice().sort((a,b)=>((realCatSel[b]?realCatSel[b].r-realCatSel[b].c:0))-((realCatSel[a]?realCatSel[a].r-realCatSel[a].c:0))).map(cat=>{
-    const agg = realCatSel[cat]||{r:0,c:0}; const cash = agg.r-agg.c;
-    const pagg = prevRealCatSel[cat]; const prevCash = pagg?(pagg.r-pagg.c):null;
-    const nCliCat = nCliCatSel[cat]||0;
-    const pos = nCliSel>0 ? nCliCat/nCliSel*100 : null;
-    const prevNCliCat = prevNCliCatSel[cat];
-    const prevPos = (prevNCliSel && prevNCliSel>0 && prevNCliCat!=null) ? prevNCliCat/prevNCliSel*100 : null;
-    const estoque = (REAL_DATA._estoque && REAL_DATA._estoque.por_categoria[cat]) ? REAL_DATA._estoque.por_categoria[cat].valor_carga : null;
-    return `<tr><td class="tn">${cat}</td><td class="tv">${fF(cash)}</td><td class="tv">${deltaPillSmall(cash,prevCash)}</td>
-      <td class="tv">${fN(nCliCat)} (${pos!=null?pos.toFixed(1)+'%':'—'})</td><td class="tv">${deltaPP(pos,prevPos,false)}</td>
+
+  function catRow(nome, metaVal, r, c, prevR, prevC, trend, metaCash, nCliCat, prevNCliCat){
+    const pctReal = metaVal>0 ? r/metaVal*100 : null;
+    const pctTrend = metaVal>0 ? trend/metaVal*100 : null;
+    const margem = r>0 ? 100*(1-c/r) : null;
+    const prevMargem = (prevR!=null && prevR>0) ? 100*(1-prevC/prevR) : null;
+    const pesoMeta = totalMetaCat>0 ? metaVal/totalMetaCat*100 : 0;
+    const pesoReal = totalRealCat>0 ? r/totalRealCat*100 : 0;
+    const cash = r-c;
+    const pctRealCash = metaCash>0 ? cash/metaCash*100 : null;
+    const estoque = (REAL_DATA._estoque && REAL_DATA._estoque.por_categoria[nome]) ? REAL_DATA._estoque.por_categoria[nome].valor_carga : null;
+    return `<tr><td class="tv">${pesoMeta.toFixed(1)}%</td><td class="tv">${pesoReal.toFixed(1)}%</td><td class="tn">${nome}</td>
+      <td class="tv">${fF(metaVal)}</td><td class="tv">${fF(r)}</td><td class="tv">${atingBadge(pctReal)}</td>
+      <td class="tv">${fF(trend)}</td><td class="tv">${atingBadge(pctTrend)}</td>
+      <td class="tv">${prevR!=null?fF(prevR):'<span style="color:var(--t3)">sem base</span>'}</td>
+      <td class="tv">${deltaPillSmall(r,prevR)}</td>
+      <td class="tv">${metaCash>0?fF(metaCash):'<span style="color:var(--t3)">—</span>'}</td>
+      <td class="tv">${fF(cash)}</td>
+      <td class="tv">${atingBadge(pctRealCash)}</td>
+      <td class="tv">${margem!=null?margemBadge(margem):'<span style="color:var(--t3)">—</span>'}</td>
+      <td class="tv">${prevMargem!=null?fPct(prevMargem):'<span style="color:var(--t3)">sem base</span>'}</td>
+      <td class="tv">${(margem!=null&&prevMargem!=null)?deltaPP(margem,prevMargem,false):'<span style="color:var(--t3)">sem base</span>'}</td>
+      <td class="tv">${fN(nCliCat)}</td><td class="tv">${fN(prevNCliCat||0)}</td>
+      <td class="tv">${deltaPillSmall(nCliCat,prevNCliCat)}</td>
+      <td class="tv"><span style="color:var(--t3)">—</span></td><td class="tv"><span style="color:var(--t3)">—</span></td>
       <td class="tv">${estoque!=null?fF(estoque):'<span style="color:var(--t3)">—</span>'}</td></tr>`;
+  }
+  const catBodyRows = catNames.slice().sort((a,b)=>(metaCatSel[b]||0)-(metaCatSel[a]||0)).map(cat=>{
+    const agg = realCatSel[cat]||{r:0,c:0}; const pagg = prevRealCatSel[cat];
+    const trend = perMes.reduce((s,pm)=>s+tendencia((pm.catAgg[cat]&&pm.catAgg[cat].r)||0, d, pm.mes),0);
+    return catRow(cat, metaCatSel[cat]||0, agg.r, agg.c, pagg?pagg.r:null, pagg?pagg.c:null, trend, metaCashCatSel[cat]||0, nCliCatSel[cat]||0, prevNCliCatSel[cat]||0);
   }).join("");
-  document.getElementById('tObjCash').innerHTML = `<thead><tr><th>Categoria</th><th class="tv">Cash Margem</th><th class="tv">Δ vs ano ant.</th><th class="tv">Clientes ativos (Positivação)</th><th class="tv">Δ Positivação (p.p.)</th><th class="tv">Estoque Box (snapshot)</th></tr></thead><tbody>${cashRows}</tbody>`;
+  const totalNCli = catNames.reduce((s,c)=>s+(nCliCatSel[c]||0),0);
+  const prevTotalNCli = catNames.reduce((s,c)=>s+(prevNCliCatSel[c]||0),0);
+  const totalMetaCash = catNames.reduce((s,c)=>s+(metaCashCatSel[c]||0),0);
+  const totalCash = totalRealCat-totalCustoCat;
+  const totalRow = `<tr style="font-weight:700"><td class="tv">100,0%</td><td class="tv">100,0%</td><td class="tn">TOTAL GERAL</td>
+    <td class="tv">${fF(totalMetaCat)}</td><td class="tv">${fF(totalRealCat)}</td><td class="tv">${atingBadge(totalMetaCat>0?totalRealCat/totalMetaCat*100:null)}</td>
+    <td class="tv">${fF(totalTrend)}</td><td class="tv">${atingBadge(totalMetaCat>0?totalTrend/totalMetaCat*100:null)}</td>
+    <td class="tv">${prev?fF(prevTotalRealCat):'<span style="color:var(--t3)">sem base</span>'}</td>
+    <td class="tv">${deltaPillSmall(totalRealCat,prev?prevTotalRealCat:null)}</td>
+    <td class="tv">${totalMetaCash>0?fF(totalMetaCash):'<span style="color:var(--t3)">—</span>'}</td>
+    <td class="tv">${fF(totalCash)}</td>
+    <td class="tv">${atingBadge(totalMetaCash>0?totalCash/totalMetaCash*100:null)}</td>
+    <td class="tv">${totalMargemGeral!=null?margemBadge(totalMargemGeral):'<span style="color:var(--t3)">—</span>'}</td>
+    <td class="tv">${prevTotalMargemGeral!=null?fPct(prevTotalMargemGeral):'<span style="color:var(--t3)">sem base</span>'}</td>
+    <td class="tv">${(totalMargemGeral!=null&&prevTotalMargemGeral!=null)?deltaPP(totalMargemGeral,prevTotalMargemGeral,false):'<span style="color:var(--t3)">sem base</span>'}</td>
+    <td class="tv">${fN(totalNCli)}</td><td class="tv">${fN(prevTotalNCli)}</td>
+    <td class="tv">${deltaPillSmall(totalNCli,prevTotalNCli)}</td>
+    <td class="tv"><span style="color:var(--t3)">—</span></td><td class="tv"><span style="color:var(--t3)">—</span></td>
+    <td class="tv"><span style="color:var(--t3)">—</span></td></tr>`;
+  document.getElementById('tObjCat').innerHTML = `<thead><tr><th>% Peso Meta</th><th>% Peso Real</th><th>Categoria</th><th class="tv">Meta</th><th class="tv">Realizado</th><th class="tv">% Real</th><th class="tv">Tendência</th><th class="tv">% Tendência</th><th class="tv">Realizado ano ant.</th><th class="tv">Δ Fat. vs ano ant.</th><th class="tv">Meta Cash Margem</th><th class="tv">Real Cash Margem</th><th class="tv">% Real Cash Margem</th><th class="tv">Margem %</th><th class="tv">Margem % ano ant.</th><th class="tv">Δ Margem vs ano ant.</th><th class="tv">Positivação</th><th class="tv">Positivação ano ant.</th><th class="tv">Δ Positivação</th><th class="tv">Bonificação</th><th class="tv">% Bonif. x Venda</th><th class="tv">Estoque Box (snapshot)</th></tr></thead><tbody>${catBodyRows}${totalRow}</tbody>`;
+
+  renderObjFoco(d, prev, meses);
+}
+
+// ── Painel inferior "Detalhe por Categoria" — efeito cascata Gerente→
+// Supervisor→Vendedor. Clicar numa linha das tabelas acima seleciona/deseleciona
+// a entidade (objFocus); a entidade mais profunda selecionada define o escopo
+// deste painel. Meta por categoria só existe no nível empresa/semestre
+// (meta.hier_por_categoria não tem grão mensal em nenhum nível) — Realizado por
+// categoria só tem grão mensal em Gerente (hier_por_dia_categoria.gerente);
+// Supervisor/Vendedor caem pro semestre inteiro, com aviso (mesma limitação já
+// documentada em Margem & Cash Margem).
+let objFocus = { ger:null, sup:null, vend:null };
+function objFocusEntity(){
+  if (objFocus.vend) return {level:'vendedor', nome:objFocus.vend};
+  if (objFocus.sup) return {level:'supervisor', nome:objFocus.sup};
+  if (objFocus.ger) return {level:'gerente', nome:objFocus.ger};
+  return null;
+}
+function objFocusToggle(level, nome){
+  if (level==='gerente'){ objFocus.ger = (objFocus.ger===nome?null:nome); objFocus.sup=null; objFocus.vend=null; }
+  else if (level==='supervisor'){ objFocus.sup = (objFocus.sup===nome?null:nome); objFocus.vend=null; }
+  else if (level==='vendedor'){ objFocus.vend = (objFocus.vend===nome?null:nome); }
+  renderObjetivos();
+}
+function objFocoCategoriaRows(d, level, nome, meses){
+  if (level==='supervisor' || level==='vendedor'){
+    const base = hierUnionCategoria(d, level, [nome]);
+    return { rows: Object.entries(base), monthNote: `Sem dado mensal para ${level} — mostrando o semestre inteiro (${d.label}), independente do Período selecionado.` };
+  }
+  const merged = {};
+  meses.forEach(mes=>{
+    const agg = monthlyGerenteUnionCategoriaAgg(d, [nome], mes);
+    Object.keys(agg).forEach(cat=>{ const cur = merged[cat]||(merged[cat]={r:0,c:0}); cur.r+=agg[cat].r; cur.c+=agg[cat].c; });
+  });
+  const rows = Object.entries(merged).map(([cat,v])=>[cat,{r:v.r,c:v.c,m:v.r>0?+(100*(1-v.c/v.r)).toFixed(2):0}]);
+  return { rows, monthNote:null };
+}
+function renderObjFoco(d, prev, meses){
+  const foco = objFocusEntity();
+  if (!foco){
+    document.getElementById('objFocoSub').textContent = 'Selecione um Gerente, Supervisor ou Vendedor nas tabelas acima para ver o detalhe por categoria.';
+    document.getElementById('tObjFoco').innerHTML = '';
+    return;
+  }
+  const { level, nome } = foco;
+  const info = objFocoCategoriaRows(d, level, nome, meses);
+  const metaCat = hierUnionMetaCategoria(d, level, [nome]);
+  const prevInfo = prev ? objFocoCategoriaRows(prev, level, nome, level==='gerente'?meses:[]) : null;
+  const prevRowsByCat = {}; if (prevInfo) prevInfo.rows.forEach(([cat,v])=>{ prevRowsByCat[cat]=v; });
+  document.getElementById('objFocoSub').textContent = `${level==='gerente'?'Gerente':level==='supervisor'?'Supervisor':'Vendedor'}: ${nome}` +
+    (info.monthNote ? ` — ⚠ ${info.monthNote}` : ` — ${objLabelMeses(meses)}`);
+  const rows = info.rows.slice().sort((a,b)=>(b[1].r-b[1].c)-(a[1].r-a[1].c)).map(([cat,v])=>{
+    const cash = v.r-v.c; const margem = v.r>0?100*(1-v.c/v.r):null;
+    const metaFat = metaCat[cat]||0; const ating = metaFat>0 ? v.r/metaFat*100 : null;
+    const pv = prevRowsByCat[cat]; const prevCash = pv?(pv.r-pv.c):null; const prevMargem = pv?margemMFrom(pv.r,pv.c):null;
+    return `<tr><td class="tn">${cat}</td><td class="tv">${metaFat>0?fF(metaFat):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${fF(v.r)}</td><td class="tv">${atingBadge(ating)}</td><td class="tv">${deltaPillSmall(v.r,pv?pv.r:null)}</td><td class="tv">${fF(cash)}</td><td class="tv">${deltaPillSmall(cash,prevCash)}</td><td class="tv">${margem!=null?margemBadge(margem):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${deltaPP(margem,prevMargem,false)}</td></tr>`;
+  }).join("");
+  document.getElementById('tObjFoco').innerHTML = `<thead><tr><th>Categoria</th><th class="tv">Meta Faturamento</th><th class="tv">Realizado</th><th class="tv">% Ating.</th><th class="tv">Δ vs ano ant.</th><th class="tv">Cash Margem</th><th class="tv">Δ vs ano ant.</th><th class="tv">Margem %</th><th class="tv">Δ Margem (p.p.)</th></tr></thead><tbody>${rows}</tbody>`;
 }
 
 // ── 3B1B. METAS KG FUMO, PAPEL E PRODUTO ESTRATÉGICO ────────────
