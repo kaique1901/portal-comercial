@@ -1473,21 +1473,63 @@ function renderMcHierRows(prev, nodesObj, pathNames, nivel, mes, levelNames){
   return html;
 }
 
-// Cascata do Top 50 Clientes por Cash Margem: expande p/ mostrar faturamento
-// por categoria + o vendedor/supervisor responsável (top_clientes_cash_detalhe,
-// só cobre os 50 clientes do Top 50 empresa — sob filtro de hierarquia o
-// cliente pode não ter detalhe, tratado com aviso em vez de erro).
+// Detalhe de cascata do cliente (categoria + vendedor/supervisor): com filtro
+// de Mês usa top_clientes_detalhe_por_mes[mes][codigo] — cobre todo cliente
+// que apareceu em QUALQUER Top 50 do mês (Cash ou Margem), então nunca falta
+// cascata por causa do filtro de Mês; sem filtro usa a versão semestral
+// (semestralDict = top_clientes_cash_detalhe OU top_clientes_margem_detalhe,
+// uma por ranking). Sob filtro de hierarquia (Gerente/Supervisor/Vendedor) o
+// cliente pode vir de outra fonte (hier_top_clientes) e ainda não ter detalhe.
+function cliCascadeDetalhe(d, codigo, mes, semestralDict){
+  if (mes!=null){
+    const porMes = d.top_clientes_detalhe_por_mes && d.top_clientes_detalhe_por_mes[String(mes)];
+    return porMes ? porMes[String(codigo)] : null;
+  }
+  return semestralDict && semestralDict[String(codigo)];
+}
+// Δ vs ano anterior por categoria do cliente (top_clientes_categoria_ano_anterior,
+// mesmo intervalo de datas do ano passado) — soma os meses do período atual: 1
+// mês com filtro de Mês, ou o semestre inteiro sem filtro. Não depende do
+// cliente também estar no Top 50 do ano passado (ao contrário do antigo
+// prevLookupListCash, que buscava numa lista Top 50 fixa).
+function cliCategoriaAnoAnteriorFor(d, codigo, mes){
+  const src = d.top_clientes_categoria_ano_anterior && d.top_clientes_categoria_ano_anterior[String(codigo)];
+  if (!src) return null;
+  if (mes!=null) return src[String(mes)] || null;
+  const merged = {};
+  Object.values(src).forEach(porMes=>{
+    Object.entries(porMes).forEach(([cat,v])=>{
+      const cur = merged[cat] || (merged[cat] = {r:0,c:0});
+      cur.r += v.r; cur.c += v.c;
+    });
+  });
+  return merged;
+}
+function cliCashAnoAnteriorTotal(d, codigo, mes){
+  const cat = cliCategoriaAnoAnteriorFor(d, codigo, mes);
+  if (!cat) return null;
+  let r=0,c=0; Object.values(cat).forEach(v=>{r+=v.r;c+=v.c;});
+  return {r,c};
+}
+// Δ vs ano anterior por categoria do vendedor (hier_por_categoria.vendedor do
+// período anterior) — cubo do SEMESTRE (sem grão mensal), mesma limitação já
+// documentada em outras cascatas de Vendedor/Supervisor.
+function vendCategoriaAnoAnteriorFor(prev, nome, cat){
+  const src = prev && prev.hier_por_categoria && prev.hier_por_categoria.vendedor && prev.hier_por_categoria.vendedor[nome];
+  return src ? src[cat] : null;
+}
 let cashCliExpanded = new Set();
 function toggleCashCli(codigo){
   if (cashCliExpanded.has(codigo)) cashCliExpanded.delete(codigo); else cashCliExpanded.add(codigo);
   renderMargemCash();
 }
-function tblCashCli(rows, d, prev){
+function tblCashCli(rows, d, prev, mes){
   return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Cash Margem</th><th class="tv">Δ vs ano ant.</th><th class="tv">Faturamento</th><th class="tv">Margem %</th></tr></thead><tbody>${
     rows.map((r,i)=>{
       const cm = r.cash_margin!=null ? r.cash_margin : (r.r-r.c);
-      const pv = prevLookupListCash(prev,"top_clientes_cash","nome",r.nome);
-      const det = d.top_clientes_cash_detalhe && d.top_clientes_cash_detalhe[r.codigo];
+      const anoAnt = cliCashAnoAnteriorTotal(d, r.codigo, mes);
+      const pv = anoAnt ? (anoAnt.r-anoAnt.c) : prevLookupListCash(prev,"top_clientes_cash","nome",r.nome);
+      const det = cliCascadeDetalhe(d, r.codigo, mes, d.top_clientes_cash_detalhe);
       const hasDet = det && (Object.keys(det.categorias||{}).length || det.vendedor);
       const expanded = hasDet && cashCliExpanded.has(r.codigo);
       const toggle = hasDet ? `<span class="casc-toggle" onclick="toggleCashCli('${r.codigo}')">${expanded?'−':'+'}</span>` : '<span class="casc-toggle-spacer"></span>';
@@ -1496,9 +1538,11 @@ function tblCashCli(rows, d, prev){
         if (det.vendedor){
           html += `<tr class="casc-info"><td></td><td colspan="5" style="padding-left:24px">Vendedor: <strong>${escAttr(det.vendedor.codigo)} - ${escAttr(det.vendedor.nome)}</strong> · Supervisor: <strong>${escAttr(det.vendedor.supervisor)}</strong></td></tr>`;
         }
+        const catAnoAnt = cliCategoriaAnoAnteriorFor(d, r.codigo, mes) || {};
         Object.entries(det.categorias||{}).sort((a,b)=>b[1].r-a[1].r).forEach(([cat,v])=>{
           const cmCat = v.r-v.c;
-          html += `<tr class="casc-lvl1"><td></td><td style="padding-left:24px">${escAttr(cat)}</td><td class="tv">${fF(cmCat)}</td><td class="tv"></td><td class="tv">${fF(v.r)}</td><td class="tv">${margemBadge(margemMFrom(v.r,v.c))}</td></tr>`;
+          const pvCat = catAnoAnt[cat] ? (catAnoAnt[cat].r-catAnoAnt[cat].c) : null;
+          html += `<tr class="casc-lvl1"><td></td><td style="padding-left:24px">${escAttr(cat)}</td><td class="tv">${fF(cmCat)}</td><td class="tv">${deltaPillSmall(cmCat,pvCat)}</td><td class="tv">${fF(v.r)}</td><td class="tv">${margemBadge(margemMFrom(v.r,v.c))}</td></tr>`;
         });
       }
       return html;
@@ -1514,7 +1558,7 @@ function toggleCashVend(nome){
   if (cashVendExpanded.has(nome)) cashVendExpanded.delete(nome); else cashVendExpanded.add(nome);
   renderMargemCash();
 }
-function tblCashVend(rows, d){
+function tblCashVend(rows, d, prev){
   return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Cash Margem</th><th class="tv">Δ vs ano ant.</th><th class="tv">Faturamento</th><th class="tv">Margem %</th></tr></thead><tbody>${
     rows.map((r,i)=>{
       const label = (r.codigo?escAttr(r.codigo)+" - ":"") + escAttr(r.nome);
@@ -1528,7 +1572,9 @@ function tblCashVend(rows, d){
         html += `<tr class="casc-info"><td></td><td colspan="5" style="padding-left:24px">Gerente: <strong>${escAttr(gerente||'—')}</strong> · Supervisor: <strong>${escAttr(r.supervisor||'—')}</strong></td></tr>`;
         Object.entries(cats).sort((a,b)=>b[1].r-a[1].r).forEach(([cat,v])=>{
           const cmCat = v.r-v.c;
-          html += `<tr class="casc-lvl1"><td></td><td style="padding-left:24px">${escAttr(cat)}</td><td class="tv">${fF(cmCat)}</td><td class="tv"></td><td class="tv">${fF(v.r)}</td><td class="tv">${margemBadge(v.m)}</td></tr>`;
+          const pvCat = vendCategoriaAnoAnteriorFor(prev, r.nome, cat);
+          const pvCm = pvCat ? (pvCat.r-pvCat.c) : null;
+          html += `<tr class="casc-lvl1"><td></td><td style="padding-left:24px">${escAttr(cat)}</td><td class="tv">${fF(cmCat)}</td><td class="tv">${deltaPillSmall(cmCat,pvCm)}</td><td class="tv">${fF(v.r)}</td><td class="tv">${margemBadge(v.m)}</td></tr>`;
         });
       }
       return html;
@@ -1560,23 +1606,28 @@ function toggleMargemCli(codigo){
 // Cascata igual à de tblCashCli (categoria + vendedor/supervisor responsável),
 // mas usando top_clientes_margem_detalhe — clientes diferentes do Top 50 por
 // Cash Margem, então precisam do próprio detalhe.
-function tblMargemCli(rows, d, prev){
+function tblMargemCli(rows, d, prev, mes){
   return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Margem %</th><th class="tv">Δ Margem (p.p.)</th><th class="tv">Faturamento</th><th class="tv">Cash Margem</th></tr></thead><tbody>${
     rows.map((r,i)=>{
-      const prevFull = prevLookupListFull(prev,"top_clientes_margem","nome",r.nome);
+      const anoAnt = cliCashAnoAnteriorTotal(d, r.codigo, mes);
+      let pvM;
+      if (anoAnt) pvM = margemMFrom(anoAnt.r, anoAnt.c);
+      else { const prevFull = prevLookupListFull(prev,"top_clientes_margem","nome",r.nome); pvM = prevFull ? prevFull.m : null; }
       const cm = r.cash_margin!=null ? r.cash_margin : (r.r-r.c);
-      const det = d.top_clientes_margem_detalhe && d.top_clientes_margem_detalhe[r.codigo];
+      const det = cliCascadeDetalhe(d, r.codigo, mes, d.top_clientes_margem_detalhe);
       const hasDet = det && (Object.keys(det.categorias||{}).length || det.vendedor);
       const expanded = hasDet && margemCliExpanded.has(r.codigo);
       const toggle = hasDet ? `<span class="casc-toggle" onclick="toggleMargemCli('${r.codigo}')">${expanded?'−':'+'}</span>` : '<span class="casc-toggle-spacer"></span>';
-      let html = `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${toggle}${escAttr(r.nome)}</td><td class="tv tn">${margemBadge(r.m)}</td><td class="tv">${deltaPP(r.m,prevFull?prevFull.m:null,false)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${fF(cm)}</td></tr>`;
+      let html = `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${toggle}${escAttr(r.nome)}</td><td class="tv tn">${margemBadge(r.m)}</td><td class="tv">${deltaPP(r.m,pvM,false)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${fF(cm)}</td></tr>`;
       if (expanded){
         if (det.vendedor){
           html += `<tr class="casc-info"><td></td><td colspan="5" style="padding-left:24px">Vendedor: <strong>${escAttr(det.vendedor.codigo)} - ${escAttr(det.vendedor.nome)}</strong> · Supervisor: <strong>${escAttr(det.vendedor.supervisor)}</strong></td></tr>`;
         }
+        const catAnoAnt = cliCategoriaAnoAnteriorFor(d, r.codigo, mes) || {};
         Object.entries(det.categorias||{}).sort((a,b)=>b[1].r-a[1].r).forEach(([cat,v])=>{
           const cmCat = v.r-v.c;
-          html += `<tr class="casc-lvl1"><td></td><td style="padding-left:24px">${escAttr(cat)}</td><td class="tv">${margemBadge(margemMFrom(v.r,v.c))}</td><td class="tv"></td><td class="tv">${fF(v.r)}</td><td class="tv">${fF(cmCat)}</td></tr>`;
+          const pvCatM = catAnoAnt[cat] ? margemMFrom(catAnoAnt[cat].r, catAnoAnt[cat].c) : null;
+          html += `<tr class="casc-lvl1"><td></td><td style="padding-left:24px">${escAttr(cat)}</td><td class="tv">${margemBadge(margemMFrom(v.r,v.c))}</td><td class="tv">${deltaPP(margemMFrom(v.r,v.c),pvCatM,false)}</td><td class="tv">${fF(v.r)}</td><td class="tv">${fF(cmCat)}</td></tr>`;
         });
       }
       return html;
@@ -1596,7 +1647,7 @@ function toggleMargemVend(nome){
   renderMargemCash();
 }
 // Cascata igual à de tblCashVend (Gerente/Supervisor + faturamento por categoria).
-function tblMargemVend(rows, d){
+function tblMargemVend(rows, d, prev){
   return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Margem %</th><th class="tv">Meta Margem %</th><th class="tv">% Ating.</th><th class="tv">Δ Margem (p.p.)</th><th class="tv">Faturamento</th><th class="tv">Cash Margem</th></tr></thead><tbody>${
     rows.map((r,i)=>{
       const label = (r.codigo?escAttr(r.codigo)+" - ":"") + escAttr(r.nome);
@@ -1612,7 +1663,9 @@ function tblMargemVend(rows, d){
         html += `<tr class="casc-info"><td></td><td colspan="7" style="padding-left:24px">Gerente: <strong>${escAttr(gerente||'—')}</strong> · Supervisor: <strong>${escAttr(r.supervisor||'—')}</strong></td></tr>`;
         Object.entries(cats).sort((a,b)=>b[1].r-a[1].r).forEach(([cat,v])=>{
           const cmCat = v.r-v.c;
-          html += `<tr class="casc-lvl1"><td></td><td style="padding-left:24px">${escAttr(cat)}</td><td class="tv">${margemBadge(v.m)}</td><td class="tv"></td><td class="tv"></td><td class="tv"></td><td class="tv">${fF(v.r)}</td><td class="tv">${fF(cmCat)}</td></tr>`;
+          const pvCat = vendCategoriaAnoAnteriorFor(prev, r.nome, cat);
+          const pvCatM = pvCat ? margemMFrom(pvCat.r, pvCat.c) : null;
+          html += `<tr class="casc-lvl1"><td></td><td style="padding-left:24px">${escAttr(cat)}</td><td class="tv">${margemBadge(v.m)}</td><td class="tv"></td><td class="tv"></td><td class="tv">${deltaPP(v.m,pvCatM,false)}</td><td class="tv">${fF(v.r)}</td><td class="tv">${fF(cmCat)}</td></tr>`;
         });
       }
       return html;
@@ -1691,63 +1744,66 @@ function renderMargemCash(){
   const level = hierLevelActive();
   const names = level ? hierSelectedNames(level) : [];
   let cliList, prodList, cliListM, prodListM;
-  const mesTopNote = ST.mes!=null ? ' Os rankings de Cliente/Produto/Vendedor abaixo não têm dado mensal neste cubo — mostram o semestre inteiro, independente do filtro de Mês.' : '';
+  // Sob filtro de Gerente/Supervisor/Vendedor, Cliente/Produto ainda usam o
+  // cubo hier_top_* (só por semestre — não existe cubo mensal por hierarquia).
+  const mesTopNoteHier = ST.mes!=null ? ' Os rankings de Cliente/Produto abaixo não têm dado mensal neste recorte de hierarquia — mostram o semestre inteiro, independente do filtro de Mês.' : '';
   if (level){
     cliList = topClientesFonte(d, level, names).slice().sort((a,b)=>(b.r-b.c)-(a.r-a.c));
     prodList = topProdutosFonte(d, level, names).slice().sort((a,b)=>(b.r-b.c)-(a.r-a.c));
     cliListM = topClientesFonte(d, level, names).slice().sort((a,b)=>b.m-a.m);
     prodListM = topProdutosFonte(d, level, names).slice().sort((a,b)=>b.m-a.m);
-    document.getElementById("cashHierNote").innerHTML = `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: Cliente/Produto usam o Top 50 por Receita daquele recorte, reordenado por Cash Margem ou por Margem % (aproximação — o recorte pode não conter o cliente/produto de maior margem/cash margem da empresa como um todo).${mesTopNote}</div>`;
+    document.getElementById("cashHierNote").innerHTML = `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: Cliente/Produto usam o Top 50 por Receita daquele recorte, reordenado por Cash Margem ou por Margem % (aproximação — o recorte pode não conter o cliente/produto de maior margem/cash margem da empresa como um todo).${mesTopNoteHier}</div>`;
   } else {
-    cliList = filtrarClientes(d.top_clientes_cash);
-    prodList = d.top_produtos_cash.filter(p=>ST.cat.length===0||ST.cat.includes(p.categoria));
-    cliListM = filtrarClientes(d.top_clientes_margem);
-    prodListM = d.top_produtos_margem.filter(p=>ST.cat.length===0||ST.cat.includes(p.categoria));
-    document.getElementById("cashHierNote").innerHTML = mesTopNote ? `<div class="alert">⚠${mesTopNote}</div>` : "";
+    // Sem filtro de hierarquia: Top 50 respeita o filtro de Mês via os cubos
+    // mensais dedicados (top_clientes_cash_por_mes etc.) — antes sempre
+    // mostrava o semestre inteiro mesmo com um mês selecionado.
+    const mesKey = ST.mes!=null ? String(ST.mes) : null;
+    const cliCashSrc = mesKey!=null ? ((d.top_clientes_cash_por_mes&&d.top_clientes_cash_por_mes[mesKey])||[]) : d.top_clientes_cash;
+    const cliMargemSrc = mesKey!=null ? ((d.top_clientes_margem_por_mes&&d.top_clientes_margem_por_mes[mesKey])||[]) : d.top_clientes_margem;
+    const prodCashSrc = mesKey!=null ? ((d.top_produtos_cash_por_mes&&d.top_produtos_cash_por_mes[mesKey])||[]) : d.top_produtos_cash;
+    const prodMargemSrc = mesKey!=null ? ((d.top_produtos_margem_por_mes&&d.top_produtos_margem_por_mes[mesKey])||[]) : d.top_produtos_margem;
+    cliList = filtrarClientes(cliCashSrc);
+    prodList = prodCashSrc.filter(p=>ST.cat.length===0||ST.cat.includes(p.categoria));
+    cliListM = filtrarClientes(cliMargemSrc);
+    prodListM = prodMargemSrc.filter(p=>ST.cat.length===0||ST.cat.includes(p.categoria));
+    document.getElementById("cashHierNote").innerHTML = "";
   }
-  // Vendedor: sem filtro usa o Top 50 da empresa; com Gerente/Supervisor/Vendedor
-  // filtrado, mostra TODOS os vendedores daquele recorte (full_vendedores, sem
-  // cap), comparados ao mesmo vendedor no período anterior (full_vendedores do
-  // prev, também sem cap — mais preciso que procurar num Top 50 que pode não
-  // conter o vendedor).
+  // Vendedor: sempre calculado a partir de full_vendedores + realizado_por_mes
+  // (mesmo grão exato do mês, com ou sem filtro de hierarquia — não depende de
+  // Top 50 pré-calculado). Sem filtro usa o Top 50 da empresa (slice 50); com
+  // Gerente/Supervisor/Vendedor filtrado, mostra TODOS os vendedores daquele
+  // recorte, sem cap.
   const effGerVend = effectiveGerentes(d), effSupVend = effectiveSupervisores(d);
   let vendRowsCash, vendRowsMargem, vendSubTxt;
+  const baseVendRows = Object.entries(d.full_vendedores)
+    .filter(([n,v])=>(!effGerVend||effGerVend.has(gerenteDoVendedor(d,n)))&&(!effSupVend||effSupVend.has(v.supervisor))&&(ST.vend.length===0||ST.vend.includes(n)))
+    .map(([n,v])=>{
+      const mv = margemValueFor(d, 'vendedor', n, ST.mes);
+      const m = margemMFrom(mv.r, mv.c);
+      const pe = prevMargemLookup(prev, 'vendedor', n, ST.mes);
+      const metaFat = metaGeralFor(d,'vendedor',n,ST.mes), metaCash = metaValRentFor(d,'vendedor',n,ST.mes);
+      return { nome:n, codigo:v.codigo, supervisor:v.supervisor, r:mv.r, c:mv.c, m, cash_margin:mv.r-mv.c,
+        prevCm: pe?(pe.r-pe.c):null, prevM: pe?pe.m:null, metaFat, metaCash, metaMargem: metaFat>0?metaCash/metaFat*100:0 };
+    })
+    .filter(row=>level || row.r>0 || row.c>0);
   if (level){
-    const baseVendRows = Object.entries(d.full_vendedores)
-      .filter(([n,v])=>(!effGerVend||effGerVend.has(gerenteDoVendedor(d,n)))&&(!effSupVend||effSupVend.has(v.supervisor))&&(ST.vend.length===0||ST.vend.includes(n)))
-      .map(([n,v])=>{
-        const pe = prev && prev.full_vendedores ? prev.full_vendedores[n] : null;
-        const metaFat = metaGeralFor(d,'vendedor',n,ST.mes), metaCash = metaValRentFor(d,'vendedor',n,ST.mes);
-        return { nome:n, codigo:v.codigo, supervisor:v.supervisor, r:v.r, c:v.c, m:v.m, cash_margin:v.r-v.c,
-          prevCm: pe?(pe.r-pe.c):null, prevM: pe?pe.m:null, metaFat, metaCash, metaMargem: metaFat>0?metaCash/metaFat*100:0 };
-      });
     vendRowsCash = baseVendRows.slice().sort((a,b)=>b.cash_margin-a.cash_margin);
     vendRowsMargem = baseVendRows.slice().sort((a,b)=>b.m-a.m);
     vendSubTxt = `${baseVendRows.length} vendedores — recortado por ${level}: ${labelJoin(names)}`;
   } else {
-    vendRowsCash = d.top_vendedores_cash
-      .filter(v=>(ST.sup.length===0||ST.sup.includes(v.supervisor))&&(ST.vend.length===0||ST.vend.includes(v.nome)))
-      .slice(0,50)
-      .map(v=>({...v, prevCm: prevLookupListCash(prev,"top_vendedores_cash","nome",v.nome)}));
-    vendRowsMargem = d.top_vendedores_margem
-      .filter(v=>(ST.sup.length===0||ST.sup.includes(v.supervisor))&&(ST.vend.length===0||ST.vend.includes(v.nome)))
-      .slice(0,50)
-      .map(v=>{
-        const prevFull = prevLookupListFull(prev,"top_vendedores_margem","nome",v.nome);
-        const metaFat = metaGeralFor(d,'vendedor',v.nome,ST.mes), metaCash = metaValRentFor(d,'vendedor',v.nome,ST.mes);
-        return {...v, prevM: prevFull?prevFull.m:null, metaFat, metaCash, metaMargem: metaFat>0?metaCash/metaFat*100:0};
-      });
-    vendSubTxt = "Top 50 (empresa)";
+    vendRowsCash = baseVendRows.slice().sort((a,b)=>b.cash_margin-a.cash_margin).slice(0,50);
+    vendRowsMargem = baseVendRows.slice().sort((a,b)=>b.m-a.m).slice(0,50);
+    vendSubTxt = ST.mes!=null ? "Top 50 (empresa, mês filtrado)" : "Top 50 (empresa)";
   }
   document.getElementById("cashVendSub").textContent = vendSubTxt;
   document.getElementById("margemVendSub").textContent = vendSubTxt;
 
-  document.getElementById("tCashCli").innerHTML = tblCashCli(cliList.slice(0,50), d, prev);
+  document.getElementById("tCashCli").innerHTML = tblCashCli(cliList.slice(0,50), d, prev, ST.mes);
   document.getElementById("tCashProd").innerHTML = tblCashProd(prodList.slice(0,50), prev);
-  document.getElementById("tCashVend").innerHTML = tblCashVend(vendRowsCash, d);
-  document.getElementById("tMargemCli").innerHTML = tblMargemCli(cliListM.slice(0,50), d, prev);
+  document.getElementById("tCashVend").innerHTML = tblCashVend(vendRowsCash, d, prev);
+  document.getElementById("tMargemCli").innerHTML = tblMargemCli(cliListM.slice(0,50), d, prev, ST.mes);
   document.getElementById("tMargemProd").innerHTML = tblMargemProd(prodListM.slice(0,50), prev);
-  document.getElementById("tMargemVend").innerHTML = tblMargemVend(vendRowsMargem, d);
+  document.getElementById("tMargemVend").innerHTML = tblMargemVend(vendRowsMargem, d, prev);
 }
 
 // ── 3B. META X REALIZADO ───────────────────────────────────────

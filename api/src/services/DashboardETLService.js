@@ -190,6 +190,67 @@ class DashboardETLService {
         FROM tmp_base_vendas WHERE CodCli = ANY($1::int[]) AND Vendedor IS NOT NULL
         GROUP BY CodCli, CodVen, Vendedor, supervisor ORDER BY CodCli, SUM(Total) DESC`, [topCliMargemCodes]) : [];
       const topVendMargem = await q(`SELECT CodVen codigo, Vendedor nome, supervisor, SUM(Total) r, SUM(customedio) c FROM tmp_base_vendas WHERE Vendedor IS NOT NULL AND Total>0 GROUP BY CodVen, Vendedor, supervisor ORDER BY (1-SUM(customedio)/SUM(Total)) DESC LIMIT 50`);
+
+      // ── Top 50 Cliente/Produto POR MÊS (Cash Margem e Margem %) ────────────
+      // O filtro de Mês do painel (ST.mes) precisa de um Top 50 PRÓPRIO por mês —
+      // um cliente pode ser Top 50 no semestre e não num mês específico, e
+      // vice-versa. Vendedor NÃO precisa disso: full_vendedores/realizado_por_mes
+      // já cobrem TODOS os vendedores por mês, então o Top 50 mensal é calculado
+      // no front a partir desse cubo (sem query nova).
+      const cliCashPorMes = await q(`SELECT codigo, nome, mes, r, c FROM (
+        SELECT CodCli codigo, Cliente nome, Mes mes, SUM(Total) r, SUM(customedio) c,
+          ROW_NUMBER() OVER (PARTITION BY Mes ORDER BY (SUM(Total)-SUM(customedio)) DESC) rn
+        FROM tmp_base_vendas WHERE Cliente IS NOT NULL GROUP BY CodCli, Cliente, Mes
+      ) t WHERE rn<=50 ORDER BY mes, rn`);
+      const cliMargemPorMes = await q(`SELECT codigo, nome, mes, r, c FROM (
+        SELECT CodCli codigo, Cliente nome, Mes mes, SUM(Total) r, SUM(customedio) c,
+          ROW_NUMBER() OVER (PARTITION BY Mes ORDER BY (1-SUM(customedio)/SUM(Total)) DESC) rn
+        FROM tmp_base_vendas WHERE Cliente IS NOT NULL AND Total>0 GROUP BY CodCli, Cliente, Mes
+        HAVING SUM(Total)>=500
+      ) t WHERE rn<=50 ORDER BY mes, rn`);
+      const prodCashPorMes = await q(`SELECT codigo, nome, categoria, mes, r, c, qq FROM (
+        SELECT Codigo codigo, Descricao nome, categoria, Mes mes, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq,
+          ROW_NUMBER() OVER (PARTITION BY Mes ORDER BY (SUM(Total)-SUM(customedio)) DESC) rn
+        FROM tmp_base_vendas WHERE Descricao IS NOT NULL GROUP BY Codigo, Descricao, categoria, Mes
+      ) t WHERE rn<=50 ORDER BY mes, rn`);
+      const prodMargemPorMes = await q(`SELECT codigo, nome, categoria, mes, r, c, qq FROM (
+        SELECT Codigo codigo, Descricao nome, categoria, Mes mes, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq,
+          ROW_NUMBER() OVER (PARTITION BY Mes ORDER BY (1-SUM(customedio)/SUM(Total)) DESC) rn
+        FROM tmp_base_vendas WHERE Descricao IS NOT NULL AND Total>0 GROUP BY Codigo, Descricao, categoria, Mes
+        HAVING SUM(Total)>=500
+      ) t WHERE rn<=50 ORDER BY mes, rn`);
+
+      // Cascata (categoria + vendedor/supervisor) de TODOS os clientes que aparecem
+      // em QUALQUER Top 50 de cliente (semestre ou por mês, Cash ou Margem) — uma
+      // query só, com quebra por mês (soma-se no front p/ ver o semestre).
+      const allCliCodes = [...new Set([
+        ...topCliCash.map(r=>r.codigo), ...topCliMargem.map(r=>r.codigo),
+        ...cliCashPorMes.map(r=>r.codigo), ...cliMargemPorMes.map(r=>r.codigo),
+      ])];
+      const cliCatPorMes = allCliCodes.length ? await q(`
+        SELECT CodCli codigo, Mes mes, categoria, SUM(Total) r, SUM(customedio) c
+        FROM tmp_base_vendas WHERE CodCli = ANY($1::int[]) AND categoria IS NOT NULL
+        GROUP BY CodCli, Mes, categoria`, [allCliCodes]) : [];
+      const cliVendPorMes = allCliCodes.length ? await q(`
+        SELECT CodCli codigo, Mes mes, CodVen vcodigo, Vendedor vnome, supervisor, SUM(Total) r
+        FROM tmp_base_vendas WHERE CodCli = ANY($1::int[]) AND Vendedor IS NOT NULL
+        GROUP BY CodCli, Mes, CodVen, Vendedor, supervisor ORDER BY CodCli, Mes, SUM(Total) DESC`, [allCliCodes]) : [];
+
+      // Ano anterior (mesmo range de datas, ano-1) para esses MESMOS codcli — sem
+      // isso, o comparativo do cliente no efeito cascata só existiria se ele TAMBÉM
+      // estivesse no Top 50 do ano passado (raro: rankings de anos diferentes quase
+      // não se sobrepõem). Reaproveita o BASE_CTE (mesmas regras de categoria/
+      // desconto/custo do resto do painel) só trocando o range de datas e filtrando
+      // pelos codcli — não recria o cubo inteiro do ano anterior.
+      const prevAno = parseInt(periodo.ini.slice(0, 4), 10) - 1;
+      const prevIni = `${prevAno}${periodo.ini.slice(4)}`;
+      const prevFim = `${prevAno}${periodo.fim.slice(4)}`;
+      const cliCatPorMesAnoAnterior = allCliCodes.length ? await q(`
+        SELECT codcli codigo, mes, categoria, SUM(total) r, SUM(customedio) c
+        FROM (${BASE_CTE}) base
+        WHERE base.codcli = ANY($3::int[])
+        GROUP BY codcli, mes, categoria`, [prevIni, prevFim, allCliCodes]) : [];
+
       const pag = await q(`SELECT categoria, tipo, tipocob, SUM(Total) v FROM tmp_base_vendas WHERE categoria IS NOT NULL GROUP BY categoria, tipo, tipocob`);
       const janRange = (await q(`SELECT MIN(DataPed) ini, MAX(DataPed) fim FROM tmp_base_vendas`))[0];
       const janProd = await q(`SELECT Codigo codigo, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq FROM tmp_base_vendas WHERE DataPed >= (SELECT MAX(DataPed) FROM tmp_base_vendas) - INTERVAL '89 days' GROUP BY Codigo`);
@@ -233,7 +294,10 @@ class DashboardETLService {
         porGerMes, porSupMes, porVendMes,
         porMesCli, porMesCatCli, porMesFumo, porMesFumoTotal, realFumoGer, realFumoSup, realFumoVend, fullVend, qual,
         topCliCash, topCliCashCat, topCliCashVend, topProdCash, topVendCash,
-        topCliMargem, topCliMargemCat, topCliMargemVend, topProdMargem, topVendMargem, pag, janRange, janProd, abcdCli,
+        topCliMargem, topCliMargemCat, topCliMargemVend, topProdMargem, topVendMargem,
+        cliCashPorMes, cliMargemPorMes, prodCashPorMes, prodMargemPorMes,
+        cliCatPorMes, cliVendPorMes, cliCatPorMesAnoAnterior,
+        pag, janRange, janProd, abcdCli,
         hierTopCli, hierTopProd, hierCat, hierPag, hierAbcdRows, hierDiaGer, hierDiaCatGer, meta,
         cascCat, cascGrp, cascForn, cascProd,
         porCanal, porInadimplente, porStatus
@@ -508,6 +572,53 @@ class DashboardETLService {
       entry.vendedor = { codigo: String(row.vcodigo), nome: row.vnome, supervisor: row.supervisor };
     }
 
+    // ── Top 50 Cliente/Produto POR MÊS + cascata mensal + ano anterior ─────
+    // groupByMes: agrupa linhas (que já têm campo mes) num dict {mes: [linhas]}.
+    const groupByMes = (rows, mapFn) => {
+      const byMes = {};
+      (rows || []).forEach(row => { const m = String(row.mes); (byMes[m] = byMes[m] || []).push(row); });
+      const out = {};
+      for (const m in byMes) out[m] = mapFn(byMes[m]);
+      return out;
+    };
+    const top_clientes_cash_por_mes = groupByMes(d.cliCashPorMes, rows => mapCash(rows));
+    const top_clientes_margem_por_mes = groupByMes(d.cliMargemPorMes, rows => mapCash(rows));
+    const top_produtos_cash_por_mes = groupByMes(d.prodCashPorMes, rows => mapCash(rows, row => ({ categoria: row.categoria, q: round2(num(row.qq)) })));
+    const top_produtos_margem_por_mes = groupByMes(d.prodMargemPorMes, rows => mapCash(rows, row => ({ categoria: row.categoria, q: round2(num(row.qq)) })));
+
+    // top_clientes_detalhe_por_mes[mes][codcli] = { categorias:{cat:{r,c}}, vendedor:{...} }
+    // — cobre todo cliente que apareceu em QUALQUER Top 50 (semestre ou mês, Cash
+    // ou Margem); por isso a cascata nunca fica sem detalhe por causa do filtro
+    // de Mês (é a mesma fonte usada tanto com filtro quanto sem).
+    const top_clientes_detalhe_por_mes = {};
+    for (const row of d.cliCatPorMes || []) {
+      const m = String(row.mes), k = String(row.codigo);
+      const porMes = top_clientes_detalhe_por_mes[m] || (top_clientes_detalhe_por_mes[m] = {});
+      const entry = porMes[k] || (porMes[k] = { categorias: {}, vendedor: null });
+      entry.categorias[row.categoria] = { r: round2(num(row.r)), c: round2(num(row.c)) };
+    }
+    const vendCliMesSeen = new Set();
+    for (const row of d.cliVendPorMes || []) {
+      const m = String(row.mes), k = String(row.codigo), seenKey = m + '|' + k;
+      if (vendCliMesSeen.has(seenKey)) continue; // ORDER BY CodCli, Mes, receita DESC — 1ª linha = vendedor dominante
+      vendCliMesSeen.add(seenKey);
+      const porMes = top_clientes_detalhe_por_mes[m] || (top_clientes_detalhe_por_mes[m] = {});
+      const entry = porMes[k] || (porMes[k] = { categorias: {}, vendedor: null });
+      entry.vendedor = { codigo: String(row.vcodigo), nome: row.vnome, supervisor: row.supervisor };
+    }
+
+    // top_clientes_categoria_ano_anterior[codcli][mes][categoria] = {r,c} — MESMO
+    // cliente, ano-1, mesmo intervalo de datas (via BASE_CTE). O front soma os
+    // meses que precisar (1 mês ou o semestre inteiro) para o comparativo — não
+    // depende do cliente TAMBÉM estar no Top 50 do ano passado (raro).
+    const top_clientes_categoria_ano_anterior = {};
+    for (const row of d.cliCatPorMesAnoAnterior || []) {
+      const k = String(row.codigo), m = String(row.mes);
+      const porCli = top_clientes_categoria_ano_anterior[k] || (top_clientes_categoria_ano_anterior[k] = {});
+      const porMes = porCli[m] || (porCli[m] = {});
+      porMes[row.categoria] = { r: round2(num(row.r)), c: round2(num(row.c)) };
+    }
+
     const pagamento_por_categoria = buildPag(d.pag);
     const hier_pagamento_por_categoria = {}; for (const lvl of Object.keys(d.hierPag)) hier_pagamento_por_categoria[lvl] = buildPagHier(d.hierPag[lvl]);
 
@@ -538,6 +649,8 @@ class DashboardETLService {
       por_mes_clientes, por_mes_categoria_clientes, por_mes_fumokg, por_mes_fumokg_total, realizado_fumokg, full_vendedores, realizado_por_mes, qualidade,
       top_clientes_cash, top_clientes_cash_detalhe, top_produtos_cash, top_vendedores_cash,
       top_clientes_margem, top_clientes_margem_detalhe, top_produtos_margem, top_vendedores_margem,
+      top_clientes_cash_por_mes, top_clientes_margem_por_mes, top_produtos_cash_por_mes, top_produtos_margem_por_mes,
+      top_clientes_detalhe_por_mes, top_clientes_categoria_ano_anterior,
       pagamento_por_categoria, hier_pagamento_por_categoria,
       janela90, por_produto_janela90, abcd,
       hier_top_clientes, hier_top_produtos, hier_por_categoria, hier_abcd, hier_por_dia, hier_por_dia_categoria,
