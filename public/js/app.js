@@ -1978,6 +1978,15 @@ function renderObjetivos(){
   const ano = meses.map(m=>monthYearFor(d,m)).find(Boolean);
   document.getElementById('objSub').textContent = `${objLabelMeses(meses)}${ano?"/"+ano:""} — ${d.label}` + (prev?` · comparado ao(s) mesmo(s) mês(es) de ${prev.label}`:" · sem semestre equivalente no ano anterior");
 
+  // Meses do Período selecionado sem NENHUM dado no ERP (nem meta nem venda) —
+  // normalmente meses futuros ainda não fechados/cadastrados. Sem este aviso,
+  // um Bimestre/Semestre parecia "não respeitar o filtro" quando na verdade os
+  // totais já eram só dos meses que existem no ERP (os demais somam 0).
+  const mesesSemDados = meses.filter(m=>!(d.por_mes && d.por_mes[m]) && !(d.meta.por_mes_categoria && d.meta.por_mes_categoria[m]));
+  const mesesSemDadosNote = mesesSemDados.length
+    ? `⚠ ${objLabelMeses(mesesSemDados)}/${ano||''} ainda ${mesesSemDados.length>1?'não têm meta nem venda cadastrada no ERP (provavelmente meses futuros)':'não tem meta nem venda cadastrada no ERP (provavelmente mês futuro)'} — o total do período soma só os meses com dado real.`
+    : '';
+
   const hasProdOrCliFilter = ST.grp.length || ST.cli.length;
   let scope = null;
   if (ST.vend.length){
@@ -2034,6 +2043,7 @@ function renderObjetivos(){
 
   const objBanner = scope ? `Recortado por <strong>${scope.label}</strong> — Tendência não disponível com este filtro (requer dado diário, só existe no nível empresa).` : "";
   document.getElementById('obj-kpis').innerHTML =
+    (mesesSemDadosNote?`<div class="alert" style="grid-column:1/-1">${mesesSemDadosNote}</div>`:"") +
     (objBanner?`<div class="alert" style="grid-column:1/-1">${objBanner}</div>`:"") +
     (hasProdOrCliFilter?`<div class="alert" style="grid-column:1/-1">⚠ Filtro de Categoria/Grupo/Cliente é ignorado nesta aba (a meta não tem essa granularidade) — mostrando o total do período${scope?" recortado por "+scope.label:""}.</div>`:"") +
     (totalMetaGeral<=0
