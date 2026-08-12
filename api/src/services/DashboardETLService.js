@@ -384,6 +384,21 @@ class DashboardETLService {
       WHERE mc.ano=$1 AND mc.mes BETWEEN $2 AND $3
       GROUP BY mc.mes, g.nomegerente, s.nomesupervisor, e.nomven`, [ano, mesIni, mesFim]);
 
+    // Meta por MÊS + hierarquia (Gerente/Supervisor/Vendedor) + CATEGORIA — sem
+    // isso, a tabela "por Categoria" da aba Acompanhamento Objetivos não tinha
+    // como respeitar um filtro de Gerente/Supervisor/Vendedor: só existia meta
+    // por (mês x hierarquia) OU por (mês x categoria), nunca as duas juntas.
+    const mesEntCatRows = await q(`
+      SELECT mc.mes, g.nomegerente gerente, s.nomesupervisor supervisor, e.nomven vendedor,
+             c.descategoriaprod categoria, SUM(mc.valor) meta, MAX(${normPermargem('mc.permargem')}) permargem
+      FROM cifalcomercial.metacategoria mc
+      JOIN cifalcomercial.eqvend e ON e.codven=mc.codven
+      LEFT JOIN cifalcomercial.supervisor s ON s.codsupervisor=e.codsupervisor
+      LEFT JOIN cifalcomercial.gerente g ON g.codgerente=s.codgerente
+      JOIN cifalcomercial.categoriasproduto c ON c.codcategoriaprod=mc.codmetacategoria
+      WHERE mc.ano=$1 AND mc.mes BETWEEN $2 AND $3 AND mc.codmetacategoria IN (${inCats})
+      GROUP BY mc.mes, g.nomegerente, s.nomesupervisor, e.nomven, c.descategoriaprod`, [ano, mesIni, mesFim]);
+
     // A query traz meta_papel (cat 14), meta_kg (13), meta_estrategico (12),
     // meta_valrentabilidade e meta_permargem — todos precisam ser copiados para o
     // JSON, senão a aba Meta x Realizado fica sem a meta desses indicadores.
@@ -449,7 +464,30 @@ class DashboardETLService {
       for (const k of CAMPOS_MES) o[k] = round2(o[k]);
       o.meta_permargem = round2(o.meta_permargem);
     }
-    return { linhas: vendRows.length, por_gerente, por_supervisor, por_vendedor, por_categoria, por_categoria_valrentabilidade, por_mes_categoria, por_mes_categoria_valrentabilidade, por_mes };
+
+    // hier_por_mes_categoria[nivel][mes][nome][categoria] = {meta, metaCash} —
+    // meta de Faturamento e Cash Margem (meta x margem alvo) por categoria,
+    // recortada por Gerente/Supervisor/Vendedor E por mês simultaneamente.
+    const hier_por_mes_categoria = { gerente: {}, supervisor: {}, vendedor: {} };
+    for (const r of mesEntCatRows) {
+      const m = String(r.mes);
+      const metaVal = num(r.meta);
+      const metaCash = metaVal * num(r.permargem);
+      [['gerente', r.gerente], ['supervisor', r.supervisor], ['vendedor', r.vendedor]].forEach(([nivel, nome]) => {
+        if (!nome) return;
+        const porNivel = hier_por_mes_categoria[nivel];
+        const porMes = porNivel[m] || (porNivel[m] = {});
+        const porNome = porMes[nome] || (porMes[nome] = {});
+        const cur = porNome[r.categoria] || (porNome[r.categoria] = { meta: 0, metaCash: 0 });
+        cur.meta += metaVal; cur.metaCash += metaCash;
+      });
+    }
+    for (const nivel in hier_por_mes_categoria) for (const m in hier_por_mes_categoria[nivel]) for (const nome in hier_por_mes_categoria[nivel][m]) for (const cat in hier_por_mes_categoria[nivel][m][nome]) {
+      const o = hier_por_mes_categoria[nivel][m][nome][cat];
+      o.meta = round2(o.meta); o.metaCash = round2(o.metaCash);
+    }
+
+    return { linhas: vendRows.length, por_gerente, por_supervisor, por_vendedor, por_categoria, por_categoria_valrentabilidade, por_mes_categoria, por_mes_categoria_valrentabilidade, por_mes, hier_por_mes_categoria };
   }
 
   _montarJson(periodo, d) {

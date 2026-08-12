@@ -435,16 +435,26 @@ function categoriaMonthValueFor(period, level, names, catName, mes){
   if (!v) return null;
   return {r:v.r,c:v.c,m: v.r>0?+(100*(1-v.c/v.r)).toFixed(2):0};
 }
-// Igual a hierUnionCategoria, mas para a META (valor único, não {r,c,q,m}) —
-// usa meta.hier_por_categoria (gerente/supervisor/vendedor(nome) -> categoria -> valor).
-function hierUnionMetaCategoria(d, level, names){
+// Meta por categoria recortada por hierarquia (Gerente/Supervisor/Vendedor) E por
+// mês — usa d.meta.hier_por_mes_categoria[level][mes][nome][cat]={meta,metaCash}
+// (metacategoria cruzada com mês+hierarquia+categoria simultaneamente, ver
+// DashboardETLService — antes só existia meta por mês+hierarquia OU por
+// mês+categoria, nunca as 3 juntas, então a tabela por Categoria da aba
+// Acompanhamento Objetivos não tinha como respeitar um filtro de Gerente/
+// Supervisor/Vendedor). Soma sobre a lista de meses recebida (1 mês, bimestre,
+// semestre...) — ao contrário do Realizado, a Meta tem grão mensal nos 3 níveis.
+function metaCategoriaHierMesFor(d, level, names, meses){
   const merged = {};
-  const src = d.meta && d.meta.hier_por_categoria && d.meta.hier_por_categoria[level];
-  if (!src) return merged;
-  names.forEach(n=>{
-    const m = src[n];
-    if (!m) return;
-    Object.keys(m).forEach(cat=>{ merged[cat] = (merged[cat]||0) + m[cat]; });
+  meses.forEach(mes=>{
+    const src = d.meta.hier_por_mes_categoria && d.meta.hier_por_mes_categoria[level] && d.meta.hier_por_mes_categoria[level][String(mes)];
+    if (!src) return;
+    names.forEach(n=>{
+      const cats = src[n]; if (!cats) return;
+      Object.keys(cats).forEach(cat=>{
+        const cur = merged[cat] || (merged[cat]={meta:0,metaCash:0});
+        cur.meta += cats[cat].meta; cur.metaCash += cats[cat].metaCash;
+      });
+    });
   });
   return merged;
 }
@@ -2000,48 +2010,103 @@ function renderObjetivos(){
     scope = {label:"Gerente: "+labelJoin(ST.ger), metaGeral:mg, realGeral:rg};
   }
 
+  // ── por Categoria: precisa respeitar TANTO o Período (meses) QUANTO o filtro
+  // de hierarquia (Gerente/Supervisor/Vendedor) — antes só respeitava o Período,
+  // e sob filtro de Gerente/Supervisor/Vendedor mostrava sempre o total da
+  // empresa (Meta/Realizado/Margem por categoria divergentes do KPI acima, que
+  // já usa scope.metaGeral/realGeral corretamente recortado).
+  // Gerente tem grão diário exato (hier_por_dia_categoria.gerente) — mês a mês.
+  // Supervisor/Vendedor não têm grão mensal nesse cubo: cai pro semestre
+  // inteiro (hier_por_categoria), com aviso. Meta por categoria recortada por
+  // hierarquia usa d.meta.hier_por_mes_categoria (novo — ver DashboardETLService).
+  const level = hierLevelActive();
+  const names = level ? hierSelectedNames(level) : [];
   const catNames = Object.keys(d.por_categoria);
-  const perMes = meses.map(mes=>{
-    const catAgg = monthlyCategoriaAgg(d, mes);
-    const r = catNames.reduce((s,c)=>s+((catAgg[c]&&catAgg[c].r)||0),0);
-    return { mes, catAgg, r };
-  });
+
+  let perMes = [];
   const realCatSel = {};
-  perMes.forEach(pm=>Object.keys(pm.catAgg).forEach(cat=>{
-    if(!realCatSel[cat]) realCatSel[cat]={r:0,c:0};
-    realCatSel[cat].r += pm.catAgg[cat].r||0; realCatSel[cat].c += pm.catAgg[cat].c||0;
-  }));
+  let realCatMonthNote = null;
+  if (!level){
+    perMes = meses.map(mes=>{
+      const catAgg = monthlyCategoriaAgg(d, mes);
+      const r = catNames.reduce((s,c)=>s+((catAgg[c]&&catAgg[c].r)||0),0);
+      return { mes, catAgg, r };
+    });
+  } else if (level==='gerente'){
+    perMes = meses.map(mes=>{
+      const catAgg = monthlyGerenteUnionCategoriaAgg(d, names, mes);
+      const r = Object.values(catAgg).reduce((s,v)=>s+(v.r||0),0);
+      return { mes, catAgg, r };
+    });
+  } else {
+    const base = hierUnionCategoria(d, level, names);
+    Object.keys(base).forEach(cat=>{ realCatSel[cat] = {r:base[cat].r, c:base[cat].c}; });
+    realCatMonthNote = `Realizado por categoria sem grão mensal para ${level} — mostrando o semestre inteiro (${d.label}), independente do Período selecionado acima.`;
+  }
+  if (level!=='supervisor' && level!=='vendedor'){
+    perMes.forEach(pm=>Object.keys(pm.catAgg).forEach(cat=>{
+      if(!realCatSel[cat]) realCatSel[cat]={r:0,c:0};
+      realCatSel[cat].r += pm.catAgg[cat].r||0; realCatSel[cat].c += pm.catAgg[cat].c||0;
+    }));
+  }
+
   const metaCatSel = {};
-  meses.forEach(mes=>{
-    const mc = (d.meta.por_mes_categoria && d.meta.por_mes_categoria[mes]) || {};
-    Object.keys(mc).forEach(cat=>{ metaCatSel[cat]=(metaCatSel[cat]||0)+mc[cat]; });
-  });
+  const metaCashCatSel = {};
+  if (!level){
+    meses.forEach(mes=>{
+      const mc = (d.meta.por_mes_categoria && d.meta.por_mes_categoria[mes]) || {};
+      Object.keys(mc).forEach(cat=>{ metaCatSel[cat]=(metaCatSel[cat]||0)+mc[cat]; });
+      const mcCash = metaValRentCategoriaFor(d, mes) || {};
+      Object.keys(mcCash).forEach(cat=>{ metaCashCatSel[cat]=(metaCashCatSel[cat]||0)+mcCash[cat]; });
+    });
+  } else {
+    const agg = metaCategoriaHierMesFor(d, level, names, meses);
+    Object.keys(agg).forEach(cat=>{
+      metaCatSel[cat]=(metaCatSel[cat]||0)+agg[cat].meta;
+      metaCashCatSel[cat]=(metaCashCatSel[cat]||0)+agg[cat].metaCash;
+    });
+  }
   const totalMetaCat = catNames.reduce((s,c)=>s+(metaCatSel[c]||0),0);
   const totalRealCat = catNames.reduce((s,c)=>s+((realCatSel[c]&&realCatSel[c].r)||0),0);
   const totalCustoCat = catNames.reduce((s,c)=>s+((realCatSel[c]&&realCatSel[c].c)||0),0);
   const totalTrend = perMes.reduce((s,pm)=>s+tendencia(pm.r, d, pm.mes),0);
 
-  const prevPerMes = prev ? meses.map(mes=>{
-    const catAgg = monthlyCategoriaAgg(prev, mes);
-    const r = catNames.reduce((s,c)=>s+((catAgg[c]&&catAgg[c].r)||0),0);
-    return { mes, catAgg, r };
-  }) : [];
   const prevRealCatSel = {};
-  prevPerMes.forEach(pm=>Object.keys(pm.catAgg).forEach(cat=>{
-    if(!prevRealCatSel[cat]) prevRealCatSel[cat]={r:0,c:0};
-    prevRealCatSel[cat].r += pm.catAgg[cat].r||0; prevRealCatSel[cat].c += pm.catAgg[cat].c||0;
-  }));
-  const prevTotalRealCat = prevPerMes.reduce((s,pm)=>s+pm.r,0);
+  if (prev){
+    if (!level){
+      meses.forEach(mes=>{
+        const catAgg = monthlyCategoriaAgg(prev, mes);
+        Object.keys(catAgg).forEach(cat=>{ const cur=prevRealCatSel[cat]||(prevRealCatSel[cat]={r:0,c:0}); cur.r+=catAgg[cat].r||0; cur.c+=catAgg[cat].c||0; });
+      });
+    } else if (level==='gerente'){
+      meses.forEach(mes=>{
+        const catAgg = monthlyGerenteUnionCategoriaAgg(prev, names, mes);
+        Object.keys(catAgg).forEach(cat=>{ const cur=prevRealCatSel[cat]||(prevRealCatSel[cat]={r:0,c:0}); cur.r+=catAgg[cat].r||0; cur.c+=catAgg[cat].c||0; });
+      });
+    } else {
+      const base = hierUnionCategoria(prev, level, names);
+      Object.keys(base).forEach(cat=>{ prevRealCatSel[cat] = {r:base[cat].r, c:base[cat].c}; });
+    }
+  }
+  const prevTotalRealCat = catNames.reduce((s,c)=>s+((prevRealCatSel[c]&&prevRealCatSel[c].r)||0),0);
   const prevTotalCustoCat = catNames.reduce((s,c)=>s+((prevRealCatSel[c]&&prevRealCatSel[c].c)||0),0);
 
   const totalMetaGeral = scope ? scope.metaGeral : totalMetaCat;
   const totalRealGeral = scope ? scope.realGeral : totalRealCat;
   const totalAtingGeral = totalMetaGeral>0 ? totalRealGeral/totalMetaGeral*100 : null;
   const totalTrendAting = totalMetaGeral>0 ? totalTrend/totalMetaGeral*100 : null;
-  const totalMargemGeral = (!scope && totalRealCat>0) ? 100*(1-totalCustoCat/totalRealCat) : null;
-  const prevTotalMargemGeral = (!scope && prev && prevTotalRealCat>0) ? 100*(1-prevTotalCustoCat/prevTotalRealCat) : null;
+  // totalRealCat/totalCustoCat (e as versões ano anterior) já respeitam o
+  // recorte de hierarquia (Gerente/Supervisor/Vendedor) desde a correção acima
+  // — Margem % do TOTAL GERAL pode ser calculada mesmo com scope ativo.
+  const totalMargemGeral = totalRealCat>0 ? 100*(1-totalCustoCat/totalRealCat) : null;
+  const prevTotalMargemGeral = (prev && prevTotalRealCat>0) ? 100*(1-prevTotalCustoCat/prevTotalRealCat) : null;
 
-  const objBanner = scope ? `Recortado por <strong>${scope.label}</strong> — Tendência não disponível com este filtro (requer dado diário, só existe no nível empresa).` : "";
+  const objBanner = [
+    scope ? (level==='gerente'
+      ? `Recortado por <strong>${scope.label}</strong> — Tendência não aparece no resumo acima, mas está disponível na tabela por Categoria abaixo (Gerente tem dado diário).`
+      : `Recortado por <strong>${scope.label}</strong> — Tendência não disponível com este filtro (requer dado diário, só existe no nível empresa e Gerente).`) : null,
+    realCatMonthNote,
+  ].filter(Boolean).join(' ');
   document.getElementById('obj-kpis').innerHTML =
     (mesesSemDadosNote?`<div class="alert" style="grid-column:1/-1">${mesesSemDadosNote}</div>`:"") +
     (objBanner?`<div class="alert" style="grid-column:1/-1">${objBanner}</div>`:"") +
@@ -2100,27 +2165,27 @@ function renderObjetivos(){
   // modelo de referência do usuário (planilha). Bonificação/%Bonif x Venda
   // ficam como placeholder "—": não existe fonte de dados para isso no ETL
   // atual (nenhuma tabela de bonificação/rebate é lida pelo BASE_CTE).
-  const metaCashCatSel = {};
-  meses.forEach(mes=>{
-    const mc = metaValRentCategoriaFor(d, mes) || {};
-    Object.keys(mc).forEach(cat=>{ metaCashCatSel[cat]=(metaCashCatSel[cat]||0)+mc[cat]; });
-  });
-  // Positivação (clientes ativos) é COUNT DISTINCT por mês — somar vários meses
-  // conta 2x um cliente que comprou em mais de um mês (não há como deduplicar
-  // no front sem a lista de clientes por mês); avisamos quando isso se aplica.
+  // Positivação (clientes ativos) por categoria só existe no nível empresa (sem
+  // cubo hierárquico) — com Gerente/Supervisor/Vendedor filtrado, mostra "—" em
+  // vez do total da empresa (senão pareceria dado do recorte, mas não é).
+  // Também é COUNT DISTINCT por mês — somar vários meses conta 2x um cliente
+  // que comprou em mais de um mês (não há como deduplicar no front sem a lista
+  // de clientes por mês); avisamos quando isso se aplica.
   const nCliCatSel = {};
-  meses.forEach(mes=>{
-    const mc = (d.por_mes_categoria_clientes && d.por_mes_categoria_clientes[mes]) || {};
-    Object.keys(mc).forEach(cat=>{ nCliCatSel[cat]=(nCliCatSel[cat]||0)+mc[cat]; });
-  });
   const prevNCliCatSel = {};
-  if (prev) meses.forEach(mes=>{
-    const mc = (prev.por_mes_categoria_clientes && prev.por_mes_categoria_clientes[mes]) || {};
-    Object.keys(mc).forEach(cat=>{ prevNCliCatSel[cat]=(prevNCliCatSel[cat]||0)+mc[cat]; });
-  });
-  document.getElementById('objCashNote').innerHTML = meses.length>1
+  if (!level){
+    meses.forEach(mes=>{
+      const mc = (d.por_mes_categoria_clientes && d.por_mes_categoria_clientes[mes]) || {};
+      Object.keys(mc).forEach(cat=>{ nCliCatSel[cat]=(nCliCatSel[cat]||0)+mc[cat]; });
+    });
+    if (prev) meses.forEach(mes=>{
+      const mc = (prev.por_mes_categoria_clientes && prev.por_mes_categoria_clientes[mes]) || {};
+      Object.keys(mc).forEach(cat=>{ prevNCliCatSel[cat]=(prevNCliCatSel[cat]||0)+mc[cat]; });
+    });
+  }
+  document.getElementById('objCashNote').innerHTML = (!level && meses.length>1)
     ? `<div class="alert">⚠ Positivação somada de ${meses.length} meses (${objLabelMeses(meses)}) — não deduplicada entre meses: um cliente que comprou em mais de um mês do período é contado mais de uma vez.</div>`
-    : '';
+    : (level ? `<div class="alert">⚠ Positivação por categoria não está disponível recortada por ${level} — sem esse cubo no ETL. Mostrando "—".</div>` : '');
 
   function catRow(nome, metaVal, r, c, prevR, prevC, trend, metaCash, nCliCat, prevNCliCat){
     const pctReal = metaVal>0 ? r/metaVal*100 : null;
@@ -2143,18 +2208,18 @@ function renderObjetivos(){
       <td class="tv">${margem!=null?margemBadge(margem):'<span style="color:var(--t3)">—</span>'}</td>
       <td class="tv">${prevMargem!=null?fPct(prevMargem):'<span style="color:var(--t3)">sem base</span>'}</td>
       <td class="tv">${(margem!=null&&prevMargem!=null)?deltaPP(margem,prevMargem,false):'<span style="color:var(--t3)">sem base</span>'}</td>
-      <td class="tv">${fN(nCliCat)}</td><td class="tv">${fN(prevNCliCat||0)}</td>
-      <td class="tv">${deltaPillSmall(nCliCat,prevNCliCat)}</td>
+      <td class="tv">${nCliCat!=null?fN(nCliCat):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${prevNCliCat!=null?fN(prevNCliCat):'<span style="color:var(--t3)">—</span>'}</td>
+      <td class="tv">${nCliCat!=null?deltaPillSmall(nCliCat,prevNCliCat):'<span style="color:var(--t3)">—</span>'}</td>
       <td class="tv"><span style="color:var(--t3)">—</span></td><td class="tv"><span style="color:var(--t3)">—</span></td>
       <td class="tv">${estoque!=null?fF(estoque):'<span style="color:var(--t3)">—</span>'}</td></tr>`;
   }
   const catBodyRows = catNames.slice().sort((a,b)=>(metaCatSel[b]||0)-(metaCatSel[a]||0)).map(cat=>{
     const agg = realCatSel[cat]||{r:0,c:0}; const pagg = prevRealCatSel[cat];
     const trend = perMes.reduce((s,pm)=>s+tendencia((pm.catAgg[cat]&&pm.catAgg[cat].r)||0, d, pm.mes),0);
-    return catRow(cat, metaCatSel[cat]||0, agg.r, agg.c, pagg?pagg.r:null, pagg?pagg.c:null, trend, metaCashCatSel[cat]||0, nCliCatSel[cat]||0, prevNCliCatSel[cat]||0);
+    return catRow(cat, metaCatSel[cat]||0, agg.r, agg.c, pagg?pagg.r:null, pagg?pagg.c:null, trend, metaCashCatSel[cat]||0, level?null:(nCliCatSel[cat]||0), level?null:(prevNCliCatSel[cat]||0));
   }).join("");
-  const totalNCli = catNames.reduce((s,c)=>s+(nCliCatSel[c]||0),0);
-  const prevTotalNCli = catNames.reduce((s,c)=>s+(prevNCliCatSel[c]||0),0);
+  const totalNCli = level?null:catNames.reduce((s,c)=>s+(nCliCatSel[c]||0),0);
+  const prevTotalNCli = level?null:catNames.reduce((s,c)=>s+(prevNCliCatSel[c]||0),0);
   const totalMetaCash = catNames.reduce((s,c)=>s+(metaCashCatSel[c]||0),0);
   const totalCash = totalRealCat-totalCustoCat;
   const totalRow = `<tr style="font-weight:700"><td class="tv">100,0%</td><td class="tv">100,0%</td><td class="tn">TOTAL GERAL</td>
@@ -2168,8 +2233,8 @@ function renderObjetivos(){
     <td class="tv">${totalMargemGeral!=null?margemBadge(totalMargemGeral):'<span style="color:var(--t3)">—</span>'}</td>
     <td class="tv">${prevTotalMargemGeral!=null?fPct(prevTotalMargemGeral):'<span style="color:var(--t3)">sem base</span>'}</td>
     <td class="tv">${(totalMargemGeral!=null&&prevTotalMargemGeral!=null)?deltaPP(totalMargemGeral,prevTotalMargemGeral,false):'<span style="color:var(--t3)">sem base</span>'}</td>
-    <td class="tv">${fN(totalNCli)}</td><td class="tv">${fN(prevTotalNCli)}</td>
-    <td class="tv">${deltaPillSmall(totalNCli,prevTotalNCli)}</td>
+    <td class="tv">${totalNCli!=null?fN(totalNCli):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${prevTotalNCli!=null?fN(prevTotalNCli):'<span style="color:var(--t3)">—</span>'}</td>
+    <td class="tv">${totalNCli!=null?deltaPillSmall(totalNCli,prevTotalNCli):'<span style="color:var(--t3)">—</span>'}</td>
     <td class="tv"><span style="color:var(--t3)">—</span></td><td class="tv"><span style="color:var(--t3)">—</span></td>
     <td class="tv"><span style="color:var(--t3)">—</span></td></tr>`;
   document.getElementById('tObjCat').innerHTML = `<thead><tr><th>% Peso Meta</th><th>% Peso Real</th><th>Categoria</th><th class="tv">Meta</th><th class="tv">Realizado</th><th class="tv">% Real</th><th class="tv">Tendência</th><th class="tv">% Tendência</th><th class="tv">Realizado ano ant.</th><th class="tv">Δ Fat. vs ano ant.</th><th class="tv">Meta Cash Margem</th><th class="tv">Real Cash Margem</th><th class="tv">% Real Cash Margem</th><th class="tv">Margem %</th><th class="tv">Margem % ano ant.</th><th class="tv">Δ Margem vs ano ant.</th><th class="tv">Positivação</th><th class="tv">Positivação ano ant.</th><th class="tv">Δ Positivação</th><th class="tv">Bonificação</th><th class="tv">% Bonif. x Venda</th><th class="tv">Estoque Box (snapshot)</th></tr></thead><tbody>${catBodyRows}${totalRow}</tbody>`;
@@ -2220,18 +2285,19 @@ function renderObjFoco(d, prev, meses){
   }
   const { level, nome } = foco;
   const info = objFocoCategoriaRows(d, level, nome, meses);
-  const metaCat = hierUnionMetaCategoria(d, level, [nome]);
+  const metaCat = metaCategoriaHierMesFor(d, level, [nome], meses);
   const prevInfo = prev ? objFocoCategoriaRows(prev, level, nome, level==='gerente'?meses:[]) : null;
   const prevRowsByCat = {}; if (prevInfo) prevInfo.rows.forEach(([cat,v])=>{ prevRowsByCat[cat]=v; });
   document.getElementById('objFocoSub').textContent = `${level==='gerente'?'Gerente':level==='supervisor'?'Supervisor':'Vendedor'}: ${nome}` +
     (info.monthNote ? ` — ⚠ ${info.monthNote}` : ` — ${objLabelMeses(meses)}`);
   const rows = info.rows.slice().sort((a,b)=>(b[1].r-b[1].c)-(a[1].r-a[1].c)).map(([cat,v])=>{
     const cash = v.r-v.c; const margem = v.r>0?100*(1-v.c/v.r):null;
-    const metaFat = metaCat[cat]||0; const ating = metaFat>0 ? v.r/metaFat*100 : null;
+    const mc = metaCat[cat]; const metaFat = mc?mc.meta:0; const metaCash = mc?mc.metaCash:0;
+    const ating = metaFat>0 ? v.r/metaFat*100 : null; const atingCash = metaCash>0 ? cash/metaCash*100 : null;
     const pv = prevRowsByCat[cat]; const prevCash = pv?(pv.r-pv.c):null; const prevMargem = pv?margemMFrom(pv.r,pv.c):null;
-    return `<tr><td class="tn">${cat}</td><td class="tv">${metaFat>0?fF(metaFat):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${fF(v.r)}</td><td class="tv">${atingBadge(ating)}</td><td class="tv">${deltaPillSmall(v.r,pv?pv.r:null)}</td><td class="tv">${fF(cash)}</td><td class="tv">${deltaPillSmall(cash,prevCash)}</td><td class="tv">${margem!=null?margemBadge(margem):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${deltaPP(margem,prevMargem,false)}</td></tr>`;
+    return `<tr><td class="tn">${cat}</td><td class="tv">${metaFat>0?fF(metaFat):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${fF(v.r)}</td><td class="tv">${atingBadge(ating)}</td><td class="tv">${deltaPillSmall(v.r,pv?pv.r:null)}</td><td class="tv">${metaCash>0?fF(metaCash):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${fF(cash)}</td><td class="tv">${atingBadge(atingCash)}</td><td class="tv">${deltaPillSmall(cash,prevCash)}</td><td class="tv">${margem!=null?margemBadge(margem):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${deltaPP(margem,prevMargem,false)}</td></tr>`;
   }).join("");
-  document.getElementById('tObjFoco').innerHTML = `<thead><tr><th>Categoria</th><th class="tv">Meta Faturamento</th><th class="tv">Realizado</th><th class="tv">% Ating.</th><th class="tv">Δ vs ano ant.</th><th class="tv">Cash Margem</th><th class="tv">Δ vs ano ant.</th><th class="tv">Margem %</th><th class="tv">Δ Margem (p.p.)</th></tr></thead><tbody>${rows}</tbody>`;
+  document.getElementById('tObjFoco').innerHTML = `<thead><tr><th>Categoria</th><th class="tv">Meta Faturamento</th><th class="tv">Realizado</th><th class="tv">% Ating.</th><th class="tv">Δ vs ano ant.</th><th class="tv">Meta Cash Margem</th><th class="tv">Cash Margem</th><th class="tv">% Ating.</th><th class="tv">Δ vs ano ant.</th><th class="tv">Margem %</th><th class="tv">Δ Margem (p.p.)</th></tr></thead><tbody>${rows}</tbody>`;
 }
 
 // ── 3B1B. METAS KG FUMO, PAPEL E PRODUTO ESTRATÉGICO ────────────
