@@ -1829,14 +1829,31 @@ function atingBadge(pct){
 // level (opcional): quando informado, cada linha fica clicável — chama
 // objFocusToggle(level, nome) para acionar o efeito cascata da aba
 // Acompanhamento Objetivos (linha selecionada fica destacada).
-function metaTable(names, fn, level){
+// level (opcional): quando informado, cada linha ganha um toggle de cascata
+// (+/−) que expande, embaixo da própria linha, a tabela "Meta x Realizado x
+// Margem x Positivação por Categoria" (buildCategoriaTable) recortada para
+// aquela entidade — mesmas colunas do painel principal da aba. Clicar
+// no toggle também aciona objFocusToggle (efeito cascata: Gerente estreita a
+// lista de Supervisor abaixo, Supervisor estreita a de Vendedor).
+function metaTable(names, fn, level, d, prev, meses){
   return `<thead><tr><th>Nome</th><th class="tv">Meta Geral</th><th class="tv">Δ Meta</th><th class="tv">Realizado</th><th class="tv">Δ Realizado</th><th class="tv">% Ating.</th></tr></thead><tbody>${
     names.map(n=>{
       const v = fn(n);
       const ating = v.meta>0 ? v.real/v.meta*100 : null;
-      const selected = level && objFocus[level==='gerente'?'ger':level==='supervisor'?'sup':'vend']===n;
-      const trAttrs = level ? ` class="obj-focus-row${selected?' obj-focus-sel':''}" style="cursor:pointer" onclick="objFocusToggle('${level}','${n.replace(/'/g,"\\'")}')"` : '';
-      return `<tr${trAttrs}><td class="tn">${n}</td><td class="tv">${fF(v.meta)}</td><td class="tv">${deltaPillSmall(v.meta,v.prevMeta)}</td><td class="tv">${fF(v.real)}</td><td class="tv">${deltaPillSmall(v.real,v.prevReal)}</td><td class="tv">${atingBadge(ating)}</td></tr>`;
+      const focusKey = level==='gerente'?'ger':level==='supervisor'?'sup':'vend';
+      const expanded = level && objFocus[focusKey]===n;
+      const nEsc = n.replace(/'/g,"\\'");
+      const toggle = level ? `<span class="casc-toggle" onclick="objFocusToggle('${level}','${nEsc}')">${expanded?'−':'+'}</span>` : '';
+      const trAttrs = level ? ` class="obj-focus-row${expanded?' obj-focus-sel':''}"` : '';
+      let html = `<tr${trAttrs}><td class="tn">${toggle}${n}</td><td class="tv">${fF(v.meta)}</td><td class="tv">${deltaPillSmall(v.meta,v.prevMeta)}</td><td class="tv">${fF(v.real)}</td><td class="tv">${deltaPillSmall(v.real,v.prevReal)}</td><td class="tv">${atingBadge(ating)}</td></tr>`;
+      if (expanded){
+        const built = buildCategoriaTable(d, prev, meses, level, [n]);
+        html += `<tr class="casc-info"><td colspan="6" style="padding:10px 8px 16px">
+          ${built.realCatMonthNote?`<div class="alert" style="margin-bottom:8px">⚠ ${built.realCatMonthNote}</div>`:''}
+          <div class="tbl-wrap"><table>${built.html}</table></div>
+        </td></tr>`;
+      }
+      return html;
     }).join("")}</tbody>`;
 }
 // Meta/Realizado de um nível (gerente/supervisor/vendedor) para um NOME —
@@ -1969,58 +1986,20 @@ function objPrevRealGeralFor(prev, level, name, meses){
   meses.forEach(mes=>{ const v=prevRealGeralFor(prev, level, name, String(mes)); if(v!=null){sum+=v; any=true;} });
   return any?sum:null;
 }
-function renderObjetivos(){
-  const d = curPeriod();
-  const prev = prevPeriod();
-  populateObjSubFiltro(d);
-  if (!d.meta){
-    document.getElementById('obj-kpis').innerHTML = '<div class="alert">Sem dados de meta para este período.</div>';
-    ['tObjCat','tObjGer','tObjSup','tObjVend','tObjFoco'].forEach(id=>document.getElementById(id).innerHTML='');
-    return;
-  }
-  const meses = objMesesSelecionados();
-  if (!meses.length){
-    document.getElementById('objSub').textContent = "Selecione ao menos um mês no filtro de Período.";
-    document.getElementById('obj-kpis').innerHTML = '';
-    ['tObjCat','tObjGer','tObjSup','tObjVend','tObjFoco'].forEach(id=>document.getElementById(id).innerHTML='');
-    return;
-  }
-  const ano = meses.map(m=>monthYearFor(d,m)).find(Boolean);
-  document.getElementById('objSub').textContent = `${objLabelMeses(meses)}${ano?"/"+ano:""} — ${d.label}` + (prev?` · comparado ao(s) mesmo(s) mês(es) de ${prev.label}`:" · sem semestre equivalente no ano anterior");
-
-  // Meses do Período selecionado sem NENHUM dado no ERP (nem meta nem venda) —
-  // normalmente meses futuros ainda não fechados/cadastrados. Sem este aviso,
-  // um Bimestre/Semestre parecia "não respeitar o filtro" quando na verdade os
-  // totais já eram só dos meses que existem no ERP (os demais somam 0).
-  const mesesSemDados = meses.filter(m=>!(d.por_mes && d.por_mes[m]) && !(d.meta.por_mes_categoria && d.meta.por_mes_categoria[m]));
-  const mesesSemDadosNote = mesesSemDados.length
-    ? `⚠ ${objLabelMeses(mesesSemDados)}/${ano||''} ainda ${mesesSemDados.length>1?'não têm meta nem venda cadastrada no ERP (provavelmente meses futuros)':'não tem meta nem venda cadastrada no ERP (provavelmente mês futuro)'} — o total do período soma só os meses com dado real.`
-    : '';
-
-  const hasProdOrCliFilter = ST.grp.length || ST.cli.length;
-  let scope = null;
-  if (ST.vend.length){
-    let mg=0,rg=0; ST.vend.forEach(v=>{ mg+=objMetaGeralFor(d,'vendedor',v,meses); rg+=objRealGeralFor(d,'vendedor',v,meses); });
-    scope = {label:"Vendedor: "+labelJoin(ST.vend), metaGeral:mg, realGeral:rg};
-  } else if (ST.sup.length){
-    let mg=0,rg=0; ST.sup.forEach(sName=>{ mg+=objMetaGeralFor(d,'supervisor',sName,meses); rg+=objRealGeralFor(d,'supervisor',sName,meses); });
-    scope = {label:"Supervisor: "+labelJoin(ST.sup), metaGeral:mg, realGeral:rg};
-  } else if (ST.ger.length){
-    let mg=0,rg=0; ST.ger.forEach(g=>{ mg+=objMetaGeralFor(d,'gerente',g,meses); rg+=objRealGeralFor(d,'gerente',g,meses); });
-    scope = {label:"Gerente: "+labelJoin(ST.ger), metaGeral:mg, realGeral:rg};
-  }
-
-  // ── por Categoria: precisa respeitar TANTO o Período (meses) QUANTO o filtro
-  // de hierarquia (Gerente/Supervisor/Vendedor) — antes só respeitava o Período,
-  // e sob filtro de Gerente/Supervisor/Vendedor mostrava sempre o total da
-  // empresa (Meta/Realizado/Margem por categoria divergentes do KPI acima, que
-  // já usa scope.metaGeral/realGeral corretamente recortado).
-  // Gerente tem grão diário exato (hier_por_dia_categoria.gerente) — mês a mês.
-  // Supervisor/Vendedor não têm grão mensal nesse cubo: cai pro semestre
-  // inteiro (hier_por_categoria), com aviso. Meta por categoria recortada por
-  // hierarquia usa d.meta.hier_por_mes_categoria (novo — ver DashboardETLService).
-  const level = hierLevelActive();
-  const names = level ? hierSelectedNames(level) : [];
+// Constrói a tabela "Meta x Realizado x Margem x Positivação por Categoria"
+// (Meta/Realizado/Tendência/Margem/Cash Margem/Positivação, modelo de
+// referência da planilha do usuário) para uma entidade (nível+nomes) e
+// período — usada tanto na tabela principal (nível ativo do filtro global)
+// quanto na cascata inline de cada linha das tabelas por Gerente/Supervisor/
+// Vendedor abaixo (mesmas colunas, recortadas para 1 entidade só).
+// Bonificação/%Bonif x Venda ficam "—": sem fonte de dados no ETL atual.
+// Positivação/Estoque Box também ficam "—" quando level!=null: não existe
+// cubo hierárquico para eles (mostrar o total da empresa pareceria dado do
+// recorte, mas não é). Gerente tem grão diário exato p/ Realizado
+// (hier_por_dia_categoria) — Supervisor/Vendedor caem pro semestre inteiro
+// (hier_por_categoria, sem grão mensal), com aviso. Meta por categoria usa
+// d.meta.hier_por_mes_categoria nos 3 níveis (grão mensal exato).
+function buildCategoriaTable(d, prev, meses, level, names){
   const catNames = Object.keys(d.por_categoria);
 
   let perMes = [];
@@ -2090,87 +2069,9 @@ function renderObjetivos(){
   }
   const prevTotalRealCat = catNames.reduce((s,c)=>s+((prevRealCatSel[c]&&prevRealCatSel[c].r)||0),0);
   const prevTotalCustoCat = catNames.reduce((s,c)=>s+((prevRealCatSel[c]&&prevRealCatSel[c].c)||0),0);
-
-  const totalMetaGeral = scope ? scope.metaGeral : totalMetaCat;
-  const totalRealGeral = scope ? scope.realGeral : totalRealCat;
-  const totalAtingGeral = totalMetaGeral>0 ? totalRealGeral/totalMetaGeral*100 : null;
-  const totalTrendAting = totalMetaGeral>0 ? totalTrend/totalMetaGeral*100 : null;
-  // totalRealCat/totalCustoCat (e as versões ano anterior) já respeitam o
-  // recorte de hierarquia (Gerente/Supervisor/Vendedor) desde a correção acima
-  // — Margem % do TOTAL GERAL pode ser calculada mesmo com scope ativo.
   const totalMargemGeral = totalRealCat>0 ? 100*(1-totalCustoCat/totalRealCat) : null;
   const prevTotalMargemGeral = (prev && prevTotalRealCat>0) ? 100*(1-prevTotalCustoCat/prevTotalRealCat) : null;
 
-  const objBanner = [
-    scope ? (level==='gerente'
-      ? `Recortado por <strong>${scope.label}</strong> — Tendência não aparece no resumo acima, mas está disponível na tabela por Categoria abaixo (Gerente tem dado diário).`
-      : `Recortado por <strong>${scope.label}</strong> — Tendência não disponível com este filtro (requer dado diário, só existe no nível empresa e Gerente).`) : null,
-    realCatMonthNote,
-  ].filter(Boolean).join(' ');
-  document.getElementById('obj-kpis').innerHTML =
-    (mesesSemDadosNote?`<div class="alert" style="grid-column:1/-1">${mesesSemDadosNote}</div>`:"") +
-    (objBanner?`<div class="alert" style="grid-column:1/-1">${objBanner}</div>`:"") +
-    (hasProdOrCliFilter?`<div class="alert" style="grid-column:1/-1">⚠ Filtro de Categoria/Grupo/Cliente é ignorado nesta aba (a meta não tem essa granularidade) — mostrando o total do período${scope?" recortado por "+scope.label:""}.</div>`:"") +
-    (totalMetaGeral<=0
-      ? `<div class="alert" style="grid-column:1/-1">Sem meta cadastrada no ERP para este recorte/período.</div>`
-      : (scope ? [
-          {lbl:"Meta Geral", val:fM(totalMetaGeral)},
-          {lbl:"Realizado Geral", val:fM(totalRealGeral)},
-          {lbl:"% Atingimento Geral", val: totalAtingGeral!=null?totalAtingGeral.toFixed(1)+"%":"—"},
-        ] : [
-          {lbl:"Meta Geral", val:fM(totalMetaGeral)},
-          {lbl:"Realizado", val:fM(totalRealGeral), cur:totalRealGeral, prevv: prev?prevTotalRealCat:null},
-          {lbl:"% Realizado", val: totalAtingGeral!=null?totalAtingGeral.toFixed(1)+"%":"—"},
-          {lbl:"Tendência (fechamento)", val:fM(totalTrend)},
-          {lbl:"% Tendência", val: totalTrendAting!=null?totalTrendAting.toFixed(1)+"%":"—"},
-          {lbl:"Margem", val:fPct(totalMargemGeral), cur:totalMargemGeral, prevv:prevTotalMargemGeral},
-        ]).map((k,i)=>`<div class="kpi k${i%7}"><div class="kpi-stripe"></div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div>
-        ${k.cur!=null?deltaPillSmall(k.cur,k.prevv):''}
-        <div class="kpi-note">${k.cur!=null?'vs. mesmo(s) mês(es) ano anterior':''}</div></div>`).join(""));
-
-  // ── por Gerente / Supervisor / Vendedor (Meta Geral, somada nos meses
-  // selecionados) — cada linha é clicável (efeito cascata): clicar num Gerente
-  // filtra a tabela de Supervisor abaixo aos seus supervisores, clicar num
-  // Supervisor filtra a de Vendedor, e a entidade mais profunda selecionada
-  // alimenta o painel "Detalhe por Categoria" no rodapé (objFocus).
-  const effGerMeta = effectiveGerentes(d);
-  const gerRows = Object.keys(d.meta.por_gerente).filter(n=>!effGerMeta||effGerMeta.has(n)).sort((a,b)=>objMetaGeralFor(d,'gerente',b,meses)-objMetaGeralFor(d,'gerente',a,meses));
-  document.getElementById('tObjGer').innerHTML = metaTable(gerRows, n=>({
-    meta:objMetaGeralFor(d,'gerente',n,meses), real:objRealGeralFor(d,'gerente',n,meses),
-    prevMeta: objPrevMetaGeralFor(prev,'gerente',n,meses), prevReal: objPrevRealGeralFor(prev,'gerente',n,meses),
-  }), 'gerente');
-
-  const effSupMeta = effectiveSupervisores(d);
-  const supRowsAll = Object.keys(d.meta.por_supervisor).filter(n=>(!effSupMeta||effSupMeta.has(n))&&(!effGerMeta||effGerMeta.has(d.meta.por_supervisor[n].gerente)));
-  const supRows = supRowsAll.filter(n=>!objFocus.ger || d.meta.por_supervisor[n].gerente===objFocus.ger).sort((a,b)=>objMetaGeralFor(d,'supervisor',b,meses)-objMetaGeralFor(d,'supervisor',a,meses));
-  document.getElementById('objSupSub').textContent = objFocus.ger ? `Supervisores de ${objFocus.ger}` : `${supRows.length} supervisores`;
-  document.getElementById('tObjSup').innerHTML = metaTable(supRows, n=>({
-    meta:objMetaGeralFor(d,'supervisor',n,meses), real:objRealGeralFor(d,'supervisor',n,meses),
-    prevMeta: objPrevMetaGeralFor(prev,'supervisor',n,meses), prevReal: objPrevRealGeralFor(prev,'supervisor',n,meses),
-  }), 'supervisor');
-
-  const vendRowsAll = Object.keys(d.meta.por_vendedor).filter(n=>(ST.vend.length===0||ST.vend.includes(n))&&(!effSupMeta||effSupMeta.has(d.meta.por_vendedor[n].supervisor)));
-  const vendRows = vendRowsAll.filter(n=>{
-    if (objFocus.sup) return d.meta.por_vendedor[n].supervisor===objFocus.sup;
-    if (objFocus.ger) return supRowsAll.filter(s=>d.meta.por_supervisor[s].gerente===objFocus.ger).includes(d.meta.por_vendedor[n].supervisor);
-    return true;
-  }).sort((a,b)=>objMetaGeralFor(d,'vendedor',b,meses)-objMetaGeralFor(d,'vendedor',a,meses));
-  document.getElementById('objVendSub').textContent = `${vendRows.length} vendedores com meta cadastrada no período` + (objFocus.sup?` — de ${objFocus.sup}`:objFocus.ger?` — de ${objFocus.ger}`:'');
-  document.getElementById('tObjVend').innerHTML = metaTable(vendRows, n=>({
-    meta:objMetaGeralFor(d,'vendedor',n,meses), real:objRealGeralFor(d,'vendedor',n,meses),
-    prevMeta: objPrevMetaGeralFor(prev,'vendedor',n,meses), prevReal: objPrevRealGeralFor(prev,'vendedor',n,meses),
-  }), 'vendedor');
-
-  // ── por Categoria: Meta/Realizado/Tendência/Margem/Cash Margem/Positivação —
-  // modelo de referência do usuário (planilha). Bonificação/%Bonif x Venda
-  // ficam como placeholder "—": não existe fonte de dados para isso no ETL
-  // atual (nenhuma tabela de bonificação/rebate é lida pelo BASE_CTE).
-  // Positivação (clientes ativos) por categoria só existe no nível empresa (sem
-  // cubo hierárquico) — com Gerente/Supervisor/Vendedor filtrado, mostra "—" em
-  // vez do total da empresa (senão pareceria dado do recorte, mas não é).
-  // Também é COUNT DISTINCT por mês — somar vários meses conta 2x um cliente
-  // que comprou em mais de um mês (não há como deduplicar no front sem a lista
-  // de clientes por mês); avisamos quando isso se aplica.
   const nCliCatSel = {};
   const prevNCliCatSel = {};
   if (!level){
@@ -2183,9 +2084,6 @@ function renderObjetivos(){
       Object.keys(mc).forEach(cat=>{ prevNCliCatSel[cat]=(prevNCliCatSel[cat]||0)+mc[cat]; });
     });
   }
-  document.getElementById('objCashNote').innerHTML = (!level && meses.length>1)
-    ? `<div class="alert">⚠ Positivação somada de ${meses.length} meses (${objLabelMeses(meses)}) — não deduplicada entre meses: um cliente que comprou em mais de um mês do período é contado mais de uma vez.</div>`
-    : (level ? `<div class="alert">⚠ Positivação por categoria não está disponível recortada por ${level} — sem esse cubo no ETL. Mostrando "—".</div>` : '');
 
   function catRow(nome, metaVal, r, c, prevR, prevC, trend, metaCash, nCliCat, prevNCliCat){
     const pctReal = metaVal>0 ? r/metaVal*100 : null;
@@ -2237,67 +2135,150 @@ function renderObjetivos(){
     <td class="tv">${totalNCli!=null?deltaPillSmall(totalNCli,prevTotalNCli):'<span style="color:var(--t3)">—</span>'}</td>
     <td class="tv"><span style="color:var(--t3)">—</span></td><td class="tv"><span style="color:var(--t3)">—</span></td>
     <td class="tv"><span style="color:var(--t3)">—</span></td></tr>`;
-  document.getElementById('tObjCat').innerHTML = `<thead><tr><th>% Peso Meta</th><th>% Peso Real</th><th>Categoria</th><th class="tv">Meta</th><th class="tv">Realizado</th><th class="tv">% Real</th><th class="tv">Tendência</th><th class="tv">% Tendência</th><th class="tv">Realizado ano ant.</th><th class="tv">Δ Fat. vs ano ant.</th><th class="tv">Meta Cash Margem</th><th class="tv">Real Cash Margem</th><th class="tv">% Real Cash Margem</th><th class="tv">Margem %</th><th class="tv">Margem % ano ant.</th><th class="tv">Δ Margem vs ano ant.</th><th class="tv">Positivação</th><th class="tv">Positivação ano ant.</th><th class="tv">Δ Positivação</th><th class="tv">Bonificação</th><th class="tv">% Bonif. x Venda</th><th class="tv">Estoque Box (snapshot)</th></tr></thead><tbody>${catBodyRows}${totalRow}</tbody>`;
+  const html = `<thead><tr><th>% Peso Meta</th><th>% Peso Real</th><th>Categoria</th><th class="tv">Meta</th><th class="tv">Realizado</th><th class="tv">% Real</th><th class="tv">Tendência</th><th class="tv">% Tendência</th><th class="tv">Realizado ano ant.</th><th class="tv">Δ Fat. vs ano ant.</th><th class="tv">Meta Cash Margem</th><th class="tv">Real Cash Margem</th><th class="tv">% Real Cash Margem</th><th class="tv">Margem %</th><th class="tv">Margem % ano ant.</th><th class="tv">Δ Margem vs ano ant.</th><th class="tv">Positivação</th><th class="tv">Positivação ano ant.</th><th class="tv">Δ Positivação</th><th class="tv">Bonificação</th><th class="tv">% Bonif. x Venda</th><th class="tv">Estoque Box (snapshot)</th></tr></thead><tbody>${catBodyRows}${totalRow}</tbody>`;
 
-  renderObjFoco(d, prev, meses);
+  return { html, totalMetaCat, totalRealCat, totalCustoCat, totalTrend, prevTotalRealCat, prevTotalCustoCat, totalMargemGeral, prevTotalMargemGeral, realCatMonthNote };
+}
+function renderObjetivos(){
+  const d = curPeriod();
+  const prev = prevPeriod();
+  populateObjSubFiltro(d);
+  if (!d.meta){
+    document.getElementById('obj-kpis').innerHTML = '<div class="alert">Sem dados de meta para este período.</div>';
+    ['tObjCat','tObjGer','tObjSup','tObjVend'].forEach(id=>document.getElementById(id).innerHTML='');
+    return;
+  }
+  const meses = objMesesSelecionados();
+  if (!meses.length){
+    document.getElementById('objSub').textContent = "Selecione ao menos um mês no filtro de Período.";
+    document.getElementById('obj-kpis').innerHTML = '';
+    ['tObjCat','tObjGer','tObjSup','tObjVend'].forEach(id=>document.getElementById(id).innerHTML='');
+    return;
+  }
+  const ano = meses.map(m=>monthYearFor(d,m)).find(Boolean);
+  document.getElementById('objSub').textContent = `${objLabelMeses(meses)}${ano?"/"+ano:""} — ${d.label}` + (prev?` · comparado ao(s) mesmo(s) mês(es) de ${prev.label}`:" · sem semestre equivalente no ano anterior");
+
+  // Meses do Período selecionado sem NENHUM dado no ERP (nem meta nem venda) —
+  // normalmente meses futuros ainda não fechados/cadastrados. Sem este aviso,
+  // um Bimestre/Semestre parecia "não respeitar o filtro" quando na verdade os
+  // totais já eram só dos meses que existem no ERP (os demais somam 0).
+  const mesesSemDados = meses.filter(m=>!(d.por_mes && d.por_mes[m]) && !(d.meta.por_mes_categoria && d.meta.por_mes_categoria[m]));
+  const mesesSemDadosNote = mesesSemDados.length
+    ? `⚠ ${objLabelMeses(mesesSemDados)}/${ano||''} ainda ${mesesSemDados.length>1?'não têm meta nem venda cadastrada no ERP (provavelmente meses futuros)':'não tem meta nem venda cadastrada no ERP (provavelmente mês futuro)'} — o total do período soma só os meses com dado real.`
+    : '';
+
+  const hasProdOrCliFilter = ST.grp.length || ST.cli.length;
+  let scope = null;
+  if (ST.vend.length){
+    let mg=0,rg=0; ST.vend.forEach(v=>{ mg+=objMetaGeralFor(d,'vendedor',v,meses); rg+=objRealGeralFor(d,'vendedor',v,meses); });
+    scope = {label:"Vendedor: "+labelJoin(ST.vend), metaGeral:mg, realGeral:rg};
+  } else if (ST.sup.length){
+    let mg=0,rg=0; ST.sup.forEach(sName=>{ mg+=objMetaGeralFor(d,'supervisor',sName,meses); rg+=objRealGeralFor(d,'supervisor',sName,meses); });
+    scope = {label:"Supervisor: "+labelJoin(ST.sup), metaGeral:mg, realGeral:rg};
+  } else if (ST.ger.length){
+    let mg=0,rg=0; ST.ger.forEach(g=>{ mg+=objMetaGeralFor(d,'gerente',g,meses); rg+=objRealGeralFor(d,'gerente',g,meses); });
+    scope = {label:"Gerente: "+labelJoin(ST.ger), metaGeral:mg, realGeral:rg};
+  }
+
+  // ── por Categoria: precisa respeitar TANTO o Período (meses) QUANTO o filtro
+  // de hierarquia (Gerente/Supervisor/Vendedor) — antes só respeitava o Período,
+  // e sob filtro de Gerente/Supervisor/Vendedor mostrava sempre o total da
+  // empresa (Meta/Realizado/Margem por categoria divergentes do KPI acima, que
+  // já usa scope.metaGeral/realGeral corretamente recortado). A lógica em si
+  // vive em buildCategoriaTable() — reaproveitada também pela cascata inline
+  // das tabelas por Gerente/Supervisor/Vendedor abaixo (mesmas colunas, só
+  // recortada para 1 entidade).
+  const level = hierLevelActive();
+  const names = level ? hierSelectedNames(level) : [];
+  const built = buildCategoriaTable(d, prev, meses, level, names);
+  const { totalMetaCat, totalRealCat, totalTrend, prevTotalRealCat, totalMargemGeral, prevTotalMargemGeral, realCatMonthNote } = built;
+
+  const totalMetaGeral = scope ? scope.metaGeral : totalMetaCat;
+  const totalRealGeral = scope ? scope.realGeral : totalRealCat;
+  const totalAtingGeral = totalMetaGeral>0 ? totalRealGeral/totalMetaGeral*100 : null;
+  const totalTrendAting = totalMetaGeral>0 ? totalTrend/totalMetaGeral*100 : null;
+
+  const objBanner = [
+    scope ? (level==='gerente'
+      ? `Recortado por <strong>${scope.label}</strong> — Tendência não aparece no resumo acima, mas está disponível na tabela por Categoria abaixo (Gerente tem dado diário).`
+      : `Recortado por <strong>${scope.label}</strong> — Tendência não disponível com este filtro (requer dado diário, só existe no nível empresa e Gerente).`) : null,
+    realCatMonthNote,
+  ].filter(Boolean).join(' ');
+  document.getElementById('obj-kpis').innerHTML =
+    (mesesSemDadosNote?`<div class="alert" style="grid-column:1/-1">${mesesSemDadosNote}</div>`:"") +
+    (objBanner?`<div class="alert" style="grid-column:1/-1">${objBanner}</div>`:"") +
+    (hasProdOrCliFilter?`<div class="alert" style="grid-column:1/-1">⚠ Filtro de Categoria/Grupo/Cliente é ignorado nesta aba (a meta não tem essa granularidade) — mostrando o total do período${scope?" recortado por "+scope.label:""}.</div>`:"") +
+    (totalMetaGeral<=0
+      ? `<div class="alert" style="grid-column:1/-1">Sem meta cadastrada no ERP para este recorte/período.</div>`
+      : (scope ? [
+          {lbl:"Meta Geral", val:fM(totalMetaGeral)},
+          {lbl:"Realizado Geral", val:fM(totalRealGeral)},
+          {lbl:"% Atingimento Geral", val: totalAtingGeral!=null?totalAtingGeral.toFixed(1)+"%":"—"},
+        ] : [
+          {lbl:"Meta Geral", val:fM(totalMetaGeral)},
+          {lbl:"Realizado", val:fM(totalRealGeral), cur:totalRealGeral, prevv: prev?prevTotalRealCat:null},
+          {lbl:"% Realizado", val: totalAtingGeral!=null?totalAtingGeral.toFixed(1)+"%":"—"},
+          {lbl:"Tendência (fechamento)", val:fM(totalTrend)},
+          {lbl:"% Tendência", val: totalTrendAting!=null?totalTrendAting.toFixed(1)+"%":"—"},
+          {lbl:"Margem", val:fPct(totalMargemGeral), cur:totalMargemGeral, prevv:prevTotalMargemGeral},
+        ]).map((k,i)=>`<div class="kpi k${i%7}"><div class="kpi-stripe"></div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div>
+        ${k.cur!=null?deltaPillSmall(k.cur,k.prevv):''}
+        <div class="kpi-note">${k.cur!=null?'vs. mesmo(s) mês(es) ano anterior':''}</div></div>`).join(""));
+
+  // ── por Gerente / Supervisor / Vendedor (Meta Geral, somada nos meses
+  // selecionados) — cada linha é clicável (efeito cascata): clicar num Gerente
+  // filtra a tabela de Supervisor abaixo aos seus supervisores, clicar num
+  // Supervisor filtra a de Vendedor, e a entidade mais profunda selecionada
+  // alimenta o painel "Detalhe por Categoria" no rodapé (objFocus).
+  const effGerMeta = effectiveGerentes(d);
+  const gerRows = Object.keys(d.meta.por_gerente).filter(n=>!effGerMeta||effGerMeta.has(n)).sort((a,b)=>objMetaGeralFor(d,'gerente',b,meses)-objMetaGeralFor(d,'gerente',a,meses));
+  document.getElementById('tObjGer').innerHTML = metaTable(gerRows, n=>({
+    meta:objMetaGeralFor(d,'gerente',n,meses), real:objRealGeralFor(d,'gerente',n,meses),
+    prevMeta: objPrevMetaGeralFor(prev,'gerente',n,meses), prevReal: objPrevRealGeralFor(prev,'gerente',n,meses),
+  }), 'gerente', d, prev, meses);
+
+  const effSupMeta = effectiveSupervisores(d);
+  const supRowsAll = Object.keys(d.meta.por_supervisor).filter(n=>(!effSupMeta||effSupMeta.has(n))&&(!effGerMeta||effGerMeta.has(d.meta.por_supervisor[n].gerente)));
+  const supRows = supRowsAll.filter(n=>!objFocus.ger || d.meta.por_supervisor[n].gerente===objFocus.ger).sort((a,b)=>objMetaGeralFor(d,'supervisor',b,meses)-objMetaGeralFor(d,'supervisor',a,meses));
+  document.getElementById('objSupSub').textContent = objFocus.ger ? `Supervisores de ${objFocus.ger}` : `${supRows.length} supervisores`;
+  document.getElementById('tObjSup').innerHTML = metaTable(supRows, n=>({
+    meta:objMetaGeralFor(d,'supervisor',n,meses), real:objRealGeralFor(d,'supervisor',n,meses),
+    prevMeta: objPrevMetaGeralFor(prev,'supervisor',n,meses), prevReal: objPrevRealGeralFor(prev,'supervisor',n,meses),
+  }), 'supervisor', d, prev, meses);
+
+  const vendRowsAll = Object.keys(d.meta.por_vendedor).filter(n=>(ST.vend.length===0||ST.vend.includes(n))&&(!effSupMeta||effSupMeta.has(d.meta.por_vendedor[n].supervisor)));
+  const vendRows = vendRowsAll.filter(n=>{
+    if (objFocus.sup) return d.meta.por_vendedor[n].supervisor===objFocus.sup;
+    if (objFocus.ger) return supRowsAll.filter(s=>d.meta.por_supervisor[s].gerente===objFocus.ger).includes(d.meta.por_vendedor[n].supervisor);
+    return true;
+  }).sort((a,b)=>objMetaGeralFor(d,'vendedor',b,meses)-objMetaGeralFor(d,'vendedor',a,meses));
+  document.getElementById('objVendSub').textContent = `${vendRows.length} vendedores com meta cadastrada no período` + (objFocus.sup?` — de ${objFocus.sup}`:objFocus.ger?` — de ${objFocus.ger}`:'');
+  document.getElementById('tObjVend').innerHTML = metaTable(vendRows, n=>({
+    meta:objMetaGeralFor(d,'vendedor',n,meses), real:objRealGeralFor(d,'vendedor',n,meses),
+    prevMeta: objPrevMetaGeralFor(prev,'vendedor',n,meses), prevReal: objPrevRealGeralFor(prev,'vendedor',n,meses),
+  }), 'vendedor', d, prev, meses);
+
+  // Positivação (clientes ativos) é COUNT DISTINCT por mês — somar vários meses
+  // conta 2x um cliente que comprou em mais de um mês (não há como deduplicar
+  // no front sem a lista de clientes por mês); avisamos quando isso se aplica.
+  document.getElementById('objCashNote').innerHTML = (!level && meses.length>1)
+    ? `<div class="alert">⚠ Positivação somada de ${meses.length} meses (${objLabelMeses(meses)}) — não deduplicada entre meses: um cliente que comprou em mais de um mês do período é contado mais de uma vez.</div>`
+    : (level ? `<div class="alert">⚠ Positivação por categoria não está disponível recortada por ${level} — sem esse cubo no ETL. Mostrando "—".</div>` : '');
+
+  document.getElementById('tObjCat').innerHTML = built.html;
 }
 
-// ── Painel inferior "Detalhe por Categoria" — efeito cascata Gerente→
-// Supervisor→Vendedor. Clicar numa linha das tabelas acima seleciona/deseleciona
-// a entidade (objFocus); a entidade mais profunda selecionada define o escopo
-// deste painel. Meta por categoria só existe no nível empresa/semestre
-// (meta.hier_por_categoria não tem grão mensal em nenhum nível) — Realizado por
-// categoria só tem grão mensal em Gerente (hier_por_dia_categoria.gerente);
-// Supervisor/Vendedor caem pro semestre inteiro, com aviso (mesma limitação já
-// documentada em Margem & Cash Margem).
+// objFocus: efeito cascata Gerente→Supervisor→Vendedor. Clicar numa linha das
+// tabelas por Gerente/Supervisor/Vendedor abre inline (via metaTable) a
+// tabela de categoria daquela entidade, E estreita a tabela do nível abaixo
+// (Gerente selecionado → só os supervisores dele; Supervisor selecionado → só
+// os vendedores dele) — ver renderObjetivos.
 let objFocus = { ger:null, sup:null, vend:null };
-function objFocusEntity(){
-  if (objFocus.vend) return {level:'vendedor', nome:objFocus.vend};
-  if (objFocus.sup) return {level:'supervisor', nome:objFocus.sup};
-  if (objFocus.ger) return {level:'gerente', nome:objFocus.ger};
-  return null;
-}
 function objFocusToggle(level, nome){
   if (level==='gerente'){ objFocus.ger = (objFocus.ger===nome?null:nome); objFocus.sup=null; objFocus.vend=null; }
   else if (level==='supervisor'){ objFocus.sup = (objFocus.sup===nome?null:nome); objFocus.vend=null; }
   else if (level==='vendedor'){ objFocus.vend = (objFocus.vend===nome?null:nome); }
   renderObjetivos();
-}
-function objFocoCategoriaRows(d, level, nome, meses){
-  if (level==='supervisor' || level==='vendedor'){
-    const base = hierUnionCategoria(d, level, [nome]);
-    return { rows: Object.entries(base), monthNote: `Sem dado mensal para ${level} — mostrando o semestre inteiro (${d.label}), independente do Período selecionado.` };
-  }
-  const merged = {};
-  meses.forEach(mes=>{
-    const agg = monthlyGerenteUnionCategoriaAgg(d, [nome], mes);
-    Object.keys(agg).forEach(cat=>{ const cur = merged[cat]||(merged[cat]={r:0,c:0}); cur.r+=agg[cat].r; cur.c+=agg[cat].c; });
-  });
-  const rows = Object.entries(merged).map(([cat,v])=>[cat,{r:v.r,c:v.c,m:v.r>0?+(100*(1-v.c/v.r)).toFixed(2):0}]);
-  return { rows, monthNote:null };
-}
-function renderObjFoco(d, prev, meses){
-  const foco = objFocusEntity();
-  if (!foco){
-    document.getElementById('objFocoSub').textContent = 'Selecione um Gerente, Supervisor ou Vendedor nas tabelas acima para ver o detalhe por categoria.';
-    document.getElementById('tObjFoco').innerHTML = '';
-    return;
-  }
-  const { level, nome } = foco;
-  const info = objFocoCategoriaRows(d, level, nome, meses);
-  const metaCat = metaCategoriaHierMesFor(d, level, [nome], meses);
-  const prevInfo = prev ? objFocoCategoriaRows(prev, level, nome, level==='gerente'?meses:[]) : null;
-  const prevRowsByCat = {}; if (prevInfo) prevInfo.rows.forEach(([cat,v])=>{ prevRowsByCat[cat]=v; });
-  document.getElementById('objFocoSub').textContent = `${level==='gerente'?'Gerente':level==='supervisor'?'Supervisor':'Vendedor'}: ${nome}` +
-    (info.monthNote ? ` — ⚠ ${info.monthNote}` : ` — ${objLabelMeses(meses)}`);
-  const rows = info.rows.slice().sort((a,b)=>(b[1].r-b[1].c)-(a[1].r-a[1].c)).map(([cat,v])=>{
-    const cash = v.r-v.c; const margem = v.r>0?100*(1-v.c/v.r):null;
-    const mc = metaCat[cat]; const metaFat = mc?mc.meta:0; const metaCash = mc?mc.metaCash:0;
-    const ating = metaFat>0 ? v.r/metaFat*100 : null; const atingCash = metaCash>0 ? cash/metaCash*100 : null;
-    const pv = prevRowsByCat[cat]; const prevCash = pv?(pv.r-pv.c):null; const prevMargem = pv?margemMFrom(pv.r,pv.c):null;
-    return `<tr><td class="tn">${cat}</td><td class="tv">${metaFat>0?fF(metaFat):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${fF(v.r)}</td><td class="tv">${atingBadge(ating)}</td><td class="tv">${deltaPillSmall(v.r,pv?pv.r:null)}</td><td class="tv">${metaCash>0?fF(metaCash):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${fF(cash)}</td><td class="tv">${atingBadge(atingCash)}</td><td class="tv">${deltaPillSmall(cash,prevCash)}</td><td class="tv">${margem!=null?margemBadge(margem):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${deltaPP(margem,prevMargem,false)}</td></tr>`;
-  }).join("");
-  document.getElementById('tObjFoco').innerHTML = `<thead><tr><th>Categoria</th><th class="tv">Meta Faturamento</th><th class="tv">Realizado</th><th class="tv">% Ating.</th><th class="tv">Δ vs ano ant.</th><th class="tv">Meta Cash Margem</th><th class="tv">Cash Margem</th><th class="tv">% Ating.</th><th class="tv">Δ vs ano ant.</th><th class="tv">Margem %</th><th class="tv">Δ Margem (p.p.)</th></tr></thead><tbody>${rows}</tbody>`;
 }
 
 // ── 3B1B. METAS KG FUMO, PAPEL E PRODUTO ESTRATÉGICO ────────────
