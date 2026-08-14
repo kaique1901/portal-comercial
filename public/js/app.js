@@ -2290,15 +2290,34 @@ function objFocusToggle(level, nome){
 // de embalagem padrão), não em R$ — meta e realizado usam fN, sem "R$".
 // Com mês selecionado, usa o cubo mensal por entidade (meta.por_mes /
 // realizado_por_mes) — a mesma correção aplicada à aba Meta x Realizado.
-function metaExtraTable(names, fn){
+// level (opcional, 'gerente'|'supervisor'): torna cada linha clicável — efeito
+// cascata igual ao da aba Acompanhamento Objetivos (metaExtraFocus), clicar num
+// Gerente estreita a tabela de Supervisor abaixo aos supervisores dele, clicar
+// num Supervisor estreita a de Vendedor. Sem quebra por categoria aqui (KG
+// Fumo/Papel/Estratégico já são métricas únicas, não por categoria) — por
+// isso não há tabela aninhada como em Acompanhamento Objetivos, só o realce/
+// filtro da linha selecionada.
+function metaExtraTable(names, fn, level){
   return `<thead><tr><th>Nome</th><th class="tv">Meta KG Fumo</th><th class="tv">Realiz. KG Fumo</th><th class="tv">% Ating. KG</th><th class="tv">Meta Papel (Qtd)</th><th class="tv">Realizado Papel (Qtd)</th><th class="tv">% Ating. Papel</th><th class="tv">Meta Estratégico</th><th class="tv">Realizado Estratégico</th><th class="tv">% Ating. Estrat.</th></tr></thead><tbody>${
     names.map(n=>{
       const v = fn(n);
       const atingKg = v.metaKg>0 ? v.realKg/v.metaKg*100 : null;
       const atingPapel = v.metaPapel>0 ? v.realPapel/v.metaPapel*100 : null;
       const atingEst = v.metaEst>0 ? v.realEst/v.metaEst*100 : null;
-      return `<tr><td class="tn">${n}</td><td class="tv">${fN(v.metaKg)} kg</td><td class="tv">${fN(v.realKg)} kg</td><td class="tv">${atingBadge(atingKg)}</td><td class="tv">${fN(v.metaPapel)}</td><td class="tv">${fN(v.realPapel)}</td><td class="tv">${atingBadge(atingPapel)}</td><td class="tv">${fF(v.metaEst)}</td><td class="tv">${fF(v.realEst)}</td><td class="tv">${atingBadge(atingEst)}</td></tr>`;
+      const focusKey = level==='gerente'?'ger':'sup';
+      const selected = level && metaExtraFocus[focusKey]===n;
+      const trAttrs = level ? ` class="obj-focus-row${selected?' obj-focus-sel':''}" style="cursor:pointer" onclick="metaExtraFocusToggle('${level}','${n.replace(/'/g,"\\'")}')"` : '';
+      return `<tr${trAttrs}><td class="tn">${n}</td><td class="tv">${fN(v.metaKg)} kg</td><td class="tv">${fN(v.realKg)} kg</td><td class="tv">${atingBadge(atingKg)}</td><td class="tv">${fN(v.metaPapel)}</td><td class="tv">${fN(v.realPapel)}</td><td class="tv">${atingBadge(atingPapel)}</td><td class="tv">${fF(v.metaEst)}</td><td class="tv">${fF(v.realEst)}</td><td class="tv">${atingBadge(atingEst)}</td></tr>`;
     }).join("")}</tbody>`;
+}
+// efeito cascata Gerente→Supervisor→Vendedor desta aba (independente do
+// objFocus da aba Acompanhamento Objetivos — cada aba mantém sua própria
+// seleção, já que não têm relação entre si).
+let metaExtraFocus = { ger:null, sup:null };
+function metaExtraFocusToggle(level, nome){
+  if (level==='gerente'){ metaExtraFocus.ger = (metaExtraFocus.ger===nome?null:nome); metaExtraFocus.sup=null; }
+  else if (level==='supervisor'){ metaExtraFocus.sup = (metaExtraFocus.sup===nome?null:nome); }
+  renderMetasExtra();
 }
 // meta_kg cobre o mesmo valor de meta_fumokg (o backend grava os dois nomes
 // para a mesma categoria 13) — usar meta_kg uniformemente porque é o único
@@ -2387,18 +2406,24 @@ function renderMetasExtra(){
     metaKg:metaExtraFor(d,'gerente',n,mesKey,'meta_kg'), realKg:realExtraFor(d,'gerente',n,mesKey,'rkg'),
     metaPapel:metaExtraFor(d,'gerente',n,mesKey,'meta_papel'), realPapel:realExtraFor(d,'gerente',n,mesKey,'rp'),
     metaEst:metaExtraFor(d,'gerente',n,mesKey,'meta_estrategico'), realEst:realExtraFor(d,'gerente',n,mesKey,'rest'),
-  }));
+  }), 'gerente');
 
   const effSupMeta = effectiveSupervisores(d);
-  const supRows = Object.keys(d.meta.por_supervisor).filter(n=>(!effSupMeta||effSupMeta.has(n))&&(!effGerMeta||effGerMeta.has(d.meta.por_supervisor[n].gerente))).sort((a,b)=>metaExtraFor(d,'supervisor',b,mesKey,'meta_papel')-metaExtraFor(d,'supervisor',a,mesKey,'meta_papel'));
+  const supRowsAll = Object.keys(d.meta.por_supervisor).filter(n=>(!effSupMeta||effSupMeta.has(n))&&(!effGerMeta||effGerMeta.has(d.meta.por_supervisor[n].gerente)));
+  const supRows = supRowsAll.filter(n=>!metaExtraFocus.ger || d.meta.por_supervisor[n].gerente===metaExtraFocus.ger).sort((a,b)=>metaExtraFor(d,'supervisor',b,mesKey,'meta_papel')-metaExtraFor(d,'supervisor',a,mesKey,'meta_papel'));
+  document.getElementById('metaExtraSupSub').textContent = metaExtraFocus.ger ? `Supervisores de ${metaExtraFocus.ger}` : `${supRows.length} supervisores`;
   document.getElementById('tMetaExtraSup').innerHTML = metaExtraTable(supRows, n=>({
     metaKg:metaExtraFor(d,'supervisor',n,mesKey,'meta_kg'), realKg:realExtraFor(d,'supervisor',n,mesKey,'rkg'),
     metaPapel:metaExtraFor(d,'supervisor',n,mesKey,'meta_papel'), realPapel:realExtraFor(d,'supervisor',n,mesKey,'rp'),
     metaEst:metaExtraFor(d,'supervisor',n,mesKey,'meta_estrategico'), realEst:realExtraFor(d,'supervisor',n,mesKey,'rest'),
-  }));
+  }), 'supervisor');
 
-  const vendRows = Object.keys(d.meta.por_vendedor).filter(n=>(ST.vend.length===0||ST.vend.includes(n))&&(!effSupMeta||effSupMeta.has(d.meta.por_vendedor[n].supervisor))).sort((a,b)=>metaExtraFor(d,'vendedor',b,mesKey,'meta_papel')-metaExtraFor(d,'vendedor',a,mesKey,'meta_papel'));
-  document.getElementById('metaExtraVendSub').textContent = `${vendRows.length} vendedores com meta cadastrada no período`;
+  const vendRows = Object.keys(d.meta.por_vendedor).filter(n=>(ST.vend.length===0||ST.vend.includes(n))&&(!effSupMeta||effSupMeta.has(d.meta.por_vendedor[n].supervisor))).filter(n=>{
+    if (metaExtraFocus.sup) return d.meta.por_vendedor[n].supervisor===metaExtraFocus.sup;
+    if (metaExtraFocus.ger) return supRowsAll.filter(s=>d.meta.por_supervisor[s].gerente===metaExtraFocus.ger).includes(d.meta.por_vendedor[n].supervisor);
+    return true;
+  }).sort((a,b)=>metaExtraFor(d,'vendedor',b,mesKey,'meta_papel')-metaExtraFor(d,'vendedor',a,mesKey,'meta_papel'));
+  document.getElementById('metaExtraVendSub').textContent = `${vendRows.length} vendedores com meta cadastrada no período` + (metaExtraFocus.sup?` — de ${metaExtraFocus.sup}`:metaExtraFocus.ger?` — de ${metaExtraFocus.ger}`:'');
   document.getElementById('tMetaExtraVend').innerHTML = metaExtraTable(vendRows, n=>({
     metaKg:metaExtraFor(d,'vendedor',n,mesKey,'meta_kg'), realKg:realExtraFor(d,'vendedor',n,mesKey,'rkg'),
     metaPapel:metaExtraFor(d,'vendedor',n,mesKey,'meta_papel'), realPapel:realExtraFor(d,'vendedor',n,mesKey,'rp'),
