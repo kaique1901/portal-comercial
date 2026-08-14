@@ -136,6 +136,11 @@ class DashboardETLService {
       // ── extras "flat" (antes vinham do snapshot) ───────────────
       const porMesCli = await q(`SELECT Mes mes, COUNT(DISTINCT CodCli) n FROM tmp_base_vendas GROUP BY Mes`);
       const porMesCatCli = await q(`SELECT Mes mes, categoria, COUNT(DISTINCT CodCli) n FROM tmp_base_vendas WHERE categoria IS NOT NULL GROUP BY Mes, categoria`);
+      // Códigos de cliente distintos por (mês, categoria) — não só a contagem —
+      // pra permitir deduplicar no front ao somar vários meses de um período
+      // (Bimestre/Quadrimestre/Semestre/Personalizado): um cliente que comprou
+      // em mais de um mês do período não pode ser contado 2x na Positivação.
+      const porMesCatCliCod = await q(`SELECT Mes mes, categoria, array_agg(DISTINCT CodCli) codigos FROM tmp_base_vendas WHERE categoria IS NOT NULL GROUP BY Mes, categoria`);
       // Realizado da meta FUMO KG (metacategoria cat 13) = peso dos produtos com
       // siglaagrufat='FF' — é a coluna realkg, a mesma que a query oficial usa.
       // Não é "Grupo ILIKE 'fumo%'": esse filtro pega grupos que não entram na meta.
@@ -292,7 +297,7 @@ class DashboardETLService {
       return this._montarJson(periodo, {
         resumo, porMes, porGer, porSup, porCat, porGrp, topVend, topCli, topProd, porDia, porDiaCat,
         porGerMes, porSupMes, porVendMes,
-        porMesCli, porMesCatCli, porMesFumo, porMesFumoTotal, realFumoGer, realFumoSup, realFumoVend, fullVend, qual,
+        porMesCli, porMesCatCli, porMesCatCliCod, porMesFumo, porMesFumoTotal, realFumoGer, realFumoSup, realFumoVend, fullVend, qual,
         topCliCash, topCliCashCat, topCliCashVend, topProdCash, topVendCash,
         topCliMargem, topCliMargemCat, topCliMargemVend, topProdMargem, topVendMargem,
         cliCashPorMes, cliMargemPorMes, prodCashPorMes, prodMargemPorMes,
@@ -534,6 +539,14 @@ class DashboardETLService {
     // por_mes_* / fumo
     const por_mes_clientes = {}; for (const row of d.porMesCli) por_mes_clientes[String(row.mes)] = parseInt(row.n, 10);
     const por_mes_categoria_clientes = {}; for (const row of d.porMesCatCli) { const m = String(row.mes); (por_mes_categoria_clientes[m] = por_mes_categoria_clientes[m] || {})[row.categoria] = parseInt(row.n, 10); }
+    // por_mes_categoria_clientes_cod[mes][categoria] = [códigos de cliente] —
+    // o front une (Set) os códigos dos meses do período selecionado, contando
+    // cada cliente uma única vez mesmo que ele tenha comprado em vários meses.
+    const por_mes_categoria_clientes_cod = {};
+    for (const row of d.porMesCatCliCod || []) {
+      const m = String(row.mes);
+      (por_mes_categoria_clientes_cod[m] = por_mes_categoria_clientes_cod[m] || {})[row.categoria] = (row.codigos || []).map(c => String(c));
+    }
     const por_mes_fumokg = {}; for (const row of d.porMesFumo) por_mes_fumokg[String(row.mes)] = round2(num(row.kg));
     // total de fumo sem a restrição de meta (por_mes_fumokg é o comparável à meta)
     const por_mes_fumokg_total = {}; for (const row of (d.porMesFumoTotal||[])) por_mes_fumokg_total[String(row.mes)] = round2(num(row.kg));
@@ -684,7 +697,7 @@ class DashboardETLService {
       n_grp: parseInt(d.resumo.n_grp, 10), n_pedidos: nPedidos, ticket_pedido: nPedidos > 0 ? round2(receita / nPedidos) : 0,
       por_mes, por_gerente, por_supervisor, por_categoria, por_grupo,
       top_vendedores, top_clientes, top_produtos, por_dia, por_dia_categoria,
-      por_mes_clientes, por_mes_categoria_clientes, por_mes_fumokg, por_mes_fumokg_total, realizado_fumokg, full_vendedores, realizado_por_mes, qualidade,
+      por_mes_clientes, por_mes_categoria_clientes, por_mes_categoria_clientes_cod, por_mes_fumokg, por_mes_fumokg_total, realizado_fumokg, full_vendedores, realizado_por_mes, qualidade,
       top_clientes_cash, top_clientes_cash_detalhe, top_produtos_cash, top_vendedores_cash,
       top_clientes_margem, top_clientes_margem_detalhe, top_produtos_margem, top_vendedores_margem,
       top_clientes_cash_por_mes, top_clientes_margem_por_mes, top_produtos_cash_por_mes, top_produtos_margem_por_mes,

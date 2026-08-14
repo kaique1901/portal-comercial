@@ -2078,17 +2078,38 @@ function buildCategoriaTable(d, prev, meses, level, names){
   const totalMargemGeral = totalRealCat>0 ? 100*(1-totalCustoCat/totalRealCat) : null;
   const prevTotalMargemGeral = (prev && prevTotalRealCat>0) ? 100*(1-prevTotalCustoCat/prevTotalRealCat) : null;
 
+  // Positivação (clientes ativos) por categoria: conta CÓDIGO DE CLIENTE
+  // DISTINTO no período inteiro, não a soma das contagens de cada mês (um
+  // cliente que comprou em 2 meses do período antes era contado 2x). Usa
+  // por_mes_categoria_clientes_cod (lista de códigos por mês+categoria) e une
+  // (Set) os códigos dos meses selecionados antes de contar.
   const nCliCatSel = {};
   const prevNCliCatSel = {};
   if (!level){
-    meses.forEach(mes=>{
-      const mc = (d.por_mes_categoria_clientes && d.por_mes_categoria_clientes[mes]) || {};
-      Object.keys(mc).forEach(cat=>{ nCliCatSel[cat]=(nCliCatSel[cat]||0)+mc[cat]; });
-    });
-    if (prev) meses.forEach(mes=>{
-      const mc = (prev.por_mes_categoria_clientes && prev.por_mes_categoria_clientes[mes]) || {};
-      Object.keys(mc).forEach(cat=>{ prevNCliCatSel[cat]=(prevNCliCatSel[cat]||0)+mc[cat]; });
-    });
+    const somaDistinta = (period, mesesSel) => {
+      const out = {};
+      if (!period.por_mes_categoria_clientes_cod){
+        // Cache antigo (antes desta correção) sem os códigos — cai pra soma
+        // simples (pode contar 2x cliente ativo em vários meses do período).
+        mesesSel.forEach(mes=>{
+          const mc = (period.por_mes_categoria_clientes && period.por_mes_categoria_clientes[mes]) || {};
+          Object.keys(mc).forEach(cat=>{ out[cat]=(out[cat]||0)+mc[cat]; });
+        });
+        return out;
+      }
+      const setsPorCat = {};
+      mesesSel.forEach(mes=>{
+        const mc = period.por_mes_categoria_clientes_cod[mes] || {};
+        Object.keys(mc).forEach(cat=>{
+          const s = setsPorCat[cat] || (setsPorCat[cat] = new Set());
+          mc[cat].forEach(cod=>s.add(cod));
+        });
+      });
+      Object.keys(setsPorCat).forEach(cat=>{ out[cat] = setsPorCat[cat].size; });
+      return out;
+    };
+    Object.assign(nCliCatSel, somaDistinta(d, meses));
+    if (prev) Object.assign(prevNCliCatSel, somaDistinta(prev, meses));
   }
 
   function catRow(nome, metaVal, r, c, prevR, prevC, trend, metaCash, nCliCat, prevNCliCat){
@@ -2264,12 +2285,12 @@ function renderObjetivos(){
     prevMeta: objPrevMetaGeralFor(prev,'vendedor',n,meses), prevReal: objPrevRealGeralFor(prev,'vendedor',n,meses),
   }), 'vendedor', d, prev, meses);
 
-  // Positivação (clientes ativos) é COUNT DISTINCT por mês — somar vários meses
-  // conta 2x um cliente que comprou em mais de um mês (não há como deduplicar
-  // no front sem a lista de clientes por mês); avisamos quando isso se aplica.
-  document.getElementById('objCashNote').innerHTML = (!level && meses.length>1)
-    ? `<div class="alert">⚠ Positivação somada de ${meses.length} meses (${objLabelMeses(meses)}) — não deduplicada entre meses: um cliente que comprou em mais de um mês do período é contado mais de uma vez.</div>`
-    : (level ? `<div class="alert">⚠ Positivação por categoria não está disponível recortada por ${level} — sem esse cubo no ETL. Mostrando "—".</div>` : '');
+  // Positivação (clientes ativos) por categoria conta código de cliente
+  // DISTINTO em todo o período selecionado (união dos meses, não soma) — ver
+  // buildCategoriaTable.
+  document.getElementById('objCashNote').innerHTML = level
+    ? `<div class="alert">⚠ Positivação por categoria não está disponível recortada por ${level} — sem esse cubo no ETL. Mostrando "—".</div>`
+    : '';
 
   document.getElementById('tObjCat').innerHTML = built.html;
 }
