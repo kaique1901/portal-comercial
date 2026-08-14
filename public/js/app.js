@@ -327,6 +327,12 @@ function effectiveGerentes(d){
 function effectiveSupervisores(d){
   if (ST.sup.length) return new Set(ST.sup);
   if (ST.vend.length) return new Set(ST.vend.map(v=>supervisorDoVendedor(d,v)).filter(Boolean));
+  // Faltava este caso: com só Gerente marcado (ex.: trava de acesso de um
+  // usuário logado como Gerente, que deixa Supervisor/Vendedor desmarcados),
+  // esta função caía em "sem restrição" — e como effectiveSupervisores() é a
+  // fonte usada em toda a aplicação pra restringir listas de Vendedor (via
+  // supervisor), isso vazava vendedores de OUTROS gerentes em qualquer aba.
+  if (ST.ger.length) return new Set(Object.keys(d.por_supervisor||{}).filter(s=>ST.ger.includes(gerenteDoSupervisor(d,s))));
   return null;
 }
 // Linhas "por Gerente" já restritas aos pais reais de Supervisor/Vendedor
