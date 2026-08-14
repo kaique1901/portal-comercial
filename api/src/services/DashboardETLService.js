@@ -713,8 +713,21 @@ class DashboardETLService {
     };
   }
 
-  // Estoque "box vendedor" — fotografia do último dia disponível (não por período).
+  // Estoque "box vendedor" — fotografia do último dia disponível (não por período)
+  // × venda média diária dos ÚLTIMOS 90 DIAS CORRIDOS REAIS (sempre até hoje,
+  // independente do período selecionado no filtro — estoque físico só existe
+  // "agora"). Média diária = valor vendido nesses 90 dias ÷ DIAS ÚTEIS reais do
+  // calendário (cifalcomercial.tcperiodo, considera feriado nacional — antes o
+  // front dividia por 90 fixo, dias corridos). Cruzado por (codven,codproduto),
+  // não por produto isolado: cada Gerente/Supervisor/Vendedor usa o RITMO DE
+  // VENDA DELE MESMO, não uma média da empresa inteira (senão o "dias de
+  // estoque" de um vendedor lento apareceria bom só por causa da empresa).
   async _buildEstoque() {
+    const hoje = new Date();
+    const iniJanela = new Date(hoje); iniJanela.setDate(iniJanela.getDate() - 89);
+    const fmt = dt => dt.toISOString().slice(0, 10);
+    const [iniStr, fimStr] = [fmt(iniJanela), fmt(hoje)];
+
     const rows = (await db.query(`
       WITH latest AS (SELECT MAX(data) d FROM cifalcomercial.posicao_estoque_diario_vendedor)
       SELECT v.codven, v.codproduto, v.saldoestoque saldo, ROUND(v.saldoestoque*p.customedio,2) valor_carga,
@@ -730,27 +743,44 @@ class DashboardETLService {
       LEFT JOIN cifalcomercial.gerente g ON g.codgerente=e.codgerente
       JOIN latest ON v.data=latest.d`)).rows;
 
+    const diasUteis90 = parseInt((await db.query(`
+      SELECT COUNT(*) n FROM cifalcomercial.tcperiodo
+      WHERE final_de_semana=0 AND feriado_nacional=0 AND dia_completo BETWEEN $1 AND $2
+    `, [iniStr, fimStr])).rows[0].n, 10);
+
+    const venda90Rows = (await db.query(`
+      SELECT codven, codigo codproduto, SUM(total) r, SUM(qtde) qq
+      FROM (${BASE_CTE}) s
+      GROUP BY codven, codigo
+    `, [iniStr, fimStr])).rows;
+    const venda90 = {}; // "codven|codproduto" -> {r, q}
+    for (const row of venda90Rows) venda90[`${row.codven}|${row.codproduto}`] = { r: num(row.r), q: num(row.qq) };
+
     const detalhe = [], vendedor_info = {}, por_vendedor = {}, por_supervisor = {}, por_gerente = {}, por_categoria = {}, por_produto = {};
     const prodVend = {}; let comSaldo = 0;
     for (const r of rows) {
       const saldo = num(r.saldo), valor = num(r.valor_carga);
-      detalhe.push([String(r.codven), String(r.codproduto), saldo, valor]);
+      const v90 = venda90[`${r.codven}|${r.codproduto}`] || { r: 0, q: 0 };
+      detalhe.push([String(r.codven), String(r.codproduto), saldo, valor, round2(v90.r), round2(v90.q)]);
       if (saldo > 0) comSaldo++;
       vendedor_info[String(r.codven)] = { vendedor: r.vendedor, supervisor: r.supervisor, gerente: r.gerente };
-      const acc = (o, k, extra) => { if (!o[k]) o[k] = Object.assign({ saldo: 0, valor_carga: 0 }, extra || {}); o[k].saldo += saldo; o[k].valor_carga += valor; };
+      const acc = (o, k, extra) => { if (!o[k]) o[k] = Object.assign({ saldo: 0, valor_carga: 0, venda90: 0 }, extra || {}); o[k].saldo += saldo; o[k].valor_carga += valor; o[k].venda90 += v90.r; };
       if (r.vendedor) acc(por_vendedor, r.vendedor, { supervisor: r.supervisor, gerente: r.gerente });
       if (r.supervisor) acc(por_supervisor, r.supervisor, { gerente: r.gerente });
       if (r.gerente) acc(por_gerente, r.gerente);
       if (r.categoria) acc(por_categoria, r.categoria);
       const pk = String(r.codproduto);
-      if (!por_produto[pk]) { por_produto[pk] = { saldo: 0, valor_carga: 0, descricao: r.descricao, categoria: r.categoria, grupo: r.grupo, n_vendedores: 0 }; prodVend[pk] = new Set(); }
-      por_produto[pk].saldo += saldo; por_produto[pk].valor_carga += valor;
+      if (!por_produto[pk]) { por_produto[pk] = { saldo: 0, valor_carga: 0, venda90: 0, descricao: r.descricao, categoria: r.categoria, grupo: r.grupo, n_vendedores: 0 }; prodVend[pk] = new Set(); }
+      por_produto[pk].saldo += saldo; por_produto[pk].valor_carga += valor; por_produto[pk].venda90 += v90.r;
       if (saldo > 0) prodVend[pk].add(r.codven);
     }
-    const rnd = o => { for (const k in o) { o[k].saldo = round2(o[k].saldo); o[k].valor_carga = round2(o[k].valor_carga); } };
+    const rnd = o => { for (const k in o) { o[k].saldo = round2(o[k].saldo); o[k].valor_carga = round2(o[k].valor_carga); o[k].venda90 = round2(o[k].venda90); } };
     rnd(por_vendedor); rnd(por_supervisor); rnd(por_gerente); rnd(por_categoria);
-    for (const k in por_produto) { por_produto[k].saldo = round2(por_produto[k].saldo); por_produto[k].valor_carga = round2(por_produto[k].valor_carga); por_produto[k].n_vendedores = prodVend[k].size; }
-    return { linhas: rows.length, linhas_com_saldo: comSaldo, vendedor_info, por_vendedor, por_supervisor, por_gerente, por_categoria, por_produto, detalhe };
+    for (const k in por_produto) { por_produto[k].saldo = round2(por_produto[k].saldo); por_produto[k].valor_carga = round2(por_produto[k].valor_carga); por_produto[k].venda90 = round2(por_produto[k].venda90); por_produto[k].n_vendedores = prodVend[k].size; }
+    return {
+      linhas: rows.length, linhas_com_saldo: comSaldo, vendedor_info, por_vendedor, por_supervisor, por_gerente, por_categoria, por_produto, detalhe,
+      dias_uteis_90: diasUteis90, janela_venda_90: { inicio: iniStr, fim: fimStr },
+    };
   }
 
   // Árvore REAL da força de vendas (cadastro: supervisor + eqvend, só ativos).

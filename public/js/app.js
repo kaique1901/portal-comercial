@@ -3135,36 +3135,47 @@ function hierExemplos(level, names, medR, medM){
 }
 
 // ── 6C. ESTOQUE X VENDA — COBERTURA EM DIAS ──────────────────────
-// Estoque ("Base Estoque Box Vendedor", coluna saldo) é uma FOTO atual, sem
-// recorte de período. A venda média/dia usa a mesma janela fixa de 90 dias do
-// período selecionado (por_produto_janela90, já usada em Sazonalidade/Motivos).
-// DOS agregado (Gerente/Supervisor/Vendedor/Categoria) agrupa por PRODUTO
-// primeiro para não contar a mesma taxa de venda do produto mais de uma vez
-// só porque vários vendedores carregam o mesmo item.
-function computeEstoqueDOS(rows, p90, windowDays){
+// Estoque ("Base Estoque Box Vendedor", coluna saldo) é uma FOTO de hoje, sem
+// recorte de período — não existe "estoque de um semestre passado" (decisão
+// confirmada com o usuário). A venda média/dia usa os últimos 90 dias
+// corridos REAIS, sempre até hoje (est.dias_uteis_90/janela_venda_90,
+// calculados uma vez no ETL via BASE_CTE — independentes do Período
+// selecionado no filtro), cruzada por (codven,codproduto): cada
+// Gerente/Supervisor/Vendedor usa o RITMO DE VENDA DELE MESMO (est.detalhe
+// já traz venda90/qtde90 por linha), não uma média da empresa inteira.
+// diasUteis = dias úteis REAIS (cifalcomercial.tcperiodo, considera feriado
+// nacional) na janela de 90 dias corridos até hoje (est.dias_uteis_90) — cada
+// linha já traz seu PRÓPRIO venda90 (por codven+codproduto, calculado no ETL
+// via BASE_CTE), então o Gerente/Supervisor/Vendedor usa o ritmo de venda
+// DELE MESMO, não uma média da empresa inteira. Ainda agrupa por produto
+// antes de somar só por eficiência (soma é comutativa — resultado idêntico a
+// somar direto sobre "rows", já que venda90/valor_carga são aditivos por linha).
+function computeEstoqueDOS(rows, diasUteis){
   const byProduto = {};
   rows.forEach(r=>{
-    if (!byProduto[r.codproduto]) byProduto[r.codproduto] = {valor:0, saldo:0};
+    if (!byProduto[r.codproduto]) byProduto[r.codproduto] = {valor:0, saldo:0, venda90:0};
     byProduto[r.codproduto].valor += r.valor_carga;
     byProduto[r.codproduto].saldo += r.saldo;
+    byProduto[r.codproduto].venda90 += (r.venda90||0);
   });
-  let valorTotal=0, saldoTotal=0, avgDailyValor=0;
+  let valorTotal=0, saldoTotal=0, vendaTotal=0;
   const codes = Object.keys(byProduto);
   codes.forEach(cod=>{
-    valorTotal += byProduto[cod].valor; saldoTotal += byProduto[cod].saldo;
-    const v90 = p90[cod];
-    avgDailyValor += v90 ? v90.r/windowDays : 0;
+    valorTotal += byProduto[cod].valor; saldoTotal += byProduto[cod].saldo; vendaTotal += byProduto[cod].venda90;
   });
+  const avgDailyValor = diasUteis>0 ? vendaTotal/diasUteis : 0;
   return { valorTotal, saldoTotal, avgDailyValor, dos: avgDailyValor>0 ? valorTotal/avgDailyValor : null, nProdutos: codes.length };
 }
-// est.detalhe vem compacto — [codven, codproduto, saldo, valor_carga] — para não
-// repetir nome de vendedor/supervisor/gerente e descrição/categoria/grupo do
-// produto em ~44 mil linhas. "Hidrata" via os lookups vendedor_info/por_produto.
+// est.detalhe vem compacto — [codven, codproduto, saldo, valor_carga, venda90,
+// qtde90] — para não repetir nome de vendedor/supervisor/gerente e
+// descrição/categoria/grupo do produto em ~50 mil linhas. venda90/qtde90 = o
+// que ESSE vendedor vendeu DESSE produto nos últimos 90 dias corridos reais
+// (sempre até hoje). "Hidrata" via os lookups vendedor_info/por_produto.
 function estoqueHydrate(est, tuple){
-  const codven=tuple[0], codproduto=tuple[1], saldo=tuple[2], valor_carga=tuple[3];
+  const codven=tuple[0], codproduto=tuple[1], saldo=tuple[2], valor_carga=tuple[3], venda90=tuple[4]||0, qtde90=tuple[5]||0;
   const vi = est.vendedor_info[codven] || {vendedor:"(desconhecido)", supervisor:"(desconhecido)", gerente:"(desconhecido)"};
   const pi = est.por_produto[codproduto] || {descricao:codproduto, categoria:"(sem categoria)", grupo:""};
-  return { codven, codproduto, saldo, valor_carga, vendedor:vi.vendedor, supervisor:vi.supervisor, gerente:vi.gerente, descricao:pi.descricao, categoria:pi.categoria, grupo:pi.grupo };
+  return { codven, codproduto, saldo, valor_carga, venda90, qtde90, vendedor:vi.vendedor, supervisor:vi.supervisor, gerente:vi.gerente, descricao:pi.descricao, categoria:pi.categoria, grupo:pi.grupo };
 }
 // O estoque é uma fotografia por vendedor×produto (não tem cliente), então respeita
 // hierarquia + produto. Canal/Inadimplente/Status são atributos do CLIENTE e não se
@@ -3192,7 +3203,7 @@ function toggleEstoqueCascata(pathKey){
   if (estoqueCascataExpanded.has(pathKey)) estoqueCascataExpanded.delete(pathKey); else estoqueCascataExpanded.add(pathKey);
   renderEstoque();
 }
-function buildEstoqueCascadeTree(rows, keys, depth, p90){
+function buildEstoqueCascadeTree(rows, keys, depth, diasUteis){
   depth = depth||0;
   const key = keys[depth];
   const isLeafLevel = depth===keys.length-1;
@@ -3201,11 +3212,11 @@ function buildEstoqueCascadeTree(rows, keys, depth, p90){
   const node = {};
   Object.keys(groups).forEach(k=>{
     const subset = groups[k];
-    const agg = computeEstoqueDOS(subset, p90, 90);
+    const agg = computeEstoqueDOS(subset, diasUteis);
     node[k] = {
       valorTotal: agg.valorTotal, saldoTotal: agg.saldoTotal, dos: agg.dos,
       descricao: (isLeafLevel && key==='codproduto') ? subset[0].descricao : null,
-      children: isLeafLevel ? null : buildEstoqueCascadeTree(subset, keys, depth+1, p90)
+      children: isLeafLevel ? null : buildEstoqueCascadeTree(subset, keys, depth+1, diasUteis)
     };
   });
   return node;
@@ -3289,20 +3300,19 @@ function renderEstoqueParadosCascadeRows(nodesObj, pathNames, nivel){
 }
 function renderEstoque(){
   const est = REAL_DATA._estoque;
-  const d = curPeriod();
-  const p90 = d.por_produto_janela90 || {};
-  const win = d.janela90;
   if (!est){ document.getElementById('estoqueSub').textContent = "Dados de estoque não disponíveis."; return; }
+  const diasUteis = est.dias_uteis_90 || 0;
+  const win = est.janela_venda_90;
 
-  document.getElementById('estoqueSub').textContent = `Estoque atual (fotografia única, ${fN(est.linhas_com_saldo)} linhas com saldo &gt; 0) x venda média/dia — janela ${win?win.inicio+' a '+win.fim:'—'} (mesma do período selecionado)`;
+  document.getElementById('estoqueSub').textContent = `Estoque atual (fotografia única, ${fN(est.linhas_com_saldo)} linhas com saldo &gt; 0) x venda média/dia útil — últimos 90 dias corridos reais, ${win?win.inicio+' a '+win.fim:'—'} (${fN(diasUteis)} dias úteis, sempre até hoje — não muda com o filtro de Período)`;
 
   const rows = estoqueFilterRows(est);
-  const geral = computeEstoqueDOS(rows, p90, 90);
+  const geral = computeEstoqueDOS(rows, diasUteis);
 
-  // Produtos > 90 dias (grão fino: por par vendedor×produto, DOS em UNIDADES)
+  // Produtos > 90 dias (grão fino: por par vendedor×produto, DOS em UNIDADES) —
+  // usa a venda REAL desse vendedor×produto (r.qtde90), não uma média da empresa.
   const produtos90 = rows.map(r=>{
-    const v90 = p90[r.codproduto];
-    const avgDailyQ = v90 ? v90.q/90 : 0;
+    const avgDailyQ = diasUteis>0 ? r.qtde90/diasUteis : 0;
     const dos = avgDailyQ>0 ? r.saldo/avgDailyQ : null; // null = zero venda em 90 dias = pior caso
     return {...r, avgDailyQ, dos};
   }).filter(r=>r.dos==null || r.dos>90);
@@ -3320,11 +3330,11 @@ function renderEstoque(){
   ].map((k,i)=>`<div class="kpi k${i}"><div class="kpi-stripe"></div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div></div>`).join("");
 
   // "Cobertura por Categoria" agora em cascata (Categoria → Grupo → Produto).
-  const treeCat = buildEstoqueCascadeTree(rows, ['categoria','grupo','codproduto'], 0, p90);
+  const treeCat = buildEstoqueCascadeTree(rows, ['categoria','grupo','codproduto'], 0, diasUteis);
   document.getElementById('tEstoqueCat').innerHTML = `<thead><tr><th>Categoria / Grupo / Produto</th><th class="tv">Valor Estoque</th><th class="tv">Unidades</th><th class="tv">Cobertura</th></tr></thead><tbody>${renderEstoqueCascadeRows(treeCat, [], 0, 'ESTQ')}</tbody>`;
 
   // "Cobertura por Gerente/Supervisor/Vendedor" agora em cascata (Gerente → Supervisor → Vendedor).
-  const treeHier = buildEstoqueCascadeTree(rows, ['gerente','supervisor','vendedor'], 0, p90);
+  const treeHier = buildEstoqueCascadeTree(rows, ['gerente','supervisor','vendedor'], 0, diasUteis);
   document.getElementById('tEstoqueHier').innerHTML = `<thead><tr><th>Gerente / Supervisor / Vendedor</th><th class="tv">Valor Estoque</th><th class="tv">Unidades</th><th class="tv">Cobertura</th></tr></thead><tbody>${renderEstoqueCascadeRows(treeHier, [], 0, 'ESTQH')}</tbody>`;
 
   // Estoque parado (>90 dias) também em cascata (Categoria → Grupo → Produto).
@@ -3576,12 +3586,11 @@ function computeRiscosGeral(d, prev, est, level, names){
 
   // 5. Estoque parado (já respeita Gerente/Supervisor/Vendedor/Categoria — dado linha a linha)
   if (est){
-    const p90 = d.por_produto_janela90 || {};
+    const diasUteis90 = est.dias_uteis_90 || 0;
     const rows = estoqueFilterRows(est);
-    const geral = computeEstoqueDOS(rows, p90, 90);
+    const geral = computeEstoqueDOS(rows, diasUteis90);
     const parados = rows.map(r=>{
-      const v90 = p90[r.codproduto];
-      const avgDailyValor = v90 ? v90.r/90 : 0;
+      const avgDailyValor = diasUteis90>0 ? r.venda90/diasUteis90 : 0;
       return {r, parado: avgDailyValor<=0 || (r.valor_carga/(avgDailyValor||1))>90};
     }).filter(x=>x.parado);
     const valorParado = parados.reduce((s,x)=>s+x.r.valor_carga,0);
