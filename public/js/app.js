@@ -1159,7 +1159,7 @@ function showMod(id, el){
 function renderAll(){
   // Cliente selecionado → garante o recorte real vindo da API (re-renderiza ao chegar).
   ensureCliScope();
-  renderVisao(); renderComp(); renderMargemCash(); renderObjetivos(); renderMetasExtra(); renderDias(); renderRank(); renderMix(); renderAbcd(); renderPlanos(); renderEstoque(); renderPagamento(); renderRiscoOport(); renderRiscoOportCat(); renderCascata(); renderQual();
+  renderVisao(); renderComp(); renderMargemCash(); renderObjetivos(); renderMetasExtra(); renderDias(); renderRank(); renderMix(); renderAbcd(); renderPlanos(); renderEstoque(); renderProdutosParadosVend(); renderProdutosLetraP(); renderPagamento(); renderRiscoOport(); renderRiscoOportCat(); renderCascata(); renderQual();
 }
 
 // O mês selecionado é o mês CORRENTE? Nesse caso o realizado é parcial (só os dias
@@ -3199,9 +3199,13 @@ function dosBadge(dos){
 // Reaproveita computeEstoqueDOS (já agrupa por produto antes de somar, evitando
 // duplicar contagem quando o mesmo produto está com vários vendedores).
 let estoqueCascataExpanded = new Set();
+// estoqueCascataExpanded é compartilhado pelas 3 abas que usam esse toggle
+// (Estoque x Venda, Produtos Parados por Vendedor, Produtos Letra P — cada
+// uma com seu próprio prefixo de pathKey, sem colisão) — como o toggle não
+// sabe de qual aba veio o clique, re-renderiza as 3.
 function toggleEstoqueCascata(pathKey){
   if (estoqueCascataExpanded.has(pathKey)) estoqueCascataExpanded.delete(pathKey); else estoqueCascataExpanded.add(pathKey);
-  renderEstoque();
+  renderEstoque(); renderProdutosParadosVend(); renderProdutosLetraP();
 }
 function buildEstoqueCascadeTree(rows, keys, depth, diasUteis){
   depth = depth||0;
@@ -3284,19 +3288,32 @@ function estoqueParadosRowHtml(nome, nivel, pathKey, node){
   return `<tr class="casc-lvl${nivel}"><td style="padding-left:${indent}px">${toggle}${escAttr(nome)}</td>
     <td class="tv">${fF(node.valorTotal)}</td><td class="tv">${fN(node.saldoTotal)}</td><td class="tv">${fN(node.nItens)}</td><td class="tv">${estoqueParadosCoberturaBadge(node)}</td></tr>`;
 }
-function renderEstoqueParadosCascadeRows(nodesObj, pathNames, nivel){
+function renderEstoqueParadosCascadeRows(nodesObj, pathNames, nivel, prefix){
+  prefix = prefix || 'ESTQP';
   const entries = Object.keys(nodesObj).map(key=>({key, node:nodesObj[key]})).sort((a,b)=>b.node.valorTotal-a.node.valorTotal);
   let html = '';
   entries.forEach(({key,node})=>{
     const displayName = node.descricao || key;
     const path = pathNames.concat([key]);
-    const pathKey = 'ESTQP|||'+path.join('|||');
+    const pathKey = prefix+'|||'+path.join('|||');
     html += estoqueParadosRowHtml(displayName, nivel, pathKey, node);
     if (node.children && estoqueCascataExpanded.has(pathKey)){
-      html += renderEstoqueParadosCascadeRows(node.children, path, nivel+1);
+      html += renderEstoqueParadosCascadeRows(node.children, path, nivel+1, prefix);
     }
   });
   return html;
+}
+// Produtos com >90 dias de cobertura (ou nunca vendidos nos últimos 90 dias
+// reais) — grão fino: por par vendedor×produto, DOS em UNIDADES, usando a
+// venda REAL desse vendedor×produto (r.qtde90), não uma média da empresa.
+// Reaproveitado pela aba "Estoque x Venda" e pela aba dedicada "Produtos
+// Parados por Vendedor".
+function computeProdutosParados(rows, diasUteis){
+  return rows.map(r=>{
+    const avgDailyQ = diasUteis>0 ? r.qtde90/diasUteis : 0;
+    const dos = avgDailyQ>0 ? r.saldo/avgDailyQ : null; // null = zero venda em 90 dias = pior caso
+    return {...r, avgDailyQ, dos};
+  }).filter(r=>r.dos==null || r.dos>90);
 }
 function renderEstoque(){
   const est = REAL_DATA._estoque;
@@ -3309,13 +3326,7 @@ function renderEstoque(){
   const rows = estoqueFilterRows(est);
   const geral = computeEstoqueDOS(rows, diasUteis);
 
-  // Produtos > 90 dias (grão fino: por par vendedor×produto, DOS em UNIDADES) —
-  // usa a venda REAL desse vendedor×produto (r.qtde90), não uma média da empresa.
-  const produtos90 = rows.map(r=>{
-    const avgDailyQ = diasUteis>0 ? r.qtde90/diasUteis : 0;
-    const dos = avgDailyQ>0 ? r.saldo/avgDailyQ : null; // null = zero venda em 90 dias = pior caso
-    return {...r, avgDailyQ, dos};
-  }).filter(r=>r.dos==null || r.dos>90);
+  const produtos90 = computeProdutosParados(rows, diasUteis);
   produtos90.sort((a,b)=>{
     if (a.dos==null && b.dos==null) return b.valor_carga-a.valor_carga;
     if (a.dos==null) return -1; if (b.dos==null) return 1;
@@ -3341,6 +3352,45 @@ function renderEstoque(){
   document.getElementById('estoque90Sub').textContent = `${fN(produtos90.length)} itens (vendedor × produto) encontrados acima de 90 dias de cobertura`;
   const treeParados = buildEstoqueParadosCascadeTree(produtos90, ['categoria','grupo','codproduto'], 0);
   document.getElementById('tEstoque90').innerHTML = `<thead><tr><th>Categoria / Grupo / Produto</th><th class="tv">Valor Parado</th><th class="tv">Unidades Paradas</th><th class="tv">Itens (vend.×produto)</th><th class="tv">Pior Cobertura</th></tr></thead><tbody>${renderEstoqueParadosCascadeRows(treeParados, [], 0)}</tbody>`;
+}
+
+// ── ABA "Produtos Parados > 90 dias por Vendedor" ─────────────────────────
+// Mesmo dado de computeProdutosParados (remessa do vendedor × base de vendas,
+// já cruzados no ETL), só que organizado por Supervisor → Vendedor → Produto
+// em vez de Categoria → Grupo → Produto — reaproveita 100% do motor de
+// cascata já existente (buildEstoqueParadosCascadeTree/renderEstoqueParadosCascadeRows),
+// só troca os "keys" e o prefixo do pathKey (senão colidiria no mesmo Set
+// estoqueCascataExpanded com a cascata da aba Estoque x Venda).
+function renderProdutosParadosVend(){
+  const est = REAL_DATA._estoque;
+  if (!est){ document.getElementById('produtosParadosVendSub').textContent = "Dados de estoque não disponíveis."; return; }
+  const diasUteis = est.dias_uteis_90 || 0;
+  const rows = estoqueFilterRows(est);
+  const parados = computeProdutosParados(rows, diasUteis);
+  document.getElementById('produtosParadosVendSub').textContent = `${fN(parados.length)} itens (vendedor × produto) acima de 90 dias de cobertura (ou sem venda nos últimos 90 dias corridos reais) — remessa do vendedor × base de vendas`;
+  const tree = buildEstoqueParadosCascadeTree(parados, ['supervisor','vendedor','codproduto'], 0);
+  document.getElementById('tProdutosParadosVend').innerHTML = `<thead><tr><th>Supervisor / Vendedor / Produto</th><th class="tv">Valor Parado</th><th class="tv">Unidades Paradas</th><th class="tv">Itens (vend.×produto)</th><th class="tv">Pior Cobertura</th></tr></thead><tbody>${renderEstoqueParadosCascadeRows(tree, [], 0, 'PARADOSV')}</tbody>`;
+}
+
+// ── ABA "Produtos letra P" ─────────────────────────────────────────────────
+// Mesmo formato/cascata (Supervisor → Vendedor → Produto) da aba acima, mas
+// SEM o filtro de >90 dias — mostra todo produto na remessa do vendedor cuja
+// descrição comece com "(P)", parado ou não (útil pra acompanhar essa linha
+// específica de produtos independente do giro).
+function renderProdutosLetraP(){
+  const est = REAL_DATA._estoque;
+  if (!est){ document.getElementById('produtosLetraPSub').textContent = "Dados de estoque não disponíveis."; return; }
+  const diasUteis = est.dias_uteis_90 || 0;
+  const rows = estoqueFilterRows(est)
+    .filter(r=>/^\(P\)/i.test((r.descricao||'').trim()))
+    .map(r=>{
+      const avgDailyQ = diasUteis>0 ? r.qtde90/diasUteis : 0;
+      const dos = avgDailyQ>0 ? r.saldo/avgDailyQ : null;
+      return {...r, avgDailyQ, dos};
+    });
+  document.getElementById('produtosLetraPSub').textContent = `${fN(rows.length)} itens (vendedor × produto) com descrição iniciando em "(P)" na remessa do vendedor`;
+  const tree = buildEstoqueParadosCascadeTree(rows, ['supervisor','vendedor','codproduto'], 0);
+  document.getElementById('tProdutosLetraP').innerHTML = `<thead><tr><th>Supervisor / Vendedor / Produto</th><th class="tv">Valor em Estoque</th><th class="tv">Unidades</th><th class="tv">Itens (vend.×produto)</th><th class="tv">Cobertura</th></tr></thead><tbody>${renderEstoqueParadosCascadeRows(tree, [], 0, 'PLETRAP')}</tbody>`;
 }
 
 // ── 6E2. VENDAS POR TIPO DE PAGAMENTO ─────────────────────────

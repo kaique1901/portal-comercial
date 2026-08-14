@@ -120,6 +120,8 @@
       <div class="nav-item"     data-mod="m-abcd"    onclick="showMod('m-abcd',this)"><span class="nav-ico">◐</span><span class="nav-txt">Clientes A/B/C/D</span></div>
       <div class="nav-item"     data-mod="m-planos"  onclick="showMod('m-planos',this)"><span class="nav-ico">✚</span><span class="nav-txt">Planos de Ação</span></div>
       <div class="nav-item"     data-mod="m-estoque" onclick="showMod('m-estoque',this)"><span class="nav-ico">▣</span><span class="nav-txt">Estoque x Venda (90 dias)</span></div>
+      <div class="nav-item"     data-mod="m-produtos-parados-vend" onclick="showMod('m-produtos-parados-vend',this)"><span class="nav-ico">▣</span><span class="nav-txt">Produtos Parados por Vendedor</span></div>
+      <div class="nav-item"     data-mod="m-produtos-letra-p" onclick="showMod('m-produtos-letra-p',this)"><span class="nav-ico">▣</span><span class="nav-txt">Produtos Letra P</span></div>
       <div class="nav-item"     data-mod="m-pagamento" onclick="showMod('m-pagamento',this)"><span class="nav-ico">◫</span><span class="nav-txt">Vendas por Tipo de Pagamento</span></div>
       <div class="nav-item"     data-mod="m-risco"   onclick="showMod('m-risco',this)"><span class="nav-ico">⚡</span><span class="nav-txt">Riscos &amp; Oportunidades</span></div>
       <div class="nav-item"     data-mod="m-risco-cat" onclick="showMod('m-risco-cat',this)"><span class="nav-ico">⬡</span><span class="nav-txt">Riscos &amp; Oport. por Categoria</span></div>
@@ -299,11 +301,25 @@
 <!-- 6C. ESTOQUE X VENDA (90 DIAS) -->
 <div class="mod" id="m-estoque">
   <div class="mod-header"><div><div class="mod-title">Estoque x Venda — Cobertura em Dias</div><div class="mod-sub" id="estoqueSub">—</div></div></div>
-  <div class="alert">⚠ Fonte do estoque: tabela de posição de estoque por vendedor do banco (via API) — é uma <strong>fotografia atual</strong> do que cada vendedor carrega, não recortável por período. A "venda média/dia" usa os últimos 90 dias corridos do <strong>período selecionado no filtro de Período</strong> (mesma janela da aba Sazonalidade), por produto (dados reais). <strong>Dias de cobertura</strong> = valor de estoque ÷ valor médio vendido por dia dos mesmos produtos — se um produto não vendeu nada nos últimos 90 dias, aparece como "sem venda" (pior que 90 dias). Alguns códigos de vendedor no estoque são centros de distribuição/contas de teste (ex.: "CD - SAO PAULO"), não vendedores de campo — mantidos aqui porque representam estoque físico real.</div>
+  <div class="alert">⚠ Fonte do estoque: tabela de posição de estoque por vendedor do banco (via API) — é uma <strong>fotografia de hoje</strong> do que cada vendedor carrega, sempre a mesma independente do filtro de Período (não existe "estoque de um semestre passado"). A "venda média/dia útil" usa os <strong>últimos 90 dias corridos reais</strong> (sempre até hoje) ÷ <strong>dias úteis reais do calendário</strong> (considera feriado nacional), por par vendedor×produto (cada Gerente/Supervisor/Vendedor usa o próprio ritmo de venda, não uma média da empresa). <strong>Dias de cobertura</strong> = valor de estoque ÷ valor médio vendido por dia útil — se um produto não vendeu nada nesses 90 dias, aparece como "sem venda" (pior que 90 dias). Alguns códigos de vendedor no estoque são centros de distribuição/contas de teste (ex.: "CD - SAO PAULO"), não vendedores de campo — mantidos aqui porque representam estoque físico real.</div>
   <div class="kpi-grid" id="estoque-kpis"></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Cobertura em Cascata — Categoria → Grupo → Produto</div><div class="card-sub">Clique em ⊞ para expandir</div></div></div><div class="tbl-wrap"><table id="tEstoqueCat"></table></div></div></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Cobertura em Cascata — Gerente → Supervisor → Vendedor</div><div class="card-sub" id="estoqueVendSub">Clique em ⊞ para expandir</div></div></div><div class="tbl-wrap"><table id="tEstoqueHier"></table></div></div></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Estoque parado (&gt;90 dias) em Cascata — Categoria → Grupo → Produto</div><div class="card-sub" id="estoque90Sub">—</div></div></div><div class="tbl-wrap"><table id="tEstoque90"></table></div></div></div>
+</div>
+
+<!-- 6C1B. PRODUTOS PARADOS > 90 DIAS POR VENDEDOR -->
+<div class="mod" id="m-produtos-parados-vend">
+  <div class="mod-header"><div><div class="mod-title">Produtos Parados (&gt;90 dias) por Vendedor</div><div class="mod-sub" id="produtosParadosVendSub">—</div></div></div>
+  <div class="alert">⚠ Mesmo dado da aba Estoque x Venda (remessa do vendedor × base de vendas dos últimos 90 dias corridos reais), só que organizado por <strong>Supervisor → Vendedor → Produto</strong> em vez de Categoria → Grupo → Produto — pra achar rápido quem está carregando produto parado.</div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Produtos Parados em Cascata — Supervisor → Vendedor → Produto</div><div class="card-sub">Clique em ⊞ para expandir</div></div></div><div class="tbl-wrap"><table id="tProdutosParadosVend"></table></div></div></div>
+</div>
+
+<!-- 6C1C. PRODUTOS LETRA P -->
+<div class="mod" id="m-produtos-letra-p">
+  <div class="mod-header"><div><div class="mod-title">Produtos Letra P</div><div class="mod-sub" id="produtosLetraPSub">—</div></div></div>
+  <div class="alert">⚠ Todo produto na remessa do vendedor cuja descrição comece com "(P)" — parado ou não (sem o filtro de &gt;90 dias da aba anterior). Mesmo formato de cascata Supervisor → Vendedor → Produto.</div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Produtos (P) em Cascata — Supervisor → Vendedor → Produto</div><div class="card-sub">Clique em ⊞ para expandir</div></div></div><div class="tbl-wrap"><table id="tProdutosLetraP"></table></div></div></div>
 </div>
 
 <!-- 6C2. VENDAS POR TIPO DE PAGAMENTO -->
