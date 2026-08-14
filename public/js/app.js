@@ -2314,7 +2314,10 @@ function metaExtraTable(names, fn, level, emptyMsg){
       const atingPapel = v.metaPapel>0 ? v.realPapel/v.metaPapel*100 : null;
       const atingEst = v.metaEst>0 ? v.realEst/v.metaEst*100 : null;
       const focusKey = level==='gerente'?'ger':'sup';
-      const selected = level && metaExtraFocus[focusKey]===n;
+      // Único item da lista (ex.: Gerente logado só vê a si mesmo) conta como
+      // selecionado mesmo sem clique — renderMetasExtra já trata esse caso
+      // como focado (focoGer/focoSup) pra abrir o nível abaixo automaticamente.
+      const selected = level && (metaExtraFocus[focusKey]===n || names.length===1);
       const trAttrs = level ? ` class="obj-focus-row${selected?' obj-focus-sel':''}" style="cursor:pointer" onclick="metaExtraFocusToggle('${level}','${n.replace(/'/g,"\\'")}')"` : '';
       return `<tr${trAttrs}><td class="tn">${n}</td><td class="tv">${fN(v.metaKg)} kg</td><td class="tv">${fN(v.realKg)} kg</td><td class="tv">${atingBadge(atingKg)}</td><td class="tv">${fN(v.metaPapel)}</td><td class="tv">${fN(v.realPapel)}</td><td class="tv">${atingBadge(atingPapel)}</td><td class="tv">${fF(v.metaEst)}</td><td class="tv">${fF(v.realEst)}</td><td class="tv">${atingBadge(atingEst)}</td></tr>`;
     }).join("")}</tbody>`;
@@ -2421,30 +2424,36 @@ function renderMetasExtra(){
   // Vendedor só aparece depois de clicar num Supervisor (ou num Gerente, caso
   // em que mostra todos os vendedores de todos os supervisores dele) — antes
   // disso as tabelas ficam vazias com uma mensagem, em vez de listar tudo.
+  // Exceção: quando só existe 1 gerente/supervisor pra "clicar" (ex.: um
+  // Gerente logado só enxerga a si mesmo na tabela de cima, pela trava de
+  // acesso), não faz sentido exigir o clique — não há outra opção mesmo, e
+  // Supervisor/Vendedor sumiam à toa esperando uma seleção que nunca viria.
+  const focoGer = metaExtraFocus.ger || (gerRows.length===1 ? gerRows[0] : null);
   const effSupMeta = effectiveSupervisores(d);
   const supRowsAll = Object.keys(d.meta.por_supervisor).filter(n=>(!effSupMeta||effSupMeta.has(n))&&(!effGerMeta||effGerMeta.has(d.meta.por_supervisor[n].gerente)));
-  const supRows = metaExtraFocus.ger
-    ? supRowsAll.filter(n=>d.meta.por_supervisor[n].gerente===metaExtraFocus.ger).sort((a,b)=>metaExtraFor(d,'supervisor',b,mesKey,'meta_papel')-metaExtraFor(d,'supervisor',a,mesKey,'meta_papel'))
+  const supRows = focoGer
+    ? supRowsAll.filter(n=>d.meta.por_supervisor[n].gerente===focoGer).sort((a,b)=>metaExtraFor(d,'supervisor',b,mesKey,'meta_papel')-metaExtraFor(d,'supervisor',a,mesKey,'meta_papel'))
     : [];
-  document.getElementById('metaExtraSupSub').textContent = metaExtraFocus.ger ? `Supervisores de ${metaExtraFocus.ger}` : 'Clique num gerente acima para ver os supervisores dele';
+  document.getElementById('metaExtraSupSub').textContent = focoGer ? `Supervisores de ${focoGer}` : 'Clique num gerente acima para ver os supervisores dele';
   document.getElementById('tMetaExtraSup').innerHTML = metaExtraTable(supRows, n=>({
     metaKg:metaExtraFor(d,'supervisor',n,mesKey,'meta_kg'), realKg:realExtraFor(d,'supervisor',n,mesKey,'rkg'),
     metaPapel:metaExtraFor(d,'supervisor',n,mesKey,'meta_papel'), realPapel:realExtraFor(d,'supervisor',n,mesKey,'rp'),
     metaEst:metaExtraFor(d,'supervisor',n,mesKey,'meta_estrategico'), realEst:realExtraFor(d,'supervisor',n,mesKey,'rest'),
   }), 'supervisor', 'Clique num gerente acima para ver os supervisores dele.');
 
+  const focoSup = metaExtraFocus.sup || (supRows.length===1 ? supRows[0] : null);
   let vendRows = [];
-  if (metaExtraFocus.sup){
-    vendRows = Object.keys(d.meta.por_vendedor).filter(n=>(ST.vend.length===0||ST.vend.includes(n))&&d.meta.por_vendedor[n].supervisor===metaExtraFocus.sup);
-  } else if (metaExtraFocus.ger){
-    const supsDoGer = new Set(supRowsAll.filter(s=>d.meta.por_supervisor[s].gerente===metaExtraFocus.ger));
+  if (focoSup){
+    vendRows = Object.keys(d.meta.por_vendedor).filter(n=>(ST.vend.length===0||ST.vend.includes(n))&&d.meta.por_vendedor[n].supervisor===focoSup);
+  } else if (focoGer){
+    const supsDoGer = new Set(supRowsAll.filter(s=>d.meta.por_supervisor[s].gerente===focoGer));
     vendRows = Object.keys(d.meta.por_vendedor).filter(n=>(ST.vend.length===0||ST.vend.includes(n))&&supsDoGer.has(d.meta.por_vendedor[n].supervisor));
   }
   vendRows = vendRows.sort((a,b)=>metaExtraFor(d,'vendedor',b,mesKey,'meta_papel')-metaExtraFor(d,'vendedor',a,mesKey,'meta_papel'));
-  document.getElementById('metaExtraVendSub').textContent = metaExtraFocus.sup
-    ? `${vendRows.length} vendedores de ${metaExtraFocus.sup}`
-    : metaExtraFocus.ger
-      ? `${vendRows.length} vendedores de ${metaExtraFocus.ger}`
+  document.getElementById('metaExtraVendSub').textContent = focoSup
+    ? `${vendRows.length} vendedores de ${focoSup}`
+    : focoGer
+      ? `${vendRows.length} vendedores de ${focoGer}`
       : 'Clique num supervisor (ou gerente) acima para ver os vendedores';
   document.getElementById('tMetaExtraVend').innerHTML = metaExtraTable(vendRows, n=>({
     metaKg:metaExtraFor(d,'vendedor',n,mesKey,'meta_kg'), realKg:realExtraFor(d,'vendedor',n,mesKey,'rkg'),
