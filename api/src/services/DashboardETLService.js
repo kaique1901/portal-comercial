@@ -728,25 +728,40 @@ class DashboardETLService {
     const fmt = dt => dt.toISOString().slice(0, 10);
     const [iniStr, fimStr] = [fmt(iniJanela), fmt(hoje)];
 
-    // "Grupo" aqui é subgrupos.dessubgrupo — a MESMA fonte usada pelo BASE_CTE
-    // (SubGrupos.DesSubGrupo AS Grupo) para a base de vendas. Antes vinha de
-    // produtos.codgrupo -> grupoprodutos, uma classificação PARALELA e sem
-    // relação com subgrupo/categoria — por isso grupos de categorias
-    // completamente diferentes apareciam dentro da categoria errada na
-    // cascata (ex.: "ISQUEIROS" dentro de "NARGUILE").
+    // Saldo/valor da carga do vendedor: cifalcomercial.qgestoqueremessadevolucao
+    // é um kardex (REMESSA/VENDIDO/DEVOLUCAO/ESTOQUE) por (codven,codproduto,
+    // controle=cada remessa individual); não existe "saldo atual" pronto.
+    // ESTOQUE nessa tabela é só o BARRACAO (codven=999, o CD, valor sempre 0) —
+    // não representa o vendedor. DEVOLUCAO nunca tem valor preenchido (sempre
+    // 0), mas entra na conta por completude caso passe a ser usado.
+    // Saldo em carga = REMESSA acumulada − VENDIDO acumulado − DEVOLUCAO
+    // acumulada, por par (codven,codproduto) — confirmado com o usuário
+    // (bateu na mesma ordem de grandeza do valor de referência dele, ainda
+    // que não exatamente ao centavo — a tabela não guarda um "saldo pronto").
+    // "Grupo" é subgrupos.dessubgrupo — a MESMA fonte usada pelo BASE_CTE
+    // (SubGrupos.DesSubGrupo AS Grupo) para a base de vendas, pra Categoria e
+    // Grupo baterem com o resto do sistema.
     const rows = (await db.query(`
-      WITH latest AS (SELECT MAX(data) d FROM cifalcomercial.posicao_estoque_diario_vendedor)
-      SELECT v.codven, v.codproduto, v.saldoestoque saldo, ROUND(v.saldoestoque*p.customedio,2) valor_carga,
+      WITH saldo_atual AS (
+        SELECT codven, codproduto,
+          SUM(CASE WHEN tipo='REMESSA' THEN qtde WHEN tipo IN ('VENDIDO','DEVOLUCAO') THEN -qtde ELSE 0 END) saldo,
+          SUM(CASE WHEN tipo='REMESSA' THEN valor WHEN tipo IN ('VENDIDO','DEVOLUCAO') THEN -valor ELSE 0 END) valor_carga
+        FROM cifalcomercial.qgestoqueremessadevolucao
+        WHERE tipo IN ('REMESSA','VENDIDO','DEVOLUCAO')
+        GROUP BY codven, codproduto
+        HAVING SUM(CASE WHEN tipo='REMESSA' THEN qtde WHEN tipo IN ('VENDIDO','DEVOLUCAO') THEN -qtde ELSE 0 END) <> 0
+            OR SUM(CASE WHEN tipo='REMESSA' THEN valor WHEN tipo IN ('VENDIDO','DEVOLUCAO') THEN -valor ELSE 0 END) <> 0
+      )
+      SELECT sa.codven, sa.codproduto, sa.saldo, ROUND(sa.valor_carga,2) valor_carga,
              p.desceq descricao, c.descategoriaprod categoria, sg.dessubgrupo grupo,
              e.nomven vendedor, s.nomesupervisor supervisor, g.nomegerente gerente
-      FROM cifalcomercial.posicao_estoque_diario_vendedor v
-      JOIN cifalcomercial.produtos p ON p.codproduto=v.codproduto
+      FROM saldo_atual sa
+      JOIN cifalcomercial.produtos p ON p.codproduto=sa.codproduto
       LEFT JOIN cifalcomercial.subgrupos sg ON sg.codsubgrupo=p.codsubgrupo
       LEFT JOIN cifalcomercial.categoriasproduto c ON c.codcategoriaprod=sg.codcategoriaprod
-      JOIN cifalcomercial.eqvend e ON e.codven=v.codven
+      JOIN cifalcomercial.eqvend e ON e.codven=sa.codven
       LEFT JOIN cifalcomercial.supervisor s ON s.codsupervisor=e.codsupervisor
-      LEFT JOIN cifalcomercial.gerente g ON g.codgerente=e.codgerente
-      JOIN latest ON v.data=latest.d`)).rows;
+      LEFT JOIN cifalcomercial.gerente g ON g.codgerente=e.codgerente`)).rows;
 
     const diasUteis90 = parseInt((await db.query(`
       SELECT COUNT(*) n FROM cifalcomercial.tcperiodo
