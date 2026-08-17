@@ -224,11 +224,14 @@ tbody tr:last-child td{border-bottom:none}
 .abcd-title{font-size:11px;font-weight:700;color:var(--t1);margin-bottom:5px}
 .abcd-desc{font-size:11px;color:var(--t3);line-height:1.5}
 .abcd-a{border-top:3px solid var(--up)}.abcd-a .abcd-letter{color:var(--up)}
-.abcd-b{border-top:3px solid var(--neu)}.abcd-b .abcd-letter{color:var(--neu)}
-.abcd-c{border-top:3px solid var(--amb)}.abcd-c .abcd-letter{color:var(--amb)}
-.abcd-d{border-top:3px solid var(--t3)}.abcd-d .abcd-letter{color:var(--t3)}
-.abcd-e{border-top:3px solid var(--dn)}.abcd-e .abcd-letter{color:var(--dn)}
-.abcd-f{border-top:3px solid var(--acc)}.abcd-f .abcd-letter{color:var(--acc)}
+.abcd-b{border-top:3px solid var(--acc)}.abcd-b .abcd-letter{color:var(--acc)}
+.abcd-c{border-top:3px solid var(--dn)}.abcd-c .abcd-letter{color:var(--dn)}
+.abcd-d{border-top:3px solid var(--acc2)}.abcd-d .abcd-letter{color:var(--acc2)}
+.abcd-e{border-top:3px solid var(--neu)}.abcd-e .abcd-letter{color:var(--neu)}
+.abcd-f{border-top:3px solid var(--amb)}.abcd-f .abcd-letter{color:var(--amb)}
+.abcd-g{border-top:3px solid var(--acc3)}.abcd-g .abcd-letter{color:var(--acc3)}
+.abcd-h{border-top:3px solid var(--neu)}.abcd-h .abcd-letter{color:var(--neu)}
+.abcd-i{border-top:3px solid var(--t3)}.abcd-i .abcd-letter{color:var(--t3)}
 .cls-A{background:rgba(34,135,90,.15);color:var(--up);padding:1px 7px;border-radius:8px;font-size:10px;font-weight:700}
 .cls-B{background:rgba(84,105,95,.14);color:var(--neu);padding:1px 7px;border-radius:8px;font-size:10px;font-weight:700}
 .cls-C{background:rgba(163,118,58,.15);color:var(--amb);padding:1px 7px;border-radius:8px;font-size:10px;font-weight:700}

@@ -259,22 +259,10 @@ class DashboardETLService {
       const pag = await q(`SELECT categoria, tipo, tipocob, SUM(Total) v FROM tmp_base_vendas WHERE categoria IS NOT NULL GROUP BY categoria, tipo, tipocob`);
       const janRange = (await q(`SELECT MIN(DataPed) ini, MAX(DataPed) fim FROM tmp_base_vendas`))[0];
       const janProd = await q(`SELECT Codigo codigo, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq FROM tmp_base_vendas WHERE DataPed >= (SELECT MAX(DataPed) FROM tmp_base_vendas) - INTERVAL '89 days' GROUP BY Codigo`);
+      // abcdCli aqui serve só o q(A-D 2x2)/mediana para hier_abcd (Riscos &
+      // Oportunidades) — a aba "Clientes de A a I" tem fonte própria
+      // (_buildAbcd90, janela fixa de 90 dias, independente de período).
       const abcdCli = await q(`SELECT CodCli codigo, Cliente nome, SUM(Total) r, SUM(customedio) c FROM tmp_base_vendas WHERE Cliente IS NOT NULL GROUP BY CodCli, Cliente`);
-      // Cascata da aba Clientes A/B/C/D (categoria + vendedor/supervisor) — só
-      // para os ~100 maiores de cada quadrante (classificação com a mediana
-      // padrão), mesmo padrão de topCliCashCat/topCliCashVend acima. Se o
-      // usuário personalizar os parâmetros de referência no front, o Top 30
-      // pode trazer um cliente fora deste conjunto — nesse caso a cascata some
-      // com aviso, em vez de tentar reconsultar o banco a cada ajuste.
-      const abcdBuilt = buildAbcd(abcdCli);
-      const abcdCliCat = abcdBuilt.top100Codes.length ? await q(`
-        SELECT CodCli codigo, categoria, SUM(Total) r, SUM(customedio) c
-        FROM tmp_base_vendas WHERE CodCli = ANY($1::int[]) AND categoria IS NOT NULL
-        GROUP BY CodCli, categoria`, [abcdBuilt.top100Codes]) : [];
-      const abcdCliVend = abcdBuilt.top100Codes.length ? await q(`
-        SELECT CodCli codigo, CodVen vcodigo, Vendedor vnome, supervisor, SUM(Total) r
-        FROM tmp_base_vendas WHERE CodCli = ANY($1::int[]) AND Vendedor IS NOT NULL
-        GROUP BY CodCli, CodVen, Vendedor, supervisor ORDER BY CodCli, SUM(Total) DESC`, [abcdBuilt.top100Codes]) : [];
 
       // ── cubos hierárquicos (por gerente/supervisor/vendedor) ────
       const hierTopCli = {}, hierTopProd = {}, hierCat = {}, hierPag = {}, hierAbcdRows = {};
@@ -317,7 +305,7 @@ class DashboardETLService {
         topCliMargem, topCliMargemCat, topCliMargemVend, topProdMargem, topVendMargem,
         cliCashPorMes, cliMargemPorMes, prodCashPorMes, prodMargemPorMes,
         cliCatPorMes, cliVendPorMes, cliCatPorMesAnoAnterior,
-        pag, janRange, janProd, abcdCli, abcdBuilt, abcdCliCat, abcdCliVend,
+        pag, janRange, janProd, abcdCli,
         hierTopCli, hierTopProd, hierCat, hierPag, hierAbcdRows, hierDiaGer, hierDiaCatGer, meta,
         cascCat, cascGrp, cascForn, cascProd,
         porCanal, porInadimplente, porStatus
@@ -695,26 +683,10 @@ class DashboardETLService {
     // abcd.clientes = lista completa (todo cliente com receita>0, não só os
     // exemplos) — o front reclassifica ao vivo quando o usuário personaliza
     // os parâmetros de referência (Faturamento/Margem), em vez de usar uma
-    // classificação fixa vinda do ETL.
-    const abcd = d.abcdBuilt;
+    // classificação fixa vinda do ETL. Serve só hier_abcd (Riscos & Oportunidades)
+    // — a aba "Clientes de A a I" usa REAL_DATA._abcd90 (ver _buildAbcd90()).
+    const abcd = buildAbcd(d.abcdCli);
     const medR = abcd.mediana_receita, medM = abcd.mediana_margem;
-    // abcd_clientes_detalhe[codigo] = {categorias:{cat:{r,c}}, vendedor:{...}} —
-    // cascata (Faturamento por categoria + vendedor/supervisor responsável),
-    // só para os ~100 maiores de cada quadrante (abcd.top100Codes acima).
-    const abcd_clientes_detalhe = {};
-    for (const row of d.abcdCliCat || []) {
-      const k = String(row.codigo);
-      const entry = abcd_clientes_detalhe[k] || (abcd_clientes_detalhe[k] = { categorias: {}, vendedor: null });
-      entry.categorias[row.categoria] = { r: round2(num(row.r)), c: round2(num(row.c)) };
-    }
-    const abcdVendSeen = new Set();
-    for (const row of d.abcdCliVend || []) {
-      const k = String(row.codigo);
-      if (abcdVendSeen.has(k)) continue; // ORDER BY CodCli, receita DESC — 1ª linha = vendedor dominante
-      abcdVendSeen.add(k);
-      const entry = abcd_clientes_detalhe[k] || (abcd_clientes_detalhe[k] = { categorias: {}, vendedor: null });
-      entry.vendedor = { codigo: String(row.vcodigo), nome: row.vnome, supervisor: row.supervisor };
-    }
 
     // hier_* montados
     const hier_top_clientes = buildHierTop(d.hierTopCli);
@@ -739,7 +711,7 @@ class DashboardETLService {
       top_clientes_cash_por_mes, top_clientes_margem_por_mes, top_produtos_cash_por_mes, top_produtos_margem_por_mes,
       top_clientes_detalhe_por_mes, top_clientes_categoria_ano_anterior,
       pagamento_por_categoria, hier_pagamento_por_categoria,
-      janela90, por_produto_janela90, abcd, abcd_clientes_detalhe,
+      janela90, por_produto_janela90, abcd,
       hier_top_clientes, hier_top_produtos, hier_por_categoria, hier_abcd, hier_por_dia, hier_por_dia_categoria,
       cascata: buildCascata(d.cascCat, d.cascGrp, d.cascForn, d.cascProd),
       meta: d.meta,
@@ -839,6 +811,74 @@ class DashboardETLService {
     };
   }
 
+  // ── ABA "Clientes de A a F" — classificação por Faturamento x Margem, SEMPRE
+  // sobre os últimos 90 dias corridos até hoje (não muda com o filtro de
+  // Período, igual à Estoque x Venda acima) — pedido explícito do usuário.
+  // Independe de período: computado 1x aqui, não dentro de _buildPeriodo().
+  async _buildAbcd90() {
+    const hoje = new Date();
+    const iniJanela = new Date(hoje); iniJanela.setDate(iniJanela.getDate() - 89);
+    const fmt = dt => dt.toISOString().slice(0, 10);
+    const [iniStr, fimStr] = [fmt(iniJanela), fmt(hoje)];
+
+    // Total de Faturamento/Custo por cliente na janela.
+    const porCliente = (await db.query(`
+      SELECT CodCli codigo, Cliente nome, SUM(Total) r, SUM(customedio) c
+      FROM (${BASE_CTE}) s
+      WHERE Cliente IS NOT NULL
+      GROUP BY CodCli, Cliente
+    `, [iniStr, fimStr])).rows;
+
+    // Vendedor/Supervisor/Gerente DOMINANTE do cliente na janela (maior receita) —
+    // mesmo critério já usado nas outras cascatas de cliente deste painel.
+    const porClienteVend = (await db.query(`
+      SELECT CodCli codigo, CodVen vcodigo, Vendedor vnome, supervisor, gerente, SUM(Total) r
+      FROM (${BASE_CTE}) s
+      WHERE Vendedor IS NOT NULL
+      GROUP BY CodCli, CodVen, Vendedor, supervisor, gerente
+      ORDER BY CodCli, SUM(Total) DESC
+    `, [iniStr, fimStr])).rows;
+    const vendDominante = {}; // codigo -> {codigo,nome,supervisor,gerente} (1ª linha = dominante)
+    for (const row of porClienteVend) {
+      const k = String(row.codigo);
+      if (!vendDominante[k]) vendDominante[k] = { codigo: String(row.vcodigo), nome: row.vnome, supervisor: row.supervisor, gerente: row.gerente };
+    }
+
+    const clientes = porCliente.map(x => {
+      const r = num(x.r), c = num(x.c);
+      return {
+        codigo: String(x.codigo), nome: x.nome, r: round2(r), c: round2(c),
+        m: r > 0 ? +(100 * (1 - c / r)).toFixed(2) : 0,
+        vendedor: vendDominante[String(x.codigo)] || null,
+      };
+    }).filter(cl => cl.r > 0);
+
+    // Cascata de Faturamento por Categoria — só para os ~100 maiores de cada um
+    // dos 9 grupos (classificação PADRÃO, ABCD9_DEFAULTS), mesma lógica de
+    // bounding já usada no resto do painel (custo de consulta previsível).
+    const top100Codes = new Set();
+    for (const k of ABCD9_KEYS) {
+      clientes.filter(cl => classifyAbcd9(cl.r, cl.m, ABCD9_DEFAULTS.altoR, ABCD9_DEFAULTS.baixoR, ABCD9_DEFAULTS.altaM, ABCD9_DEFAULTS.baixaM) === k)
+        .sort((a, b) => b.r - a.r).slice(0, 100)
+        .forEach(cl => top100Codes.add(parseInt(cl.codigo, 10)));
+    }
+    const topCodes = [...top100Codes].filter(Number.isFinite);
+    const catRows = topCodes.length ? (await db.query(`
+      SELECT CodCli codigo, categoria, SUM(Total) r, SUM(customedio) c
+      FROM (${BASE_CTE}) s
+      WHERE CodCli = ANY($3::int[]) AND categoria IS NOT NULL
+      GROUP BY CodCli, categoria
+    `, [iniStr, fimStr, topCodes])).rows : [];
+    const clientes_categoria = {};
+    for (const row of catRows) {
+      const k = String(row.codigo);
+      const entry = clientes_categoria[k] || (clientes_categoria[k] = {});
+      entry[row.categoria] = { r: round2(num(row.r)), c: round2(num(row.c)) };
+    }
+
+    return { janela: { inicio: iniStr, fim: fimStr }, clientes, clientes_categoria };
+  }
+
   // Árvore REAL da força de vendas (cadastro: supervisor + eqvend, só ativos).
   async _hierarquiaReal() {
     const sql = `
@@ -869,6 +909,7 @@ class DashboardETLService {
     const resultado = {};
     for (const periodo of PERIODOS) resultado[periodo.key] = await this._buildPeriodo(periodo);
     try { resultado._estoque = await this._buildEstoque(); } catch (e) { console.error('[ETL] estoque falhou:', e.message); }
+    try { resultado._abcd90 = await this._buildAbcd90(); } catch (e) { console.error('[ETL] abcd90 falhou:', e.message); }
     try { resultado._hierarquia = await this._hierarquiaReal(); } catch (e) { console.error('[ETL] hierarquia falhou:', e.message); }
     return resultado;
   }
@@ -966,33 +1007,10 @@ function buildCascata(catRows, grpRows, fornRows, prodRows) {
 }
 function median(arr) { if (!arr.length) return 0; const s = [...arr].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; }
 function classifyAbcd(r, m, medR, medM) { return (r >= medR && m >= medM) ? 'A' : (r >= medR) ? 'B' : (m >= medM) ? 'C' : 'D'; }
-// Classificação de 6 grupos da aba "Clientes de A a F" (Faturamento Alto/Médio/
-// Baixo x Margem Alta/Baixa — 2 limites por dimensão). A faixa "Média Margem"
-// (entre baixaM e altaM) não vira grupo à parte — é dividida entre os grupos de
-// margem alta/baixa mais próximos pelo PONTO MÉDIO entre os dois limites
-// (decisão do usuário: manter só os 6 grupos já existentes). Só usada para
-// decidir o top100Codes abaixo; classifyAbcd (2x2, acima) continua intocada
-// porque hier_abcd/Riscos & Oportunidades dependem dela.
-function classifyAbcd6(r, m, altoR, baixoR, altaM, baixaM) {
-  const corteMargem = (altaM + baixaM) / 2;
-  const altaMargem = m >= corteMargem;
-  if (r >= altoR) return altaMargem ? 'A' : 'B';
-  if (r <= baixoR) return altaMargem ? 'F' : 'E';
-  return altaMargem ? 'C' : 'D';
-}
-// Padrão FIXO de negócio (não mais mediana da empresa) — mesmos valores usados
-// como default no front (ABCD_DEFAULTS em app.js). Mantidos em sincronia manual
-// porque back e front não compartilham módulo JS.
-const ABCD6_DEFAULTS = { altoR: 4000, baixoR: 800, altaM: 27, baixaM: 18 };
-// clientes = lista COMPLETA (todo cliente com receita>0, não só top 50) — o
-// front reclassifica ao vivo com os parâmetros de referência que o usuário
-// personalizar, em vez de depender de uma classificação fixa vinda do ETL.
-// top100Codes = união dos ~100 maiores de cada um dos 6 grupos (classificação
-// PADRÃO, ABCD6_DEFAULTS) — usado só para saber quais clientes merecem ter a
-// cascata de categoria/vendedor pré-calculada (ver abcdCliCat/abcdCliVend).
-// q (A-D, 2x2) continua servindo só hier_abcd/Riscos & Oportunidades — a aba
-// Clientes de A a F reclassifica tudo no front (classifyAbcdFront) e não lê
-// esses agregados.
+// q (A-D, 2x2 pela mediana) serve só hier_abcd/Riscos & Oportunidades. A aba
+// "Clientes de A a I" (9 grupos) tem sua PRÓPRIA fonte de dados independente
+// de período — ver _buildAbcd90()/ABCD9_DEFAULTS/classifyAbcd9 abaixo — porque
+// usa janela fixa de 90 dias corridos a partir de hoje, não o semestre selecionado.
 function buildAbcd(cliRows) {
   const clientes = cliRows.map(x => { const r = num(x.r), c = num(x.c); return { codigo: String(x.codigo), nome: x.nome, r: round2(r), c: round2(c), m: r > 0 ? +(100 * (1 - c / r)).toFixed(2) : 0 }; }).filter(x => x.r > 0);
   const medR = median(clientes.map(x => x.r));
@@ -1000,13 +1018,23 @@ function buildAbcd(cliRows) {
   const q = {}; for (const k of ['A', 'B', 'C', 'D']) q[k] = { count: 0, receita: 0, custo: 0, cash_margin: 0 };
   for (const cl of clientes) { const k = classifyAbcd(cl.r, cl.m, medR, medM); q[k].count++; q[k].receita += cl.r; q[k].custo += cl.c; }
   for (const k of ['A', 'B', 'C', 'D']) { q[k].receita = round2(q[k].receita); q[k].custo = round2(q[k].custo); q[k].cash_margin = round2(q[k].receita - q[k].custo); }
-  const top100Codes = new Set();
-  for (const k of ['A', 'B', 'C', 'D', 'E', 'F']) {
-    clientes.filter(cl => classifyAbcd6(cl.r, cl.m, ABCD6_DEFAULTS.altoR, ABCD6_DEFAULTS.baixoR, ABCD6_DEFAULTS.altaM, ABCD6_DEFAULTS.baixaM) === k)
-      .sort((a, b) => b.r - a.r).slice(0, 100)
-      .forEach(cl => top100Codes.add(cl.codigo));
-  }
-  return Object.assign(q, { mediana_receita: round2(medR), mediana_margem: round2(medM), n_clientes_considerados: clientes.length, clientes, top100Codes: [...top100Codes] });
+  return Object.assign(q, { mediana_receita: round2(medR), mediana_margem: round2(medM), n_clientes_considerados: clientes.length });
+}
+// ── "Clientes de A a I" — 9 grupos (Faturamento Alto/Médio/Baixo x Margem
+// Alta/Média/Baixa), usados em _buildAbcd90() acima. Padrão FIXO de negócio —
+// mesmos valores usados como default no front (ABCD_DEFAULTS em app.js).
+// Mantidos em sincronia manual porque back e front não compartilham módulo JS.
+const ABCD9_DEFAULTS = { altoR: 4000, baixoR: 800, altaM: 27, baixaM: 18 };
+const ABCD9_KEYS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'];
+function classifyAbcd9(r, m, altoR, baixoR, altaM, baixaM) {
+  const vTier = r >= altoR ? 'alta' : (r <= baixoR ? 'baixa' : 'media');
+  const mTier = m >= altaM ? 'alta' : (m <= baixaM ? 'baixa' : 'media');
+  const grid = {
+    alta: { alta: 'A', media: 'B', baixa: 'C' },
+    media: { alta: 'D', media: 'E', baixa: 'F' },
+    baixa: { alta: 'G', media: 'H', baixa: 'I' },
+  };
+  return grid[vTier][mTier];
 }
 function buildHierAbcd(entRows, medR, medM) {
   // entRows: linhas (ent, r, c) já a nível de cliente dentro da entidade — classifica pela mediana GLOBAL.

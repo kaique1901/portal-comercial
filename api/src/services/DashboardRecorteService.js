@@ -108,7 +108,7 @@ class DashboardRecorteService {
     // ("timeout exceeded when trying to connect") com dois usuários simultâneos.
     const client = await db.getClient();
     let tot, porMes, porCat, porGrp, porCli, topProd, porVend;
-    let porDia, porDiaCat, porGer, porSup, fullVend, porMesCli, pag, janProd, janRange, abcdCli, abcdBuilt, abcdCliCat, abcdCliVend, qual, casc, fumo;
+    let porDia, porDiaCat, porGer, porSup, fullVend, porMesCli, pag, janProd, janRange, abcdCli, qual, casc, fumo;
     try {
       await client.query('BEGIN');
       await client.query(`CREATE TEMP TABLE tmp_recorte ON COMMIT DROP AS ${base}`, params);
@@ -165,20 +165,11 @@ class DashboardRecorteService {
                          FROM tmp_recorte
                          WHERE DataPed >= (SELECT MAX(DataPed) FROM tmp_recorte) - INTERVAL '89 days'
                          GROUP BY Codigo`);
+      // abcd aqui serve só o q(A-D 2x2)/mediana para Riscos & Oportunidades quando
+      // o recorte tem Canal/Inadimplente/Status/Cliente ativos — a aba "Clientes de
+      // A a I" tem fonte própria (janela fixa de 90 dias, independente de recorte).
       abcdCli = await q(`SELECT CodCli codigo, Cliente nome, SUM(Total) r, SUM(customedio) c
                          FROM tmp_recorte WHERE Cliente IS NOT NULL GROUP BY CodCli, Cliente`);
-      // Mesmo raciocínio do ETL: só pré-calcula a cascata de categoria/vendedor para
-      // os ~100 maiores de cada quadrante (abcd.top100Codes) — cliente fora disso
-      // recai no aviso "sem detalhamento" no front em vez de reconsultar o banco.
-      abcdBuilt = ETL.buildAbcd(abcdCli);
-      abcdCliCat = abcdBuilt.top100Codes.length ? (await client.query(`
-        SELECT CodCli codigo, categoria, SUM(Total) r, SUM(customedio) c
-        FROM tmp_recorte WHERE CodCli = ANY($1::int[]) AND categoria IS NOT NULL
-        GROUP BY CodCli, categoria`, [abcdBuilt.top100Codes])).rows : [];
-      abcdCliVend = abcdBuilt.top100Codes.length ? (await client.query(`
-        SELECT CodCli codigo, CodVen vcodigo, Vendedor vnome, supervisor, SUM(Total) r
-        FROM tmp_recorte WHERE CodCli = ANY($1::int[]) AND Vendedor IS NOT NULL
-        GROUP BY CodCli, CodVen, Vendedor, supervisor ORDER BY CodCli, SUM(Total) DESC`, [abcdBuilt.top100Codes])).rows : [];
       qual = (await q(`SELECT
           COUNT(*) FILTER (WHERE CodCli IS NULL) sem_cli, COUNT(*) FILTER (WHERE Codigo IS NULL) sem_prod,
           COUNT(*) FILTER (WHERE CodVen IS NULL) sem_vend, COUNT(*) FILTER (WHERE Total<=0) rec_zero,
@@ -299,24 +290,7 @@ class DashboardRecorteService {
     };
 
     // Builders compartilhados com o ETL → formato idêntico ao do cubo.
-    dados.abcd = abcdBuilt;
-    dados.abcd_clientes_detalhe = (() => {
-      const out = {};
-      for (const row of abcdCliCat || []) {
-        const k = String(row.codigo);
-        const entry = out[k] || (out[k] = { categorias: {}, vendedor: null });
-        entry.categorias[row.categoria] = { r: round2(num(row.r)), c: round2(num(row.c)) };
-      }
-      const seen = new Set();
-      for (const row of abcdCliVend || []) {
-        const k = String(row.codigo);
-        if (seen.has(k)) continue; // ORDER BY CodCli, receita DESC — 1ª linha = vendedor dominante
-        seen.add(k);
-        const entry = out[k] || (out[k] = { categorias: {}, vendedor: null });
-        entry.vendedor = { codigo: String(row.vcodigo), nome: row.vnome, supervisor: row.supervisor };
-      }
-      return out;
-    })();
+    dados.abcd = ETL.buildAbcd(abcdCli);
     dados.cascata = ETL.buildCascata(casc.cat, casc.grp, casc.forn, casc.prod);
 
     // Listas "cash" (ordenadas por cash margin) nas mesmas formas do cubo.

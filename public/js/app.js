@@ -585,7 +585,6 @@ function mesclarRecorte(p, rec){
     por_produto_janela90: rec.por_produto_janela90,
     qualidade: rec.qualidade,
     abcd: rec.abcd,
-    abcd_clientes_detalhe: rec.abcd_clientes_detalhe || {},
     cascata: rec.cascata,
     _recorte: true,
     _carregando: !!rec._carregando   // recorte vazio (consulta em vôo) → avisa na tela
@@ -3025,25 +3024,29 @@ function renderMix(){
     }).join("")}</tbody>`;
 }
 
-// ── 6. ABCD (Clientes de A a F) ──────────────────────────────
-// 6 grupos fixos: Faturamento Alto/Médio/Baixo (2 limites) × Margem Alta/Baixa
-// (2 limites, que também definem uma faixa "Média" entre eles — mas a Média de
-// Margem NÃO vira grupo à parte: é dividida entre os grupos de margem alta/
-// baixa mais próximos, usando o PONTO MÉDIO entre os dois limites como corte —
-// decisão do usuário para manter só os 6 grupos já existentes). Os parâmetros
-// têm um padrão FIXO de negócio (não mais mediana da empresa), mas o usuário
-// pode digitar valores próprios no topo da aba (ABCD_OVERRIDE), e a
-// classificação inteira (caixas + Top 30 de cada classe) recalcula na hora,
-// 100% no front (por isso o back manda a lista COMPLETA de clientes em
-// d.abcd.clientes, não só uma amostra).
+// ── 6. ABCD (Clientes de A a I) ──────────────────────────────
+// 9 grupos: Faturamento Alto/Médio/Baixo × Margem Alta/Média/Baixa (2 limites
+// por dimensão — o que fica ENTRE os limites é a faixa "Médio"/"Média"). Os
+// valores de Faturamento/Margem de cada cliente são SEMPRE a SOMA dos últimos
+// 90 dias corridos a partir de hoje (REAL_DATA._abcd90, calculado 1x no ETL,
+// mesmo padrão da aba Estoque x Venda) — NÃO muda com o filtro de Período
+// (pedido explícito do usuário: "sempre manter esse parâmetro"). Por isso não
+// há comparativo "Δ ano anterior" aqui (não existe um "ano anterior" de uma
+// janela móvel que anda com o hoje). Os parâmetros têm um padrão FIXO de
+// negócio, mas o usuário pode digitar valores próprios no topo da aba
+// (ABCD_OVERRIDE), e a classificação inteira recalcula na hora, 100% no front.
 const ABCD_DEFAULTS = { altoR: 4000, baixoR: 800, altaM: 27, baixaM: 18 };
 let ABCD_OVERRIDE = { altoR: null, baixoR: null, altaM: null, baixaM: null };
+const ABCD_KEYS = ['A','B','C','D','E','F','G','H','I'];
 function classifyAbcdFront(r, m, altoR, baixoR, altaM, baixaM){
-  const corteMargem = (altaM+baixaM)/2;
-  const altaMargem = m>=corteMargem;
-  if (r>=altoR) return altaMargem ? 'A' : 'B';
-  if (r<=baixoR) return altaMargem ? 'F' : 'E';
-  return altaMargem ? 'C' : 'D';
+  const vTier = r>=altoR ? 'alta' : (r<=baixoR ? 'baixa' : 'media');
+  const mTier = m>=altaM ? 'alta' : (m<=baixaM ? 'baixa' : 'media');
+  const grid = {
+    alta:  {alta:'A', media:'B', baixa:'C'},
+    media: {alta:'D', media:'E', baixa:'F'},
+    baixa: {alta:'G', media:'H', baixa:'I'},
+  };
+  return grid[vTier][mTier];
 }
 // Aceita tanto "1234567,89" (BR) quanto "1234567.89" — decide pelo último
 // separador encontrado (o mais à direita é o decimal).
@@ -3067,66 +3070,57 @@ function resetAbcdParams(){
   ABCD_OVERRIDE = { altoR:null, baixoR:null, altaM:null, baixaM:null };
   renderAbcd();
 }
-// ── Drill-down Cliente x Categoria (clicar num cliente das Classes A/B/C/D) ──
-// d.abcd_clientes_detalhe[codigo] = {categorias:{cat:{r,c}}, vendedor:{codigo,
-// nome,supervisor}} — só existe para os ~100 maiores de cada classe (pela
-// classificação PADRÃO/mediana); se o usuário personalizar os parâmetros e
-// isso trouxer um cliente de fora desse conjunto pro Top 30, a cascata cai no
-// aviso abaixo em vez de travar. Comparativo usa o mesmo código de cliente no
-// período anterior — códigos são estáveis entre semestres.
+// ── Drill-down Cliente x Categoria (clicar num cliente das Classes A-I) ──
+// _abcd90.clientes_categoria[codigo] = {categoria:{r,c}} — só existe para os
+// ~100 maiores de cada um dos 9 grupos (classificação PADRÃO); se o usuário
+// personalizar os parâmetros e isso trouxer um cliente de fora desse
+// conjunto, a categoria cai no aviso abaixo (mas Vendedor/Supervisor SEMPRE
+// aparece — vem junto no cliente, não é bounded).
 let abcdExpandedClients = new Set();
 function toggleAbcdClient(key){
   if (abcdExpandedClients.has(key)) abcdExpandedClients.delete(key); else abcdExpandedClients.add(key);
   renderAbcd();
 }
-function clienteCategoriaRows(codigo){
-  const d = curPeriod();
-  const prev = prevPeriod();
-  const det = d.abcd_clientes_detalhe && d.abcd_clientes_detalhe[codigo];
-  const hasDet = det && (det.vendedor || Object.keys(det.categorias||{}).length);
-  if (!hasDet){
-    return `<tr><td colspan="5" style="padding-left:24px;color:var(--t3);font-style:italic">Sem detalhamento disponível para este cliente (fora do Top 100 da classe pela classificação padrão — ajuste os parâmetros de referência para algo mais próximo do padrão, ou restaure o padrão acima).</td></tr>`;
-  }
+function clienteCategoriaRows(cl){
+  const a = REAL_DATA._abcd90;
+  const catMap = (a && a.clientes_categoria && a.clientes_categoria[cl.codigo]) || null;
   let html = '';
-  if (det.vendedor){
-    html += `<tr class="casc-info"><td colspan="5" style="padding-left:24px">Vendedor: <strong>${escAttr(det.vendedor.codigo)} - ${escAttr(det.vendedor.nome)}</strong> · Supervisor: <strong>${escAttr(det.vendedor.supervisor)}</strong></td></tr>`;
+  if (cl.vendedor){
+    html += `<tr class="casc-info"><td colspan="4" style="padding-left:24px">Vendedor: <strong>${escAttr(cl.vendedor.codigo)} - ${escAttr(cl.vendedor.nome)}</strong> · Supervisor: <strong>${escAttr(cl.vendedor.supervisor)}</strong></td></tr>`;
   }
-  const catMap = det.categorias || {};
-  const prevDet = prev && prev.abcd_clientes_detalhe && prev.abcd_clientes_detalhe[codigo];
-  const prevCatMap = (prevDet && prevDet.categorias) || {};
-  const catNames = Object.keys(catMap).sort((a,b)=>catMap[b].r-catMap[a].r);
+  if (!catMap){
+    html += `<tr><td colspan="4" style="padding-left:24px;color:var(--t3);font-style:italic">Faturamento por categoria indisponível para este cliente (fora do Top 100 do grupo pela classificação padrão — ajuste os parâmetros para algo mais próximo do padrão, ou restaure o padrão acima).</td></tr>`;
+    return html;
+  }
+  const catNames = Object.keys(catMap).sort((a2,b2)=>catMap[b2].r-catMap[a2].r);
   html += catNames.map(cat=>{
     const v = catMap[cat]; const r=v.r, c=v.c;
     const m = r>0 ? +(100*(1-c/r)).toFixed(2) : 0;
     const cash = r-c;
-    const pv = prevCatMap[cat];
-    const pr = pv?pv.r:null, pc = pv?pv.c:null;
-    const pm = (pv && pr>0) ? +(100*(1-pc/pr)).toFixed(2) : null;
-    const pcash = pv ? (pr-pc) : null;
     return `<tr class="casc-lvl1"><td style="padding-left:24px;color:var(--t2);font-style:italic">${escAttr(cat)}</td>
-      <td class="tv">${fF(r)}<div>${deltaPillSmall(r,pr)}</div></td>
-      <td class="tv">${fF(cash)}<div>${deltaPillSmall(cash,pcash)}</div></td>
-      <td class="tv">${margemBadge(m)}</td>
-      <td class="tv">${pm!=null?deltaPP(m,pm,false):'<span style="color:var(--t3)">sem base</span>'}</td></tr>`;
+      <td class="tv">${fF(r)}</td>
+      <td class="tv">${fF(cash)}</td>
+      <td class="tv">${margemBadge(m)}</td></tr>`;
   }).join("");
-  return html || `<tr><td colspan="5" style="padding-left:24px;color:var(--t3);font-style:italic">Sem valor de venda em nenhuma categoria neste recorte.</td></tr>`;
+  return html;
 }
-// Pool de clientes a classificar: empresa inteira (d.abcd.clientes, todo
-// cliente com receita>0) sem filtro de hierarquia; com Gerente/Supervisor/
-// Vendedor ativo, usa o Top 50 daquela entidade (topClientesFonte/
-// hier_top_clientes — não existe um cubo "todo cliente por entidade", então
-// esse recorte fica aproximado ao Top 50, mesma limitação já documentada em
-// outras cascatas por hierarquia deste painel).
-function abcdPool(d, level, names){
-  const src = level ? topClientesFonte(d, level, names) : d.abcd.clientes;
-  return (src||[]).filter(c=>c.r>0);
+// Pool de clientes: REAL_DATA._abcd90.clientes (todo cliente com Faturamento>0
+// nos últimos 90 dias, independente de Período), filtrado por Gerente/
+// Supervisor/Vendedor exatamente como a aba Estoque x Venda faz (attribution
+// pelo vendedor DOMINANTE do cliente na janela — maior receita).
+function abcd90Pool(){
+  const a = REAL_DATA._abcd90;
+  if (!a) return [];
+  return a.clientes.filter(cl=>{
+    const v = cl.vendedor || {};
+    return (ST.ger.length===0 || ST.ger.includes(v.gerente)) &&
+           (ST.sup.length===0 || ST.sup.includes(v.supervisor)) &&
+           (ST.vend.length===0 || ST.vend.includes(v.nome));
+  });
 }
-const ABCD_KEYS = ['A','B','C','D','E','F'];
 function renderAbcd(){
-  const d = curPeriod();
-  const prev = prevPeriod();
-  const level = hierLevelActive();
-  const names = level ? hierSelectedNames(level) : [];
+  const a = REAL_DATA._abcd90;
+  if (!a){ document.getElementById('abcd-sub').textContent = "Dados não disponíveis."; return; }
 
   const altoR = ABCD_OVERRIDE.altoR!=null ? ABCD_OVERRIDE.altoR : ABCD_DEFAULTS.altoR;
   const baixoR = ABCD_OVERRIDE.baixoR!=null ? ABCD_OVERRIDE.baixoR : ABCD_DEFAULTS.baixoR;
@@ -3144,61 +3138,52 @@ function renderAbcd(){
   if (inputBaixaM && document.activeElement!==inputBaixaM) inputBaixaM.value = baixaM.toFixed(2).replace('.',',');
   document.getElementById('abcdParamsNote').innerHTML = personalizado
     ? `⚠ Usando parâmetros <strong>personalizados</strong> — padrão: Faturamento Alto ${fF(ABCD_DEFAULTS.altoR)} · Faturamento Baixo ${fF(ABCD_DEFAULTS.baixoR)} · Margem Alta ${fPct(ABCD_DEFAULTS.altaM)} · Margem Baixa ${fPct(ABCD_DEFAULTS.baixaM)}.`
-    : `Padrão: Faturamento Alto acima de ${fF(ABCD_DEFAULTS.altoR)}, Baixo abaixo de ${fF(ABCD_DEFAULTS.baixoR)} (entre os dois = Médio) · Margem Alta acima de ${fPct(ABCD_DEFAULTS.altaM)}, Baixa abaixo de ${fPct(ABCD_DEFAULTS.baixaM)} (entre os dois = Média — dividida entre os grupos de margem alta/baixa mais próximos, pelo ponto médio).`;
+    : `Padrão: Faturamento Alto acima de ${fF(ABCD_DEFAULTS.altoR)}, Baixo abaixo de ${fF(ABCD_DEFAULTS.baixoR)} (entre os dois = Médio) · Margem Alta acima de ${fPct(ABCD_DEFAULTS.altaM)}, Baixa abaixo de ${fPct(ABCD_DEFAULTS.baixaM)} (entre os dois = Média).`;
 
-  const pool = abcdPool(d, level, names);
+  const pool = abcd90Pool();
   const q = {}; for (const k of ABCD_KEYS) q[k] = {count:0, receita:0, custo:0, itens:[]};
   pool.forEach(cl=>{
     const k = classifyAbcdFront(cl.r, cl.m, altoR, baixoR, altaM, baixaM);
     q[k].count++; q[k].receita+=cl.r; q[k].custo+=(cl.c||0); q[k].itens.push(cl);
   });
-  for (const k of ABCD_KEYS){ q[k].cash_margin = q[k].receita-q[k].custo; q[k].itens.sort((a,b)=>b.r-a.r); }
-  const totalReceita = level ? ABCD_KEYS.reduce((s,k)=>s+q[k].receita,0) : d.receita;
+  for (const k of ABCD_KEYS){ q[k].cash_margin = q[k].receita-q[k].custo; q[k].itens.sort((a2,b2)=>b2.r-a2.r); }
+  const totalReceita = ABCD_KEYS.reduce((s,k)=>s+q[k].receita,0);
 
-  // Δ vs ano anterior das caixas: reclassifica o período anterior com OS MESMOS
-  // parâmetros ativos (senão comparar uma classificação personalizada de hoje
-  // contra a classificação padrão do ano passado não faria sentido).
-  let prevQ = null;
-  if (prev){
-    const prevPool = abcdPool(prev, level, names);
-    prevQ = {}; for (const k of ABCD_KEYS) prevQ[k] = {count:0, receita:0};
-    prevPool.forEach(cl=>{ const k = classifyAbcdFront(cl.r, cl.m, altoR, baixoR, altaM, baixaM); prevQ[k].count++; prevQ[k].receita+=cl.r; });
-  }
-
-  document.getElementById("abcd-sub").textContent = level
-    ? `Recortado por ${level}: ${labelJoin(names)} — Top 50 da entidade classificado pelos parâmetros de referência acima`
-    : `Base: ${fN(d.abcd.n_clientes_considerados)} clientes com receita > 0`;
+  const filtroAtivo = ST.ger.length || ST.sup.length || ST.vend.length;
+  document.getElementById("abcd-sub").textContent =
+    `Últimos 90 dias corridos (${a.janela.inicio} a ${a.janela.fim}), sempre até hoje — não muda com o filtro de Período. ` +
+    (filtroAtivo ? `${fN(pool.length)} clientes no recorte de hierarquia ativo.` : `${fN(pool.length)} clientes com Faturamento &gt; 0 na empresa.`);
   const defs = [
     {k:"A",cls:"abcd-a",title:"Alta Venda + Alta Margem",desc:"Clientes-âncora. Proteger relacionamento e nível de serviço."},
-    {k:"B",cls:"abcd-b",title:"Alta Venda + Baixa Margem",desc:"Revisar política comercial/desconto — volume não compensa margem."},
-    {k:"C",cls:"abcd-c",title:"Venda Mediana + Alta Margem",desc:"Bom mix e rentabilidade — espaço para crescer volume mantendo a margem."},
-    {k:"D",cls:"abcd-d",title:"Venda Mediana + Baixa Margem",desc:"Volume intermediário com margem apertada — revisar mix/desconto."},
-    {k:"E",cls:"abcd-e",title:"Curva E — Baixa Venda + Baixa Margem",desc:"Menor prioridade — candidatos a racionalização de atendimento."},
-    {k:"F",cls:"abcd-f",title:"Clientes Nicho — Baixa Venda + Alta Margem",desc:"Pouco volume mas ótima margem — bons candidatos a cross/up-sell."},
+    {k:"B",cls:"abcd-b",title:"Alta Venda + Média Margem",desc:"Bom volume, margem dentro do esperado — monitorar."},
+    {k:"C",cls:"abcd-c",title:"Alta Venda + Baixa Margem",desc:"Revisar política comercial/desconto — volume não compensa margem."},
+    {k:"D",cls:"abcd-d",title:"Venda Média + Alta Margem",desc:"Bom mix e rentabilidade — espaço para crescer volume mantendo a margem."},
+    {k:"E",cls:"abcd-e",title:"Venda Média + Média Margem",desc:"Perfil intermediário, sem alerta — acompanhar evolução."},
+    {k:"F",cls:"abcd-f",title:"Venda Média + Baixa Margem",desc:"Volume moderado com margem apertada — revisar mix/desconto."},
+    {k:"G",cls:"abcd-g",title:"Baixa Venda + Alta Margem",desc:"Nicho: pouco volume mas ótima margem — bons candidatos a cross/up-sell."},
+    {k:"H",cls:"abcd-h",title:"Baixa Venda + Média Margem",desc:"Baixo volume, margem dentro do esperado."},
+    {k:"I",cls:"abcd-i",title:"Baixa Venda + Baixa Margem",desc:"Menor prioridade — candidatos a racionalização de atendimento."},
   ];
   document.getElementById("abcd-boxes").innerHTML = defs.map(x=>{
     const qq = q[x.k];
     const pct = totalReceita>0 ? (qq.receita/totalReceita*100).toFixed(1) : "0";
-    const pv = prevQ ? prevQ[x.k] : null;
-    const deltaHtml = `<div style="margin-top:8px;display:flex;gap:5px;justify-content:center;flex-wrap:wrap">${deltaPillSmall(qq.receita, pv?pv.receita:null)}<span style="font-size:9px;color:var(--t3)">receita</span> ${deltaPillSmall(qq.count, pv?pv.count:null)}<span style="font-size:9px;color:var(--t3)">clientes</span></div>`;
     return `<div class="abcd-box ${x.cls}"><div class="abcd-letter">${x.k}</div><div class="abcd-title">${x.title}</div>
-      <div class="abcd-desc">${fN(qq.count)} clientes<br>${fF(qq.receita)} (${pct}% da receita)<br>Cash Margem: <strong>${fF(qq.cash_margin)}</strong><br>${x.desc}</div>${deltaHtml}</div>`;
+      <div class="abcd-desc">${fN(qq.count)} clientes<br>${fF(qq.receita)} (${pct}% da receita)<br>Cash Margem: <strong>${fF(qq.cash_margin)}</strong><br>${x.desc}</div></div>`;
   }).join("");
 
-  // Sempre exatamente os 30 maiores (por receita) de cada classe — nem mais, nem menos.
+  // Sempre exatamente os 30 maiores (por Faturamento) de cada grupo — nem mais, nem menos.
   document.getElementById("abcd-examples").innerHTML = defs.map(x=>{
     const top30 = q[x.k].itens.slice(0,30);
-    return `<div class="card"><div class="card-h"><div class="card-title">Top 30 — ${x.title}</div><div class="card-sub">Clique no cliente para ver Faturamento por categoria + Vendedor/Supervisor</div></div><div class="tbl-wrap"><table>
-      <thead><tr><th>Cliente</th><th class="tv">Faturamento</th><th class="tv">Cash Margem</th><th class="tv">Margem</th><th class="tv">Δ Margem (ano ant.)</th></tr></thead>
+    return `<div class="card"><div class="card-h"><div class="card-title">Top 30 — ${x.title}</div><div class="card-sub">Clique no cliente para ver Faturamento por categoria + Vendedor/Supervisor (últimos 90 dias)</div></div><div class="tbl-wrap"><table>
+      <thead><tr><th>Cliente</th><th class="tv">Faturamento</th><th class="tv">Cash Margem</th><th class="tv">Margem</th></tr></thead>
       <tbody>${top30.length?top30.map(e=>{
-        const pvM = prevLookupListMargin(prev,"top_clientes","nome",e.nome);
-        const cm = e.cash_margin!=null ? e.cash_margin : (e.c!=null ? e.r-e.c : null);
+        const cm = e.r-e.c;
         const key = x.k+'|||'+e.codigo;
         const expanded = abcdExpandedClients.has(key);
         const toggle = `<span class="casc-toggle" onclick="toggleAbcdClient('${key}')">${expanded?'−':'+'}</span>`;
-        const mainRow = `<tr><td class="tn">${toggle}${escAttr(e.nome)}</td><td class="tv">${fF(e.r)}</td><td class="tv">${cm!=null?fF(cm):'—'}</td><td class="tv">${margemBadge(e.m)}</td><td class="tv">${deltaPP(e.m,pvM,false)}</td></tr>`;
-        return mainRow + (expanded ? clienteCategoriaRows(e.codigo) : '');
-      }).join(""):'<tr><td colspan="5" style="color:var(--t3)">Nenhum cliente cai nesta classe com os parâmetros atuais</td></tr>'}</tbody>
+        const mainRow = `<tr><td class="tn">${toggle}${escAttr(e.nome)}</td><td class="tv">${fF(e.r)}</td><td class="tv">${fF(cm)}</td><td class="tv">${margemBadge(e.m)}</td></tr>`;
+        return mainRow + (expanded ? clienteCategoriaRows(e) : '');
+      }).join(""):'<tr><td colspan="4" style="color:var(--t3)">Nenhum cliente cai neste grupo com os parâmetros atuais</td></tr>'}</tbody>
       </table></div></div>`;
   }).join("");
 }
