@@ -3033,9 +3033,13 @@ function renderMix(){
 // topo da aba (ABCD_OVERRIDE), e a classificação inteira (caixas + Top 30 de
 // cada classe) recalcula na hora, 100% no front (por isso o back manda a
 // lista COMPLETA de clientes em d.abcd.clientes, não só uma amostra).
-let ABCD_OVERRIDE = { r: null, m: null };
-function classifyAbcdFront(r, m, medR, medM){
-  return (r>=medR && m>=medM) ? 'A' : (r>=medR) ? 'B' : (m>=medM) ? 'C' : 'D';
+let ABCD_OVERRIDE = { altoR: null, baixoR: null, m: null };
+// 6 grupos: Faturamento Alto/Mediano/Baixo (2 limites) × Margem Alta/Baixa (1 corte).
+function classifyAbcdFront(r, m, altoR, baixoR, medM){
+  const altaMargem = m>=medM;
+  if (r>=altoR) return altaMargem ? 'A' : 'B';
+  if (r<=baixoR) return altaMargem ? 'N' : 'E';
+  return altaMargem ? 'C' : 'D';
 }
 // Aceita tanto "1234567,89" (BR) quanto "1234567.89" — decide pelo último
 // separador encontrado (o mais à direita é o decimal).
@@ -3049,12 +3053,13 @@ function parseBRNumber(str){
   return isFinite(n) ? n : null;
 }
 function aplicarAbcdParams(){
-  ABCD_OVERRIDE.r = parseBRNumber(document.getElementById('abcdInputR').value);
+  ABCD_OVERRIDE.altoR = parseBRNumber(document.getElementById('abcdInputAltoR').value);
+  ABCD_OVERRIDE.baixoR = parseBRNumber(document.getElementById('abcdInputBaixoR').value);
   ABCD_OVERRIDE.m = parseBRNumber(document.getElementById('abcdInputM').value);
   renderAbcd();
 }
 function resetAbcdParams(){
-  ABCD_OVERRIDE = { r:null, m:null };
+  ABCD_OVERRIDE = { altoR:null, baixoR:null, m:null };
   renderAbcd();
 }
 // ── Drill-down Cliente x Categoria (clicar num cliente das Classes A/B/C/D) ──
@@ -3111,6 +3116,7 @@ function abcdPool(d, level, names){
   const src = level ? topClientesFonte(d, level, names) : d.abcd.clientes;
   return (src||[]).filter(c=>c.r>0);
 }
+const ABCD_KEYS = ['A','B','C','D','E','N'];
 function renderAbcd(){
   const d = curPeriod();
   const prev = prevPeriod();
@@ -3118,27 +3124,31 @@ function renderAbcd(){
   const names = level ? hierSelectedNames(level) : [];
 
   const medRDefault = d.abcd.mediana_receita, medMDefault = d.abcd.mediana_margem;
-  const medR = ABCD_OVERRIDE.r!=null ? ABCD_OVERRIDE.r : medRDefault;
+  // Padrão: limites de Faturamento em 2x/0,5x a mediana; Margem pela própria mediana.
+  const altoRDefault = medRDefault*2, baixoRDefault = medRDefault*0.5;
+  const altoR = ABCD_OVERRIDE.altoR!=null ? ABCD_OVERRIDE.altoR : altoRDefault;
+  const baixoR = ABCD_OVERRIDE.baixoR!=null ? ABCD_OVERRIDE.baixoR : baixoRDefault;
   const medM = ABCD_OVERRIDE.m!=null ? ABCD_OVERRIDE.m : medMDefault;
-  const personalizado = ABCD_OVERRIDE.r!=null || ABCD_OVERRIDE.m!=null;
+  const personalizado = ABCD_OVERRIDE.altoR!=null || ABCD_OVERRIDE.baixoR!=null || ABCD_OVERRIDE.m!=null;
 
   // Preenche os campos com o valor ATIVO (personalizado ou padrão) — mas não
   // sobrescreve enquanto o usuário está digitando no próprio campo.
-  const inputR = document.getElementById('abcdInputR'), inputM = document.getElementById('abcdInputM');
-  if (inputR && document.activeElement!==inputR) inputR.value = fN(medR);
+  const inputAltoR = document.getElementById('abcdInputAltoR'), inputBaixoR = document.getElementById('abcdInputBaixoR'), inputM = document.getElementById('abcdInputM');
+  if (inputAltoR && document.activeElement!==inputAltoR) inputAltoR.value = fN(altoR);
+  if (inputBaixoR && document.activeElement!==inputBaixoR) inputBaixoR.value = fN(baixoR);
   if (inputM && document.activeElement!==inputM) inputM.value = medM.toFixed(2).replace('.',',');
   document.getElementById('abcdParamsNote').innerHTML = personalizado
-    ? `⚠ Usando parâmetros <strong>personalizados</strong> — padrão calculado (mediana): Faturamento ${fF(medRDefault)} · Margem ${fPct(medMDefault)}.`
-    : `Usando o padrão calculado automaticamente: mediana de Faturamento e de Margem entre os clientes com receita &gt; 0.`;
+    ? `⚠ Usando parâmetros <strong>personalizados</strong> — padrão calculado: Faturamento Alto ${fF(altoRDefault)} (2× a mediana) · Faturamento Baixo ${fF(baixoRDefault)} (0,5× a mediana) · Margem ${fPct(medMDefault)} (mediana).`
+    : `Usando o padrão calculado automaticamente: limites de Faturamento em 2× e 0,5× a mediana, Margem pela mediana — entre os clientes com receita &gt; 0.`;
 
   const pool = abcdPool(d, level, names);
-  const q = {}; for (const k of ['A','B','C','D']) q[k] = {count:0, receita:0, custo:0, itens:[]};
+  const q = {}; for (const k of ABCD_KEYS) q[k] = {count:0, receita:0, custo:0, itens:[]};
   pool.forEach(cl=>{
-    const k = classifyAbcdFront(cl.r, cl.m, medR, medM);
+    const k = classifyAbcdFront(cl.r, cl.m, altoR, baixoR, medM);
     q[k].count++; q[k].receita+=cl.r; q[k].custo+=(cl.c||0); q[k].itens.push(cl);
   });
-  for (const k of ['A','B','C','D']){ q[k].cash_margin = q[k].receita-q[k].custo; q[k].itens.sort((a,b)=>b.r-a.r); }
-  const totalReceita = level ? (q.A.receita+q.B.receita+q.C.receita+q.D.receita) : d.receita;
+  for (const k of ABCD_KEYS){ q[k].cash_margin = q[k].receita-q[k].custo; q[k].itens.sort((a,b)=>b.r-a.r); }
+  const totalReceita = level ? ABCD_KEYS.reduce((s,k)=>s+q[k].receita,0) : d.receita;
 
   // Δ vs ano anterior das caixas: reclassifica o período anterior com OS MESMOS
   // parâmetros ativos (senão comparar uma classificação personalizada de hoje
@@ -3146,18 +3156,20 @@ function renderAbcd(){
   let prevQ = null;
   if (prev){
     const prevPool = abcdPool(prev, level, names);
-    prevQ = {}; for (const k of ['A','B','C','D']) prevQ[k] = {count:0, receita:0};
-    prevPool.forEach(cl=>{ const k = classifyAbcdFront(cl.r, cl.m, medR, medM); prevQ[k].count++; prevQ[k].receita+=cl.r; });
+    prevQ = {}; for (const k of ABCD_KEYS) prevQ[k] = {count:0, receita:0};
+    prevPool.forEach(cl=>{ const k = classifyAbcdFront(cl.r, cl.m, altoR, baixoR, medM); prevQ[k].count++; prevQ[k].receita+=cl.r; });
   }
 
   document.getElementById("abcd-sub").textContent = level
     ? `Recortado por ${level}: ${labelJoin(names)} — Top 50 da entidade classificado pelos parâmetros de referência acima`
     : `Base: ${fN(d.abcd.n_clientes_considerados)} clientes com receita > 0`;
   const defs = [
-    {k:"A",cls:"abcd-a",title:"Alta venda + Alta margem",desc:"Clientes-âncora. Proteger relacionamento e nível de serviço."},
-    {k:"B",cls:"abcd-b",title:"Alta venda + Baixa margem",desc:"Revisar política comercial/desconto — volume não compensa margem."},
-    {k:"C",cls:"abcd-c",title:"Baixa venda + Alta margem",desc:"Potencial de crescimento — bom mix, falta volume. Foco em cross/up-sell."},
-    {k:"D",cls:"abcd-d",title:"Baixa venda + Baixa margem",desc:"Reavaliar custo de atendimento; candidatos a racionalização."},
+    {k:"A",cls:"abcd-a",title:"Alta Venda + Alta Margem",desc:"Clientes-âncora. Proteger relacionamento e nível de serviço."},
+    {k:"B",cls:"abcd-b",title:"Alta Venda + Baixa Margem",desc:"Revisar política comercial/desconto — volume não compensa margem."},
+    {k:"C",cls:"abcd-c",title:"Venda Mediana + Alta Margem",desc:"Bom mix e rentabilidade — espaço para crescer volume mantendo a margem."},
+    {k:"D",cls:"abcd-d",title:"Venda Mediana + Baixa Margem",desc:"Volume intermediário com margem apertada — revisar mix/desconto."},
+    {k:"E",cls:"abcd-e",title:"Curva E — Baixa Venda + Baixa Margem",desc:"Menor prioridade — candidatos a racionalização de atendimento."},
+    {k:"N",cls:"abcd-n",title:"Clientes Nicho — Baixa Venda + Alta Margem",desc:"Pouco volume mas ótima margem — bons candidatos a cross/up-sell."},
   ];
   document.getElementById("abcd-boxes").innerHTML = defs.map(x=>{
     const qq = q[x.k];
@@ -3171,7 +3183,7 @@ function renderAbcd(){
   // Sempre exatamente os 30 maiores (por receita) de cada classe — nem mais, nem menos.
   document.getElementById("abcd-examples").innerHTML = defs.map(x=>{
     const top30 = q[x.k].itens.slice(0,30);
-    return `<div class="card"><div class="card-h"><div class="card-title">Top 30 — Classe ${x.k}</div><div class="card-sub">Clique no cliente para ver Faturamento por categoria + Vendedor/Supervisor</div></div><div class="tbl-wrap"><table>
+    return `<div class="card"><div class="card-h"><div class="card-title">Top 30 — ${x.title}</div><div class="card-sub">Clique no cliente para ver Faturamento por categoria + Vendedor/Supervisor</div></div><div class="tbl-wrap"><table>
       <thead><tr><th>Cliente</th><th class="tv">Faturamento</th><th class="tv">Cash Margem</th><th class="tv">Margem</th><th class="tv">Δ Margem (ano ant.)</th></tr></thead>
       <tbody>${top30.length?top30.map(e=>{
         const pvM = prevLookupListMargin(prev,"top_clientes","nome",e.nome);

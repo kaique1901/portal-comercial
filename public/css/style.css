@@ -218,7 +218,7 @@ tbody tr:last-child td{border-bottom:none}
 .bar-pct{font-size:10px;color:var(--t3);width:34px;text-align:right}
 
 /* â•â•â• CLASSE ABCD â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
-.abcd-wrap{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+.abcd-wrap{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px}
 .abcd-box{background:var(--bg1);border:1px solid var(--bdr);border-radius:var(--r2);padding:16px;text-align:center;box-shadow:var(--sha)}
 .abcd-letter{font-size:36px;font-weight:900;line-height:1;margin-bottom:6px}
 .abcd-title{font-size:11px;font-weight:700;color:var(--t1);margin-bottom:5px}
@@ -227,6 +227,8 @@ tbody tr:last-child td{border-bottom:none}
 .abcd-b{border-top:3px solid var(--neu)}.abcd-b .abcd-letter{color:var(--neu)}
 .abcd-c{border-top:3px solid var(--amb)}.abcd-c .abcd-letter{color:var(--amb)}
 .abcd-d{border-top:3px solid var(--t3)}.abcd-d .abcd-letter{color:var(--t3)}
+.abcd-e{border-top:3px solid var(--dn)}.abcd-e .abcd-letter{color:var(--dn)}
+.abcd-n{border-top:3px solid var(--acc)}.abcd-n .abcd-letter{color:var(--acc)}
 .cls-A{background:rgba(34,135,90,.15);color:var(--up);padding:1px 7px;border-radius:8px;font-size:10px;font-weight:700}
 .cls-B{background:rgba(84,105,95,.14);color:var(--neu);padding:1px 7px;border-radius:8px;font-size:10px;font-weight:700}
 .cls-C{background:rgba(163,118,58,.15);color:var(--amb);padding:1px 7px;border-radius:8px;font-size:10px;font-weight:700}
