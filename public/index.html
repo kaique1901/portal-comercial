@@ -118,7 +118,7 @@
       <div class="nav-item"     data-mod="m-dias"    onclick="showMod('m-dias',this)"><span class="nav-ico">∿</span><span class="nav-txt">Sazonalidade (Semanal)</span></div>
       <div class="nav-item"     data-mod="m-rank"    onclick="showMod('m-rank',this)"><span class="nav-ico">▲</span><span class="nav-txt">Rankings</span></div>
       <div class="nav-item"     data-mod="m-mix"     onclick="showMod('m-mix',this)"><span class="nav-ico">◈</span><span class="nav-txt">Mix &amp; Positivação</span></div>
-      <div class="nav-item"     data-mod="m-abcd"    onclick="showMod('m-abcd',this)"><span class="nav-ico">◐</span><span class="nav-txt">Clientes A/B/C/D</span></div>
+      <div class="nav-item"     data-mod="m-abcd"    onclick="showMod('m-abcd',this)"><span class="nav-ico">◐</span><span class="nav-txt">Clientes de A a F</span></div>
       <div class="nav-item"     data-mod="m-planos"  onclick="showMod('m-planos',this)"><span class="nav-ico">✚</span><span class="nav-txt">Planos de Ação</span></div>
       <div class="nav-item"     data-mod="m-estoque" onclick="showMod('m-estoque',this)"><span class="nav-ico">▣</span><span class="nav-txt">Estoque x Venda (90 dias)</span></div>
       <div class="nav-item"     data-mod="m-produtos-parados-vend" onclick="showMod('m-produtos-parados-vend',this)"><span class="nav-ico">▣</span><span class="nav-txt">Produtos Parados por Vendedor</span></div>
@@ -285,18 +285,20 @@
 
 <!-- 6. ABCD -->
 <div class="mod" id="m-abcd">
-  <div class="mod-header"><div><div class="mod-title">Classificação de Clientes A/B/C/D</div><div class="mod-sub" id="abcd-sub">Corte pela mediana de receita e de margem entre clientes com receita &gt; 0</div></div></div>
-  <div class="alert">⚠ Racional da classificação: o <strong>Faturamento</strong> de cada cliente é comparado a DOIS limites de referência — igual ou acima do limite "Alta Venda" = Alta; igual ou abaixo do limite "Baixa Venda" = Baixa; entre os dois = Venda Mediana. A <strong>Margem</strong> usa um único corte (Alta/Baixa). Por padrão, os limites de Faturamento são <strong>2×</strong> e <strong>0,5×</strong> a mediana de Faturamento entre os clientes com receita &gt; 0, e a Margem usa a própria <strong>mediana</strong> de Margem — mas você pode digitar seus próprios valores de referência abaixo; a classificação inteira recalcula na hora. Os 6 grupos resultantes: <strong>Alta Venda + Alta Margem</strong> (clientes-âncora), <strong>Alta Venda + Baixa Margem</strong> (rever desconto/mix), <strong>Venda Mediana + Alta Margem</strong> (espaço para crescer volume), <strong>Venda Mediana + Baixa Margem</strong> (rever mix), <strong>Curva E</strong> = Baixa Venda + Baixa Margem (menor prioridade), <strong>Clientes Nicho</strong> = Baixa Venda + Alta Margem (bom mix, falta volume).</div>
+  <div class="mod-header"><div><div class="mod-title">Classificação de Clientes de A a F</div><div class="mod-sub" id="abcd-sub">Faturamento e Margem comparados a limites de referência fixos</div></div></div>
+  <div class="alert">⚠ Racional da classificação: o <strong>Faturamento</strong> de cada cliente é comparado a DOIS limites — igual ou acima do limite "Alto" = Alto; igual ou abaixo do limite "Baixo" = Baixo; entre os dois = Médio. A <strong>Margem</strong> também tem DOIS limites ("Alta" e "Baixa"), definindo uma faixa "Média" entre eles — mas essa faixa Média de Margem não vira grupo à parte: fica dividida entre os grupos de margem Alta/Baixa mais próximos (pelo ponto médio entre os dois limites), para manter só os 6 grupos abaixo. Os valores padrão (Faturamento Alto ≥ R$ 4.000, Baixo ≤ R$ 800; Margem Alta ≥ 27%, Baixa ≤ 18%) podem ser substituídos pelos seus próprios valores de referência abaixo; a classificação inteira recalcula na hora. Os 6 grupos: <strong>Alta Venda + Alta Margem</strong> (clientes-âncora), <strong>Alta Venda + Baixa Margem</strong> (rever desconto/mix), <strong>Venda Mediana + Alta Margem</strong> (espaço para crescer volume), <strong>Venda Mediana + Baixa Margem</strong> (rever mix), <strong>Curva E</strong> = Baixa Venda + Baixa Margem (menor prioridade), <strong>Clientes Nicho</strong> = Baixa Venda + Alta Margem (bom mix, falta volume).</div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Parâmetros de Referência</div><div class="card-sub" id="abcdParamsNote">—</div></div></div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;padding:4px 2px 10px">
-      <div><label style="font-size:11px;color:var(--t3);display:block;margin-bottom:4px">Faturamento — limite Alta Venda (R$, ≥)</label>
-        <input type="text" id="abcdInputAltoR" style="padding:7px 10px;border:1px solid var(--bdr2);border-radius:6px;background:var(--bg2);color:var(--t1);width:160px" placeholder="ex.: 30000,00"></div>
-      <div><label style="font-size:11px;color:var(--t3);display:block;margin-bottom:4px">Faturamento — limite Baixa Venda (R$, ≤)</label>
-        <input type="text" id="abcdInputBaixoR" style="padding:7px 10px;border:1px solid var(--bdr2);border-radius:6px;background:var(--bg2);color:var(--t1);width:160px" placeholder="ex.: 7500,00"></div>
-      <div><label style="font-size:11px;color:var(--t3);display:block;margin-bottom:4px">Margem de referência (%)</label>
-        <input type="text" id="abcdInputM" style="padding:7px 10px;border:1px solid var(--bdr2);border-radius:6px;background:var(--bg2);color:var(--t1);width:120px" placeholder="ex.: 25,00"></div>
+      <div><label style="font-size:11px;color:var(--t3);display:block;margin-bottom:4px">Faturamento — Alto acima de (R$, ≥)</label>
+        <input type="text" id="abcdInputAltoR" style="padding:7px 10px;border:1px solid var(--bdr2);border-radius:6px;background:var(--bg2);color:var(--t1);width:150px" placeholder="ex.: 4000,00"></div>
+      <div><label style="font-size:11px;color:var(--t3);display:block;margin-bottom:4px">Faturamento — Baixo abaixo de (R$, ≤)</label>
+        <input type="text" id="abcdInputBaixoR" style="padding:7px 10px;border:1px solid var(--bdr2);border-radius:6px;background:var(--bg2);color:var(--t1);width:150px" placeholder="ex.: 800,00"></div>
+      <div><label style="font-size:11px;color:var(--t3);display:block;margin-bottom:4px">Margem — Alta acima de (%)</label>
+        <input type="text" id="abcdInputAltaM" style="padding:7px 10px;border:1px solid var(--bdr2);border-radius:6px;background:var(--bg2);color:var(--t1);width:110px" placeholder="ex.: 27,00"></div>
+      <div><label style="font-size:11px;color:var(--t3);display:block;margin-bottom:4px">Margem — Baixa abaixo de (%)</label>
+        <input type="text" id="abcdInputBaixaM" style="padding:7px 10px;border:1px solid var(--bdr2);border-radius:6px;background:var(--bg2);color:var(--t1);width:110px" placeholder="ex.: 18,00"></div>
       <button onclick="aplicarAbcdParams()" style="padding:8px 16px;border:none;border-radius:6px;background:var(--acc);color:#fff;cursor:pointer;font-weight:600">Aplicar</button>
-      <button onclick="resetAbcdParams()" style="padding:8px 16px;border:1px solid var(--bdr2);border-radius:6px;background:transparent;color:var(--t1);cursor:pointer">Restaurar padrão (2×/0,5× mediana)</button>
+      <button onclick="resetAbcdParams()" style="padding:8px 16px;border:1px solid var(--bdr2);border-radius:6px;background:transparent;color:var(--t1);cursor:pointer">Restaurar padrão</button>
     </div>
   </div></div>
   <div class="abcd-wrap" id="abcd-boxes"></div>

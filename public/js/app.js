@@ -3025,20 +3025,24 @@ function renderMix(){
     }).join("")}</tbody>`;
 }
 
-// ── 6. ABCD ───────────────────────────────────────────────────
-// Classificação em quadrante (Faturamento alto/baixo × Margem alta/baixa),
-// cortada pelos parâmetros de referência abaixo. Por padrão os parâmetros são
-// a MEDIANA de receita e de margem entre os clientes com receita>0 (mesma
-// base que sempre foi usada) — mas o usuário pode digitar valores próprios no
-// topo da aba (ABCD_OVERRIDE), e a classificação inteira (caixas + Top 30 de
-// cada classe) recalcula na hora, 100% no front (por isso o back manda a
-// lista COMPLETA de clientes em d.abcd.clientes, não só uma amostra).
-let ABCD_OVERRIDE = { altoR: null, baixoR: null, m: null };
-// 6 grupos: Faturamento Alto/Mediano/Baixo (2 limites) × Margem Alta/Baixa (1 corte).
-function classifyAbcdFront(r, m, altoR, baixoR, medM){
-  const altaMargem = m>=medM;
+// ── 6. ABCD (Clientes de A a F) ──────────────────────────────
+// 6 grupos fixos: Faturamento Alto/Médio/Baixo (2 limites) × Margem Alta/Baixa
+// (2 limites, que também definem uma faixa "Média" entre eles — mas a Média de
+// Margem NÃO vira grupo à parte: é dividida entre os grupos de margem alta/
+// baixa mais próximos, usando o PONTO MÉDIO entre os dois limites como corte —
+// decisão do usuário para manter só os 6 grupos já existentes). Os parâmetros
+// têm um padrão FIXO de negócio (não mais mediana da empresa), mas o usuário
+// pode digitar valores próprios no topo da aba (ABCD_OVERRIDE), e a
+// classificação inteira (caixas + Top 30 de cada classe) recalcula na hora,
+// 100% no front (por isso o back manda a lista COMPLETA de clientes em
+// d.abcd.clientes, não só uma amostra).
+const ABCD_DEFAULTS = { altoR: 4000, baixoR: 800, altaM: 27, baixaM: 18 };
+let ABCD_OVERRIDE = { altoR: null, baixoR: null, altaM: null, baixaM: null };
+function classifyAbcdFront(r, m, altoR, baixoR, altaM, baixaM){
+  const corteMargem = (altaM+baixaM)/2;
+  const altaMargem = m>=corteMargem;
   if (r>=altoR) return altaMargem ? 'A' : 'B';
-  if (r<=baixoR) return altaMargem ? 'N' : 'E';
+  if (r<=baixoR) return altaMargem ? 'F' : 'E';
   return altaMargem ? 'C' : 'D';
 }
 // Aceita tanto "1234567,89" (BR) quanto "1234567.89" — decide pelo último
@@ -3055,11 +3059,12 @@ function parseBRNumber(str){
 function aplicarAbcdParams(){
   ABCD_OVERRIDE.altoR = parseBRNumber(document.getElementById('abcdInputAltoR').value);
   ABCD_OVERRIDE.baixoR = parseBRNumber(document.getElementById('abcdInputBaixoR').value);
-  ABCD_OVERRIDE.m = parseBRNumber(document.getElementById('abcdInputM').value);
+  ABCD_OVERRIDE.altaM = parseBRNumber(document.getElementById('abcdInputAltaM').value);
+  ABCD_OVERRIDE.baixaM = parseBRNumber(document.getElementById('abcdInputBaixaM').value);
   renderAbcd();
 }
 function resetAbcdParams(){
-  ABCD_OVERRIDE = { altoR:null, baixoR:null, m:null };
+  ABCD_OVERRIDE = { altoR:null, baixoR:null, altaM:null, baixaM:null };
   renderAbcd();
 }
 // ── Drill-down Cliente x Categoria (clicar num cliente das Classes A/B/C/D) ──
@@ -3116,35 +3121,35 @@ function abcdPool(d, level, names){
   const src = level ? topClientesFonte(d, level, names) : d.abcd.clientes;
   return (src||[]).filter(c=>c.r>0);
 }
-const ABCD_KEYS = ['A','B','C','D','E','N'];
+const ABCD_KEYS = ['A','B','C','D','E','F'];
 function renderAbcd(){
   const d = curPeriod();
   const prev = prevPeriod();
   const level = hierLevelActive();
   const names = level ? hierSelectedNames(level) : [];
 
-  const medRDefault = d.abcd.mediana_receita, medMDefault = d.abcd.mediana_margem;
-  // Padrão: limites de Faturamento em 2x/0,5x a mediana; Margem pela própria mediana.
-  const altoRDefault = medRDefault*2, baixoRDefault = medRDefault*0.5;
-  const altoR = ABCD_OVERRIDE.altoR!=null ? ABCD_OVERRIDE.altoR : altoRDefault;
-  const baixoR = ABCD_OVERRIDE.baixoR!=null ? ABCD_OVERRIDE.baixoR : baixoRDefault;
-  const medM = ABCD_OVERRIDE.m!=null ? ABCD_OVERRIDE.m : medMDefault;
-  const personalizado = ABCD_OVERRIDE.altoR!=null || ABCD_OVERRIDE.baixoR!=null || ABCD_OVERRIDE.m!=null;
+  const altoR = ABCD_OVERRIDE.altoR!=null ? ABCD_OVERRIDE.altoR : ABCD_DEFAULTS.altoR;
+  const baixoR = ABCD_OVERRIDE.baixoR!=null ? ABCD_OVERRIDE.baixoR : ABCD_DEFAULTS.baixoR;
+  const altaM = ABCD_OVERRIDE.altaM!=null ? ABCD_OVERRIDE.altaM : ABCD_DEFAULTS.altaM;
+  const baixaM = ABCD_OVERRIDE.baixaM!=null ? ABCD_OVERRIDE.baixaM : ABCD_DEFAULTS.baixaM;
+  const personalizado = ABCD_OVERRIDE.altoR!=null || ABCD_OVERRIDE.baixoR!=null || ABCD_OVERRIDE.altaM!=null || ABCD_OVERRIDE.baixaM!=null;
 
   // Preenche os campos com o valor ATIVO (personalizado ou padrão) — mas não
   // sobrescreve enquanto o usuário está digitando no próprio campo.
-  const inputAltoR = document.getElementById('abcdInputAltoR'), inputBaixoR = document.getElementById('abcdInputBaixoR'), inputM = document.getElementById('abcdInputM');
+  const inputAltoR = document.getElementById('abcdInputAltoR'), inputBaixoR = document.getElementById('abcdInputBaixoR'),
+        inputAltaM = document.getElementById('abcdInputAltaM'), inputBaixaM = document.getElementById('abcdInputBaixaM');
   if (inputAltoR && document.activeElement!==inputAltoR) inputAltoR.value = fN(altoR);
   if (inputBaixoR && document.activeElement!==inputBaixoR) inputBaixoR.value = fN(baixoR);
-  if (inputM && document.activeElement!==inputM) inputM.value = medM.toFixed(2).replace('.',',');
+  if (inputAltaM && document.activeElement!==inputAltaM) inputAltaM.value = altaM.toFixed(2).replace('.',',');
+  if (inputBaixaM && document.activeElement!==inputBaixaM) inputBaixaM.value = baixaM.toFixed(2).replace('.',',');
   document.getElementById('abcdParamsNote').innerHTML = personalizado
-    ? `⚠ Usando parâmetros <strong>personalizados</strong> — padrão calculado: Faturamento Alto ${fF(altoRDefault)} (2× a mediana) · Faturamento Baixo ${fF(baixoRDefault)} (0,5× a mediana) · Margem ${fPct(medMDefault)} (mediana).`
-    : `Usando o padrão calculado automaticamente: limites de Faturamento em 2× e 0,5× a mediana, Margem pela mediana — entre os clientes com receita &gt; 0.`;
+    ? `⚠ Usando parâmetros <strong>personalizados</strong> — padrão: Faturamento Alto ${fF(ABCD_DEFAULTS.altoR)} · Faturamento Baixo ${fF(ABCD_DEFAULTS.baixoR)} · Margem Alta ${fPct(ABCD_DEFAULTS.altaM)} · Margem Baixa ${fPct(ABCD_DEFAULTS.baixaM)}.`
+    : `Padrão: Faturamento Alto acima de ${fF(ABCD_DEFAULTS.altoR)}, Baixo abaixo de ${fF(ABCD_DEFAULTS.baixoR)} (entre os dois = Médio) · Margem Alta acima de ${fPct(ABCD_DEFAULTS.altaM)}, Baixa abaixo de ${fPct(ABCD_DEFAULTS.baixaM)} (entre os dois = Média — dividida entre os grupos de margem alta/baixa mais próximos, pelo ponto médio).`;
 
   const pool = abcdPool(d, level, names);
   const q = {}; for (const k of ABCD_KEYS) q[k] = {count:0, receita:0, custo:0, itens:[]};
   pool.forEach(cl=>{
-    const k = classifyAbcdFront(cl.r, cl.m, altoR, baixoR, medM);
+    const k = classifyAbcdFront(cl.r, cl.m, altoR, baixoR, altaM, baixaM);
     q[k].count++; q[k].receita+=cl.r; q[k].custo+=(cl.c||0); q[k].itens.push(cl);
   });
   for (const k of ABCD_KEYS){ q[k].cash_margin = q[k].receita-q[k].custo; q[k].itens.sort((a,b)=>b.r-a.r); }
@@ -3157,7 +3162,7 @@ function renderAbcd(){
   if (prev){
     const prevPool = abcdPool(prev, level, names);
     prevQ = {}; for (const k of ABCD_KEYS) prevQ[k] = {count:0, receita:0};
-    prevPool.forEach(cl=>{ const k = classifyAbcdFront(cl.r, cl.m, altoR, baixoR, medM); prevQ[k].count++; prevQ[k].receita+=cl.r; });
+    prevPool.forEach(cl=>{ const k = classifyAbcdFront(cl.r, cl.m, altoR, baixoR, altaM, baixaM); prevQ[k].count++; prevQ[k].receita+=cl.r; });
   }
 
   document.getElementById("abcd-sub").textContent = level
@@ -3169,7 +3174,7 @@ function renderAbcd(){
     {k:"C",cls:"abcd-c",title:"Venda Mediana + Alta Margem",desc:"Bom mix e rentabilidade — espaço para crescer volume mantendo a margem."},
     {k:"D",cls:"abcd-d",title:"Venda Mediana + Baixa Margem",desc:"Volume intermediário com margem apertada — revisar mix/desconto."},
     {k:"E",cls:"abcd-e",title:"Curva E — Baixa Venda + Baixa Margem",desc:"Menor prioridade — candidatos a racionalização de atendimento."},
-    {k:"N",cls:"abcd-n",title:"Clientes Nicho — Baixa Venda + Alta Margem",desc:"Pouco volume mas ótima margem — bons candidatos a cross/up-sell."},
+    {k:"F",cls:"abcd-f",title:"Clientes Nicho — Baixa Venda + Alta Margem",desc:"Pouco volume mas ótima margem — bons candidatos a cross/up-sell."},
   ];
   document.getElementById("abcd-boxes").innerHTML = defs.map(x=>{
     const qq = q[x.k];

@@ -966,25 +966,33 @@ function buildCascata(catRows, grpRows, fornRows, prodRows) {
 }
 function median(arr) { if (!arr.length) return 0; const s = [...arr].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; }
 function classifyAbcd(r, m, medR, medM) { return (r >= medR && m >= medM) ? 'A' : (r >= medR) ? 'B' : (m >= medM) ? 'C' : 'D'; }
-// Classificação de 6 grupos da aba Clientes A/B/C/D (Faturamento Alto/Mediano/Baixo
-// x Margem Alta/Baixa — 2 limites de faturamento em vez de 1 corte só). Só usada para
-// decidir o top100Codes abaixo; classifyAbcd (2x2, acima) continua intocada porque
-// hier_abcd/Riscos & Oportunidades dependem dela.
-function classifyAbcd6(r, m, altoR, baixoR, medM) {
-  const altaMargem = m >= medM;
+// Classificação de 6 grupos da aba "Clientes de A a F" (Faturamento Alto/Médio/
+// Baixo x Margem Alta/Baixa — 2 limites por dimensão). A faixa "Média Margem"
+// (entre baixaM e altaM) não vira grupo à parte — é dividida entre os grupos de
+// margem alta/baixa mais próximos pelo PONTO MÉDIO entre os dois limites
+// (decisão do usuário: manter só os 6 grupos já existentes). Só usada para
+// decidir o top100Codes abaixo; classifyAbcd (2x2, acima) continua intocada
+// porque hier_abcd/Riscos & Oportunidades dependem dela.
+function classifyAbcd6(r, m, altoR, baixoR, altaM, baixaM) {
+  const corteMargem = (altaM + baixaM) / 2;
+  const altaMargem = m >= corteMargem;
   if (r >= altoR) return altaMargem ? 'A' : 'B';
-  if (r <= baixoR) return altaMargem ? 'N' : 'E';
+  if (r <= baixoR) return altaMargem ? 'F' : 'E';
   return altaMargem ? 'C' : 'D';
 }
+// Padrão FIXO de negócio (não mais mediana da empresa) — mesmos valores usados
+// como default no front (ABCD_DEFAULTS em app.js). Mantidos em sincronia manual
+// porque back e front não compartilham módulo JS.
+const ABCD6_DEFAULTS = { altoR: 4000, baixoR: 800, altaM: 27, baixaM: 18 };
 // clientes = lista COMPLETA (todo cliente com receita>0, não só top 50) — o
 // front reclassifica ao vivo com os parâmetros de referência que o usuário
 // personalizar, em vez de depender de uma classificação fixa vinda do ETL.
 // top100Codes = união dos ~100 maiores de cada um dos 6 grupos (classificação
-// PADRÃO: limites de faturamento em 2x/0,5x a mediana, margem pela mediana) —
-// usado só para saber quais clientes merecem ter a cascata de categoria/vendedor
-// pré-calculada (ver abcdCliCat/abcdCliVend). q (A-D, 2x2) continua servindo só
-// hier_abcd/Riscos & Oportunidades — a aba Clientes A/B/C/D reclassifica tudo no
-// front (classifyAbcdFront) e não lê esses agregados.
+// PADRÃO, ABCD6_DEFAULTS) — usado só para saber quais clientes merecem ter a
+// cascata de categoria/vendedor pré-calculada (ver abcdCliCat/abcdCliVend).
+// q (A-D, 2x2) continua servindo só hier_abcd/Riscos & Oportunidades — a aba
+// Clientes de A a F reclassifica tudo no front (classifyAbcdFront) e não lê
+// esses agregados.
 function buildAbcd(cliRows) {
   const clientes = cliRows.map(x => { const r = num(x.r), c = num(x.c); return { codigo: String(x.codigo), nome: x.nome, r: round2(r), c: round2(c), m: r > 0 ? +(100 * (1 - c / r)).toFixed(2) : 0 }; }).filter(x => x.r > 0);
   const medR = median(clientes.map(x => x.r));
@@ -992,10 +1000,9 @@ function buildAbcd(cliRows) {
   const q = {}; for (const k of ['A', 'B', 'C', 'D']) q[k] = { count: 0, receita: 0, custo: 0, cash_margin: 0 };
   for (const cl of clientes) { const k = classifyAbcd(cl.r, cl.m, medR, medM); q[k].count++; q[k].receita += cl.r; q[k].custo += cl.c; }
   for (const k of ['A', 'B', 'C', 'D']) { q[k].receita = round2(q[k].receita); q[k].custo = round2(q[k].custo); q[k].cash_margin = round2(q[k].receita - q[k].custo); }
-  const altoRDefault = medR * 2, baixoRDefault = medR * 0.5;
   const top100Codes = new Set();
-  for (const k of ['A', 'B', 'C', 'D', 'E', 'N']) {
-    clientes.filter(cl => classifyAbcd6(cl.r, cl.m, altoRDefault, baixoRDefault, medM) === k)
+  for (const k of ['A', 'B', 'C', 'D', 'E', 'F']) {
+    clientes.filter(cl => classifyAbcd6(cl.r, cl.m, ABCD6_DEFAULTS.altoR, ABCD6_DEFAULTS.baixoR, ABCD6_DEFAULTS.altaM, ABCD6_DEFAULTS.baixaM) === k)
       .sort((a, b) => b.r - a.r).slice(0, 100)
       .forEach(cl => top100Codes.add(cl.codigo));
   }
