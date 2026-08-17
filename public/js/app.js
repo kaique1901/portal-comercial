@@ -585,6 +585,7 @@ function mesclarRecorte(p, rec){
     por_produto_janela90: rec.por_produto_janela90,
     qualidade: rec.qualidade,
     abcd: rec.abcd,
+    abcd_clientes_detalhe: rec.abcd_clientes_detalhe || {},
     cascata: rec.cascata,
     _recorte: true,
     _carregando: !!rec._carregando   // recorte vazio (consulta em vôo) → avisa na tela
@@ -3025,11 +3026,44 @@ function renderMix(){
 }
 
 // ── 6. ABCD ───────────────────────────────────────────────────
+// Classificação em quadrante (Faturamento alto/baixo × Margem alta/baixa),
+// cortada pelos parâmetros de referência abaixo. Por padrão os parâmetros são
+// a MEDIANA de receita e de margem entre os clientes com receita>0 (mesma
+// base que sempre foi usada) — mas o usuário pode digitar valores próprios no
+// topo da aba (ABCD_OVERRIDE), e a classificação inteira (caixas + Top 30 de
+// cada classe) recalcula na hora, 100% no front (por isso o back manda a
+// lista COMPLETA de clientes em d.abcd.clientes, não só uma amostra).
+let ABCD_OVERRIDE = { r: null, m: null };
+function classifyAbcdFront(r, m, medR, medM){
+  return (r>=medR && m>=medM) ? 'A' : (r>=medR) ? 'B' : (m>=medM) ? 'C' : 'D';
+}
+// Aceita tanto "1234567,89" (BR) quanto "1234567.89" — decide pelo último
+// separador encontrado (o mais à direita é o decimal).
+function parseBRNumber(str){
+  if (str==null || String(str).trim()==='') return null;
+  let s = String(str).trim();
+  const lastComma = s.lastIndexOf(','), lastDot = s.lastIndexOf('.');
+  if (lastComma>lastDot){ s = s.replace(/\./g,'').replace(',','.'); }
+  else if (lastDot>lastComma){ s = s.replace(/,/g,''); }
+  const n = parseFloat(s);
+  return isFinite(n) ? n : null;
+}
+function aplicarAbcdParams(){
+  ABCD_OVERRIDE.r = parseBRNumber(document.getElementById('abcdInputR').value);
+  ABCD_OVERRIDE.m = parseBRNumber(document.getElementById('abcdInputM').value);
+  renderAbcd();
+}
+function resetAbcdParams(){
+  ABCD_OVERRIDE = { r:null, m:null };
+  renderAbcd();
+}
 // ── Drill-down Cliente x Categoria (clicar num cliente das Classes A/B/C/D) ──
-// d.cliente_categoria[codigo][categoria] = [r,c] — só existe para os ~200
-// clientes que aparecem nos Exemplos ABCD (ver run_etl.ps1), para manter o
-// JSON pequeno. Comparativo usa o mesmo código de cliente no período anterior
-// (PREV_OF) — códigos de cliente são estáveis entre semestres.
+// d.abcd_clientes_detalhe[codigo] = {categorias:{cat:{r,c}}, vendedor:{codigo,
+// nome,supervisor}} — só existe para os ~100 maiores de cada classe (pela
+// classificação PADRÃO/mediana); se o usuário personalizar os parâmetros e
+// isso trouxer um cliente de fora desse conjunto pro Top 30, a cascata cai no
+// aviso abaixo em vez de travar. Comparativo usa o mesmo código de cliente no
+// período anterior — códigos são estáveis entre semestres.
 let abcdExpandedClients = new Set();
 function toggleAbcdClient(key){
   if (abcdExpandedClients.has(key)) abcdExpandedClients.delete(key); else abcdExpandedClients.add(key);
@@ -3037,20 +3071,26 @@ function toggleAbcdClient(key){
 }
 function clienteCategoriaRows(codigo){
   const d = curPeriod();
-  const prevKey = PREV_OF[ST.per];
   const prev = prevPeriod();
-  const catMap = (d.cliente_categoria && d.cliente_categoria[codigo]) || null;
-  if (!catMap){
-    return `<tr><td colspan="5" style="padding-left:24px;color:var(--t3);font-style:italic">Sem detalhamento por categoria disponível para este cliente neste recorte.</td></tr>`;
+  const det = d.abcd_clientes_detalhe && d.abcd_clientes_detalhe[codigo];
+  const hasDet = det && (det.vendedor || Object.keys(det.categorias||{}).length);
+  if (!hasDet){
+    return `<tr><td colspan="5" style="padding-left:24px;color:var(--t3);font-style:italic">Sem detalhamento disponível para este cliente (fora do Top 100 da classe pela classificação padrão — ajuste os parâmetros de referência para algo mais próximo do padrão, ou restaure o padrão acima).</td></tr>`;
   }
-  const prevCatMap = (prev && prev.cliente_categoria && prev.cliente_categoria[codigo]) || null;
-  const catNames = Object.keys(catMap).sort((a,b)=>catMap[b][0]-catMap[a][0]);
-  return catNames.map(cat=>{
-    const r=catMap[cat][0], c=catMap[cat][1];
+  let html = '';
+  if (det.vendedor){
+    html += `<tr class="casc-info"><td colspan="5" style="padding-left:24px">Vendedor: <strong>${escAttr(det.vendedor.codigo)} - ${escAttr(det.vendedor.nome)}</strong> · Supervisor: <strong>${escAttr(det.vendedor.supervisor)}</strong></td></tr>`;
+  }
+  const catMap = det.categorias || {};
+  const prevDet = prev && prev.abcd_clientes_detalhe && prev.abcd_clientes_detalhe[codigo];
+  const prevCatMap = (prevDet && prevDet.categorias) || {};
+  const catNames = Object.keys(catMap).sort((a,b)=>catMap[b].r-catMap[a].r);
+  html += catNames.map(cat=>{
+    const v = catMap[cat]; const r=v.r, c=v.c;
     const m = r>0 ? +(100*(1-c/r)).toFixed(2) : 0;
     const cash = r-c;
-    const pv = prevCatMap ? prevCatMap[cat] : null;
-    const pr = pv?pv[0]:null, pc = pv?pv[1]:null;
+    const pv = prevCatMap[cat];
+    const pr = pv?pv.r:null, pc = pv?pv.c:null;
     const pm = (pv && pr>0) ? +(100*(1-pc/pr)).toFixed(2) : null;
     const pcash = pv ? (pr-pc) : null;
     return `<tr class="casc-lvl1"><td style="padding-left:24px;color:var(--t2);font-style:italic">${escAttr(cat)}</td>
@@ -3058,24 +3098,61 @@ function clienteCategoriaRows(codigo){
       <td class="tv">${fF(cash)}<div>${deltaPillSmall(cash,pcash)}</div></td>
       <td class="tv">${margemBadge(m)}</td>
       <td class="tv">${pm!=null?deltaPP(m,pm,false):'<span style="color:var(--t3)">sem base</span>'}</td></tr>`;
-  }).join("") || `<tr><td colspan="5" style="padding-left:24px;color:var(--t3);font-style:italic">Sem valor de venda em nenhuma categoria neste recorte.</td></tr>`;
+  }).join("");
+  return html || `<tr><td colspan="5" style="padding-left:24px;color:var(--t3);font-style:italic">Sem valor de venda em nenhuma categoria neste recorte.</td></tr>`;
+}
+// Pool de clientes a classificar: empresa inteira (d.abcd.clientes, todo
+// cliente com receita>0) sem filtro de hierarquia; com Gerente/Supervisor/
+// Vendedor ativo, usa o Top 50 daquela entidade (topClientesFonte/
+// hier_top_clientes — não existe um cubo "todo cliente por entidade", então
+// esse recorte fica aproximado ao Top 50, mesma limitação já documentada em
+// outras cascatas por hierarquia deste painel).
+function abcdPool(d, level, names){
+  const src = level ? topClientesFonte(d, level, names) : d.abcd.clientes;
+  return (src||[]).filter(c=>c.r>0);
 }
 function renderAbcd(){
   const d = curPeriod();
-  const prevKey = PREV_OF[ST.per];
   const prev = prevPeriod();
   const level = hierLevelActive();
   const names = level ? hierSelectedNames(level) : [];
-  // Com filtro de hierarquia ativo, reclassifica usando a MESMA mediana global (mais
-  // específico não deveria ter um "corte" diferente — senão a classe A de um vendedor
-  // pequeno deixaria de ser comparável com a de outro). Só os totais são recortados.
-  const a = level ? hierUnionAbcd(level, names) : d.abcd;
-  const totalReceita = level ? (a.A.receita+a.B.receita+a.C.receita+a.D.receita) : d.receita;
-  const prevA = level ? (prev ? hierUnionAbcdFor(prev, level, names) : null) : prev && prev.abcd;
+
+  const medRDefault = d.abcd.mediana_receita, medMDefault = d.abcd.mediana_margem;
+  const medR = ABCD_OVERRIDE.r!=null ? ABCD_OVERRIDE.r : medRDefault;
+  const medM = ABCD_OVERRIDE.m!=null ? ABCD_OVERRIDE.m : medMDefault;
+  const personalizado = ABCD_OVERRIDE.r!=null || ABCD_OVERRIDE.m!=null;
+
+  // Preenche os campos com o valor ATIVO (personalizado ou padrão) — mas não
+  // sobrescreve enquanto o usuário está digitando no próprio campo.
+  const inputR = document.getElementById('abcdInputR'), inputM = document.getElementById('abcdInputM');
+  if (inputR && document.activeElement!==inputR) inputR.value = fN(medR);
+  if (inputM && document.activeElement!==inputM) inputM.value = medM.toFixed(2).replace('.',',');
+  document.getElementById('abcdParamsNote').innerHTML = personalizado
+    ? `⚠ Usando parâmetros <strong>personalizados</strong> — padrão calculado (mediana): Faturamento ${fF(medRDefault)} · Margem ${fPct(medMDefault)}.`
+    : `Usando o padrão calculado automaticamente: mediana de Faturamento e de Margem entre os clientes com receita &gt; 0.`;
+
+  const pool = abcdPool(d, level, names);
+  const q = {}; for (const k of ['A','B','C','D']) q[k] = {count:0, receita:0, custo:0, itens:[]};
+  pool.forEach(cl=>{
+    const k = classifyAbcdFront(cl.r, cl.m, medR, medM);
+    q[k].count++; q[k].receita+=cl.r; q[k].custo+=(cl.c||0); q[k].itens.push(cl);
+  });
+  for (const k of ['A','B','C','D']){ q[k].cash_margin = q[k].receita-q[k].custo; q[k].itens.sort((a,b)=>b.r-a.r); }
+  const totalReceita = level ? (q.A.receita+q.B.receita+q.C.receita+q.D.receita) : d.receita;
+
+  // Δ vs ano anterior das caixas: reclassifica o período anterior com OS MESMOS
+  // parâmetros ativos (senão comparar uma classificação personalizada de hoje
+  // contra a classificação padrão do ano passado não faria sentido).
+  let prevQ = null;
+  if (prev){
+    const prevPool = abcdPool(prev, level, names);
+    prevQ = {}; for (const k of ['A','B','C','D']) prevQ[k] = {count:0, receita:0};
+    prevPool.forEach(cl=>{ const k = classifyAbcdFront(cl.r, cl.m, medR, medM); prevQ[k].count++; prevQ[k].receita+=cl.r; });
+  }
 
   document.getElementById("abcd-sub").textContent = level
-    ? `Recortado por ${level}: ${labelJoin(names)} · classificado pela mediana GLOBAL do período (receita ${fF(d.abcd.mediana_receita)} · margem ${fPct(d.abcd.mediana_margem)})`
-    : `Mediana de receita: ${fF(a.mediana_receita)} · Mediana de margem: ${fPct(a.mediana_margem)} · Base: ${fN(a.n_clientes_considerados)} clientes com receita > 0`;
+    ? `Recortado por ${level}: ${labelJoin(names)} — Top 50 da entidade classificado pelos parâmetros de referência acima`
+    : `Base: ${fN(d.abcd.n_clientes_considerados)} clientes com receita > 0`;
   const defs = [
     {k:"A",cls:"abcd-a",title:"Alta venda + Alta margem",desc:"Clientes-âncora. Proteger relacionamento e nível de serviço."},
     {k:"B",cls:"abcd-b",title:"Alta venda + Baixa margem",desc:"Revisar política comercial/desconto — volume não compensa margem."},
@@ -3083,55 +3160,30 @@ function renderAbcd(){
     {k:"D",cls:"abcd-d",title:"Baixa venda + Baixa margem",desc:"Reavaliar custo de atendimento; candidatos a racionalização."},
   ];
   document.getElementById("abcd-boxes").innerHTML = defs.map(x=>{
-    const q = a[x.k];
-    const pct = totalReceita>0 ? (q.receita/totalReceita*100).toFixed(1) : "0";
-    const pv = prevA ? prevA[x.k] : null;
-    const cm = q.cash_margin!=null ? q.cash_margin : null;
-    const deltaHtml = `<div style="margin-top:8px;display:flex;gap:5px;justify-content:center;flex-wrap:wrap">${deltaPillSmall(q.receita, pv?pv.receita:null)}<span style="font-size:9px;color:var(--t3)">receita</span> ${deltaPillSmall(q.count, pv?pv.count:null)}<span style="font-size:9px;color:var(--t3)">clientes</span></div>`;
-    const cashLine = cm!=null ? `<br>Cash Margem: <strong>${fF(cm)}</strong>` : "";
+    const qq = q[x.k];
+    const pct = totalReceita>0 ? (qq.receita/totalReceita*100).toFixed(1) : "0";
+    const pv = prevQ ? prevQ[x.k] : null;
+    const deltaHtml = `<div style="margin-top:8px;display:flex;gap:5px;justify-content:center;flex-wrap:wrap">${deltaPillSmall(qq.receita, pv?pv.receita:null)}<span style="font-size:9px;color:var(--t3)">receita</span> ${deltaPillSmall(qq.count, pv?pv.count:null)}<span style="font-size:9px;color:var(--t3)">clientes</span></div>`;
     return `<div class="abcd-box ${x.cls}"><div class="abcd-letter">${x.k}</div><div class="abcd-title">${x.title}</div>
-      <div class="abcd-desc">${fN(q.count)} clientes<br>${fF(q.receita)} (${pct}% da receita)${cashLine}<br>${x.desc}</div>${deltaHtml}</div>`;
+      <div class="abcd-desc">${fN(qq.count)} clientes<br>${fF(qq.receita)} (${pct}% da receita)<br>Cash Margem: <strong>${fF(qq.cash_margin)}</strong><br>${x.desc}</div>${deltaHtml}</div>`;
   }).join("");
 
-  // Exemplos por classe: no recorte hierárquico, usa o Top 50 daquela entidade (já
-  // ordenado por receita) filtrando por classe via reclassificação client a client.
-  const exemplosPorClasse = level ? hierExemplos(level, names, d.abcd.mediana_receita, d.abcd.mediana_margem) : null;
+  // Sempre exatamente os 30 maiores (por receita) de cada classe — nem mais, nem menos.
   document.getElementById("abcd-examples").innerHTML = defs.map(x=>{
-    const q = a[x.k];
-    const exemplos = level ? (exemplosPorClasse[x.k]||[]) : q.exemplos;
-    return `<div class="card"><div class="card-h"><div class="card-title">Exemplos — Classe ${x.k}</div><div class="card-sub">Clique no cliente para ver o detalhamento por categoria</div></div><div class="tbl-wrap"><table>
-      <thead><tr><th>Cliente</th><th class="tv">Receita</th><th class="tv">Cash Margem</th><th class="tv">Margem</th><th class="tv">Δ Margem (ano ant.)</th></tr></thead>
-      <tbody>${exemplos.length?exemplos.map(e=>{
+    const top30 = q[x.k].itens.slice(0,30);
+    return `<div class="card"><div class="card-h"><div class="card-title">Top 30 — Classe ${x.k}</div><div class="card-sub">Clique no cliente para ver Faturamento por categoria + Vendedor/Supervisor</div></div><div class="tbl-wrap"><table>
+      <thead><tr><th>Cliente</th><th class="tv">Faturamento</th><th class="tv">Cash Margem</th><th class="tv">Margem</th><th class="tv">Δ Margem (ano ant.)</th></tr></thead>
+      <tbody>${top30.length?top30.map(e=>{
         const pvM = prevLookupListMargin(prev,"top_clientes","nome",e.nome);
         const cm = e.cash_margin!=null ? e.cash_margin : (e.c!=null ? e.r-e.c : null);
         const key = x.k+'|||'+e.codigo;
         const expanded = abcdExpandedClients.has(key);
         const toggle = `<span class="casc-toggle" onclick="toggleAbcdClient('${key}')">${expanded?'−':'+'}</span>`;
-        const mainRow = `<tr><td class="tn">${toggle}${e.nome}</td><td class="tv">${fF(e.r)}</td><td class="tv">${cm!=null?fF(cm):'—'}</td><td class="tv">${margemBadge(e.m)}</td><td class="tv">${deltaPP(e.m,pvM,false)}</td></tr>`;
+        const mainRow = `<tr><td class="tn">${toggle}${escAttr(e.nome)}</td><td class="tv">${fF(e.r)}</td><td class="tv">${cm!=null?fF(cm):'—'}</td><td class="tv">${margemBadge(e.m)}</td><td class="tv">${deltaPP(e.m,pvM,false)}</td></tr>`;
         return mainRow + (expanded ? clienteCategoriaRows(e.codigo) : '');
-      }).join(""):'<tr><td colspan="5" style="color:var(--t3)">Nenhum exemplo no Top 50 desta entidade cai nesta classe</td></tr>'}</tbody>
+      }).join(""):'<tr><td colspan="5" style="color:var(--t3)">Nenhum cliente cai nesta classe com os parâmetros atuais</td></tr>'}</tbody>
       </table></div></div>`;
   }).join("");
-}
-function hierUnionAbcdFor(period, level, names){
-  const q = {A:{count:0,receita:0,custo:0},B:{count:0,receita:0,custo:0},C:{count:0,receita:0,custo:0},D:{count:0,receita:0,custo:0}};
-  names.forEach(n=>{
-    const a = period.hier_abcd && period.hier_abcd[level] && period.hier_abcd[level][n];
-    if (!a) return;
-    ['A','B','C','D'].forEach(k=>{ q[k].count+=a[k].count; q[k].receita+=a[k].receita; q[k].custo+=(a[k].custo||0); });
-  });
-  ['A','B','C','D'].forEach(k=>{ q[k].cash_margin = q[k].receita - q[k].custo; });
-  return q;
-}
-function hierExemplos(level, names, medR, medM){
-  const clientes = topClientesFonte(curPeriod(), level, names);
-  const out = {A:[],B:[],C:[],D:[]};
-  clientes.forEach(c=>{
-    if (c.r<=0) return;
-    const k = (c.r>=medR && c.m>=medM) ? 'A' : (c.r>=medR) ? 'B' : (c.m>=medM) ? 'C' : 'D';
-    if (out[k].length<50) out[k].push(c);
-  });
-  return out;
 }
 
 // ── 6C. ESTOQUE X VENDA — COBERTURA EM DIAS ──────────────────────

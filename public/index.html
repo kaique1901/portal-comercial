@@ -286,6 +286,17 @@
 <!-- 6. ABCD -->
 <div class="mod" id="m-abcd">
   <div class="mod-header"><div><div class="mod-title">Classificação de Clientes A/B/C/D</div><div class="mod-sub" id="abcd-sub">Corte pela mediana de receita e de margem entre clientes com receita &gt; 0</div></div></div>
+  <div class="alert">⚠ Racional da classificação: cada cliente cai num quadrante cruzando <strong>Faturamento</strong> (alto/baixo) × <strong>Margem</strong> (alta/baixa). <strong>A</strong> = Faturamento ≥ referência E Margem ≥ referência (alta venda + alta margem — clientes-âncora). <strong>B</strong> = Faturamento ≥ referência mas Margem &lt; referência (alta venda + baixa margem — desconto/mix pesando). <strong>C</strong> = Faturamento &lt; referência mas Margem ≥ referência (baixa venda + alta margem — potencial de cross/up-sell). <strong>D</strong> = abaixo da referência nos dois (baixa venda + baixa margem). Por padrão a referência é a <strong>mediana</strong> de Faturamento e de Margem entre todos os clientes com receita &gt; 0 no período — mas você pode digitar seus próprios valores de referência abaixo; a classificação inteira recalcula na hora.</div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Parâmetros de Referência</div><div class="card-sub" id="abcdParamsNote">—</div></div></div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end;padding:4px 2px 10px">
+      <div><label style="font-size:11px;color:var(--t3);display:block;margin-bottom:4px">Faturamento de referência (R$)</label>
+        <input type="text" id="abcdInputR" style="padding:7px 10px;border:1px solid var(--bdr2);border-radius:6px;background:var(--bg2);color:var(--t1);width:160px" placeholder="ex.: 15000,00"></div>
+      <div><label style="font-size:11px;color:var(--t3);display:block;margin-bottom:4px">Margem de referência (%)</label>
+        <input type="text" id="abcdInputM" style="padding:7px 10px;border:1px solid var(--bdr2);border-radius:6px;background:var(--bg2);color:var(--t1);width:120px" placeholder="ex.: 25,00"></div>
+      <button onclick="aplicarAbcdParams()" style="padding:8px 16px;border:none;border-radius:6px;background:var(--acc);color:#fff;cursor:pointer;font-weight:600">Aplicar</button>
+      <button onclick="resetAbcdParams()" style="padding:8px 16px;border:1px solid var(--bdr2);border-radius:6px;background:transparent;color:var(--t1);cursor:pointer">Restaurar padrão (mediana)</button>
+    </div>
+  </div></div>
   <div class="abcd-wrap" id="abcd-boxes"></div>
   <div class="row2w" id="abcd-examples"></div>
 </div>
