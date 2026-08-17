@@ -25,10 +25,15 @@
 }
 .theme-tog{background:var(--bg2);border:1px solid var(--bdr);color:var(--t1);width:30px;height:30px;border-radius:7px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:.15s;line-height:1}
 .theme-tog:hover{border-color:var(--acc);color:var(--acc)}
-html{scroll-behavior:smooth}
+html{scroll-behavior:smooth;overflow-y:scroll;scrollbar-width:auto;scrollbar-color:var(--bdr2) var(--bg2)}
 body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--t1);font-size:13px;display:flex;min-height:100vh;overflow-x:hidden}
-::-webkit-scrollbar{width:4px;height:4px}
-::-webkit-scrollbar-thumb{background:var(--bdr2);border-radius:2px}
+/* Barra de rolagem sempre visível (grossa + trilho com cor própria) em todas as
+   abas — página (vertical) e qualquer tabela larga via .tbl-wrap (horizontal). */
+::-webkit-scrollbar{width:12px;height:12px}
+::-webkit-scrollbar-track{background:var(--bg2)}
+::-webkit-scrollbar-thumb{background:var(--bdr2);border-radius:6px}
+::-webkit-scrollbar-thumb:hover{background:var(--acc)}
+::-webkit-scrollbar-corner{background:var(--bg2)}
 
 /* â•â•â• SIDEBAR (verde escuro, dedicado) â•â•â•â•â•â•â•â•â• */
 #sb{
@@ -177,7 +182,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(
 .card-badge.r{background:rgba(179,38,30,.10);color:var(--dn)}
 
 /* â•â•â• TABELAS â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
-.tbl-wrap{overflow-x:auto}
+.tbl-wrap{overflow-x:scroll}
 table{width:100%;border-collapse:collapse;font-size:12px}
 thead tr{border-bottom:1px solid var(--bdr2)}
 th{padding:8px 10px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.7px;color:var(--t3);white-space:nowrap;text-align:left}
