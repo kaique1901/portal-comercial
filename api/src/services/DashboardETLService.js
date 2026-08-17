@@ -728,16 +728,21 @@ class DashboardETLService {
     const fmt = dt => dt.toISOString().slice(0, 10);
     const [iniStr, fimStr] = [fmt(iniJanela), fmt(hoje)];
 
+    // "Grupo" aqui é subgrupos.dessubgrupo — a MESMA fonte usada pelo BASE_CTE
+    // (SubGrupos.DesSubGrupo AS Grupo) para a base de vendas. Antes vinha de
+    // produtos.codgrupo -> grupoprodutos, uma classificação PARALELA e sem
+    // relação com subgrupo/categoria — por isso grupos de categorias
+    // completamente diferentes apareciam dentro da categoria errada na
+    // cascata (ex.: "ISQUEIROS" dentro de "NARGUILE").
     const rows = (await db.query(`
       WITH latest AS (SELECT MAX(data) d FROM cifalcomercial.posicao_estoque_diario_vendedor)
       SELECT v.codven, v.codproduto, v.saldoestoque saldo, ROUND(v.saldoestoque*p.customedio,2) valor_carga,
-             p.desceq descricao, c.descategoriaprod categoria, gp.descricao grupo,
+             p.desceq descricao, c.descategoriaprod categoria, sg.dessubgrupo grupo,
              e.nomven vendedor, s.nomesupervisor supervisor, g.nomegerente gerente
       FROM cifalcomercial.posicao_estoque_diario_vendedor v
       JOIN cifalcomercial.produtos p ON p.codproduto=v.codproduto
       LEFT JOIN cifalcomercial.subgrupos sg ON sg.codsubgrupo=p.codsubgrupo
       LEFT JOIN cifalcomercial.categoriasproduto c ON c.codcategoriaprod=sg.codcategoriaprod
-      LEFT JOIN cifalcomercial.grupoprodutos gp ON gp.codgrupo=p.codgrupo
       JOIN cifalcomercial.eqvend e ON e.codven=v.codven
       LEFT JOIN cifalcomercial.supervisor s ON s.codsupervisor=e.codsupervisor
       LEFT JOIN cifalcomercial.gerente g ON g.codgerente=e.codgerente
