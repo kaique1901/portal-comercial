@@ -115,7 +115,8 @@
       <div class="nav-item"     data-mod="m-top-margem" onclick="showMod('m-top-margem',this)"><span class="nav-ico">◈</span><span class="nav-txt">Top 50 Margem %</span></div>
       <div class="nav-item"     data-mod="m-meta-extra" onclick="showMod('m-meta-extra',this)"><span class="nav-ico">◈</span><span class="nav-txt">Metas KG Fumo, Papel e Estratégico</span></div>
       <div class="nav-item"     data-mod="m-cascata" onclick="showMod('m-cascata',this)"><span class="nav-ico">⛛</span><span class="nav-txt">Análise em Cascata</span></div>
-      <div class="nav-item"     data-mod="m-dias"    onclick="showMod('m-dias',this)"><span class="nav-ico">∿</span><span class="nav-txt">Sazonalidade (Semanal)</span></div>
+      <div class="nav-item"     data-mod="m-dias"    onclick="showMod('m-dias',this)"><span class="nav-ico">∿</span><span class="nav-txt">Sazonalidade (Dia da Semana)</span></div>
+      <div class="nav-item"     data-mod="m-dow-casc" onclick="showMod('m-dow-casc',this)"><span class="nav-ico">⊟</span><span class="nav-txt">Vendas por Dia da Semana</span></div>
       <div class="nav-item"     data-mod="m-rank"    onclick="showMod('m-rank',this)"><span class="nav-ico">▲</span><span class="nav-txt">Rankings</span></div>
       <div class="nav-item"     data-mod="m-mix"     onclick="showMod('m-mix',this)"><span class="nav-ico">◈</span><span class="nav-txt">Mix &amp; Positivação</span></div>
       <div class="nav-item"     data-mod="m-abcd"    onclick="showMod('m-abcd',this)"><span class="nav-ico">◐</span><span class="nav-txt">Clientes de A a I</span></div>
@@ -184,6 +185,7 @@
 <!-- 3. MARGEM & CASH MARGEM (fusão de "Margem & Rentabilidade" + "Cash Margem") -->
 <div class="mod" id="m-mc">
   <div class="mod-header"><div><div class="mod-title">Margem &amp; Cash Margem</div><div class="mod-sub">Margem % = (Faturamento − Custo) / Faturamento · Cash Margem = Faturamento − Custo, em R$ — Meta Margem % = Meta Cash Margem ÷ Meta Faturamento (mesma fórmula aplicada à meta)</div></div></div>
+  <div class="alert">⚠ Com um mês em curso selecionado no filtro de Período, o painel projeta a <strong>Tendência de Fechamento do Cash Margem</strong> pelo ritmo diário observado até hoje (mesmo cálculo já usado em Acompanhamento Objetivos e Planos de Ação) — em mês já fechado ou sem mês selecionado, a tendência é igual ao realizado. O comparativo de <strong>Margem %</strong> com o mesmo período do ano anterior passa a usar essa tendência de fechamento, não o realizado parcial, para não subestimar a comparação num mês ainda em andamento. As tabelas por Gerente/Supervisor/Vendedor e por Categoria abaixo trazem essa mesma Tendência de Cash Margem (e % de atingimento sobre a Meta Cash Margem) lado a lado com Meta Cash Margem, Cash Margem realizado, Meta Margem % e Margem % realizada.</div>
   <div class="kpi-grid" id="mc-kpis"></div>
   <div id="mcCatNote"></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Margem &amp; Cash Margem por Gerente → Supervisor → Vendedor</div><div class="card-sub">Clique em + para expandir</div></div></div><div class="tbl-wrap"><table id="tMcGer"></table></div></div></div>
@@ -227,7 +229,7 @@
       <div id="objSubFiltroWrap"></div>
     </div>
   </div>
-  <div class="alert">⚠ Todas as tabelas desta aba (Geral, por Gerente/Supervisor/Vendedor, por Categoria) somam exatamente os meses escolhidos no filtro de <strong>Período</strong> acima. <strong>Bimestre segue a numeração real do calendário</strong> (1º Bim = Jan/Fev ... 6º Bim = Nov/Dez) — no 2º semestre os bimestres disponíveis são 4º, 5º e 6º. <strong>Semestre</strong> = os 6 meses do semestre selecionado no topo da tela. Não há opção de Quadrimestre: o 2º Quadrimestre do calendário (Mai-Ago) cruzaria os dois semestres, que são cubos de dados separados — use <strong>Personalizado</strong> para esse caso. <strong>Tendência</strong> = projeção do(s) mês(es) ainda em curso pelo ritmo diário observado (meses já fechados usam o valor real) — só existe no nível empresa, não com filtro de Gerente/Supervisor/Vendedor. A meta não tem granularidade por Grupo/Cliente. KG Fumo, Papel e Produto Estratégico são <strong>parte</strong> da Meta Geral (não somam a ela) e têm aba própria — ver "Metas KG Fumo, Papel e Estratégico" no menu.</div>
+  <div class="alert">⚠ Todas as tabelas desta aba (Geral, por Gerente/Supervisor/Vendedor, por Categoria) somam exatamente os meses escolhidos no filtro de <strong>Período</strong> acima. <strong>Bimestre segue a numeração real do calendário</strong> (1º Bim = Jan/Fev ... 6º Bim = Nov/Dez) — no 2º semestre os bimestres disponíveis são 4º, 5º e 6º. <strong>Semestre</strong> = os 6 meses do semestre selecionado no topo da tela. Não há opção de Quadrimestre: o 2º Quadrimestre do calendário (Mai-Ago) cruzaria os dois semestres, que são cubos de dados separados — use <strong>Personalizado</strong> para esse caso. <strong>Tendência</strong> = projeção do(s) mês(es) ainda em curso pelo ritmo diário observado (meses já fechados usam o valor real) — só existe no nível empresa, não com filtro de Gerente/Supervisor/Vendedor. A <strong>Tendência de Cash Margem</strong> (na tabela por Categoria e no resumo geral) aplica essa mesma projeção separadamente a Faturamento e Custo. <strong>Meta Margem %</strong> = Meta Cash Margem ÷ Meta Faturamento. A meta não tem granularidade por Grupo/Cliente. KG Fumo, Papel e Produto Estratégico são <strong>parte</strong> da Meta Geral (não somam a ela) e têm aba própria — ver "Metas KG Fumo, Papel e Estratégico" no menu.</div>
   <div class="kpi-grid" id="obj-kpis"></div>
   <div id="objCashNote"></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Meta x Realizado x Margem x Positivação por Categoria</div><div class="card-sub">Estoque Box = fotografia atual (não recortável por período, mesma fonte da aba Estoque x Venda) · Bonificação ainda sem fonte de dados integrada</div></div></div><div class="tbl-wrap"><table id="tObjCat"></table></div></div></div>
@@ -248,14 +250,32 @@
 
 <!-- 3C. SAZONALIDADE (SEMANAL) -->
 <div class="mod" id="m-dias">
-  <div class="mod-header"><div><div class="mod-title">Sazonalidade — Semanal</div><div class="mod-sub" id="diaSemanaSub">—</div></div></div>
-  <div class="alert">⚠ Agregação por <strong>semana do calendário</strong> (segunda a domingo) usando a data real de cada pedido (dataped). Cada coluna "S1, S2, …" é uma semana do período, na ordem. A coluna "Média/semana" é a média das semanas. A variação abaixo de cada célula compara com a semana de <strong>mesma ordem</strong> no mesmo período do ano anterior (S1 vs S1 do ano anterior, e assim por diante), quando houver base.</div>
+  <div class="mod-header">
+    <div><div class="mod-title">Sazonalidade — Dia da Semana</div><div class="mod-sub" id="diaSemanaSub">—</div></div>
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+      <div><label style="font-size:10px;color:var(--t3);margin-right:6px;display:block">Base de comparação</label>
+        <select class="fsel" id="fSazonalidadeBase" onchange="sazonalidadeBaseChange(this.value)">
+          <option value="90dias">Últimos 90 dias (sempre até hoje)</option>
+          <option value="mes">Mês vigente</option>
+          <option value="semestre">Semestre anterior (fechado)</option>
+        </select>
+      </div>
+    </div>
+  </div>
+  <div class="alert">⚠ Agregação por <strong>dia da semana</strong> (Segunda a Sexta) usando a data real de cada pedido (dataped) — fins de semana não entram na média. O seletor "Base de comparação" troca a janela usada: <strong>Últimos 90 dias</strong> (janela móvel que sempre termina hoje, independente do filtro de Período do topo da tela — pode incluir dias de dois semestres diferentes), <strong>Mês vigente</strong> (do dia 1 até hoje) ou <strong>Semestre anterior</strong> (o semestre calendário fechado imediatamente antes do atual). Cada base compara com a mesma janela um ano antes, quando houver dado. Esta aba só é recortável por <strong>Gerente</strong> (não por Supervisor/Vendedor) — só existe cubo diário nesse nível.</div>
   <div id="diasHierNote"></div>
-  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Receita por semana</div><div class="card-sub">Geral — barras = período atual · linha tracejada = ano anterior (alinhado por ordem da semana)</div></div></div><canvas id="cDiaSemana" height="150"></canvas></div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Receita por dia da semana</div><div class="card-sub">Geral — barras = base selecionada · linha tracejada = mesma janela um ano antes</div></div></div><canvas id="cDiaSemana" height="150"></canvas></div></div>
 
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Receita — Geral e por Categoria</div></div></div><div class="tbl-wrap"><table id="tDiaSemanaReceita"></table></div></div></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Cash Margem — Geral e por Categoria</div></div></div><div class="tbl-wrap"><table id="tDiaSemanaCash"></table></div></div></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Margem % — Geral e por Categoria</div></div></div><div class="tbl-wrap"><table id="tDiaSemanaMargem"></table></div></div></div>
+</div>
+
+<!-- VENDAS POR DIA DA SEMANA — cascata Dia → Categoria → Produto (Top 10) -->
+<div class="mod" id="m-dow-casc">
+  <div class="mod-header"><div><div class="mod-title">Vendas por Dia da Semana</div><div class="mod-sub" id="dowCascataSub">—</div></div></div>
+  <div class="alert">⚠ Sempre os <strong>últimos 90 dias corridos até hoje</strong> (janela móvel, independente do filtro de Período do topo da tela — mesmo critério de Estoque x Venda/Clientes de A a I). Clique em um dia da semana para ver as categorias, e numa categoria para ver os <strong>10 produtos mais vendidos</strong> dela naquele dia (por Faturamento). Nível empresa apenas — ainda não recortável por Gerente/Supervisor/Vendedor.</div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Dia da Semana → Categoria → Top 10 Produtos</div><div class="card-sub">Clique em + para expandir</div></div></div><div class="tbl-wrap"><table id="tDowCascata"></table></div></div></div>
 </div>
 
 <!-- (Módulo "Motivos da Variação" removido a pedido) -->
@@ -305,9 +325,18 @@
   <div class="row2w" id="abcd-examples"></div>
 </div>
 
-<!-- 6B. PLANOS DE AÇÃO POR CATEGORIA -->
+<!-- 6B. PLANOS DE AÇÃO -->
 <div class="mod" id="m-planos">
-  <div class="mod-header"><div><div class="mod-title">Planos de Ação por Categoria</div><div class="mod-sub">3 planos por categoria — Faturamento, Margem e Positivação — cada um citando o número real que motiva a recomendação</div></div></div>
+  <div class="mod-header"><div><div class="mod-title">Plano de Ação — Mês Vigente</div><div class="mod-sub" id="planosMesSub">—</div></div></div>
+  <div class="alert">⚠ Este painel foca sempre no <strong>mês vigente</strong> (hoje), independente do filtro de Período/Mês do restante da tela — mesmo critério de "sempre até hoje" já usado em Estoque x Venda e Clientes de A a I. Usa as mesmas metas e realizados de <strong>Acompanhamento Objetivos</strong> (Faturamento por Categoria) e <strong>Metas KG Fumo, Papel e Produto Estratégico</strong>. <strong>Ritmo diário</strong> = valor ÷ dias úteis decorridos no mês; <strong>Tendência</strong> = ritmo atual projetado para todos os dias úteis do mês; a <strong>ação recomendada</strong> indica o ritmo necessário nos dias úteis restantes para fechar em 100% da meta.</div>
+  <div class="kpi-grid" id="planosMes-kpis"></div>
+  <div class="card" style="margin-bottom:14px">
+    <div class="card-h"><div><div class="card-title">Faturamento por Categoria — ação para fechar em 100% no mês</div><div class="card-sub" id="planosMesCatSub">—</div></div></div>
+    <div class="tbl-wrap"><table id="tPlanosMesCat"></table></div>
+  </div>
+  <div class="row2w" id="planosMesExtra"></div>
+
+  <div class="mod-header" style="margin-top:22px;padding-top:0"><div><div class="mod-title" style="font-size:17px">Planos Estratégicos Detalhados por Categoria</div><div class="mod-sub">3 planos por categoria — Faturamento, Margem e Positivação — cada um citando o número real que motiva a recomendação</div></div></div>
   <div class="alert">⚠ Positivação de categoria aqui = % dos clientes ativos do período que compraram pelo menos 1 item dessa categoria (dado real, não estimado). Os planos são gerados a partir de regras objetivas sobre os números do próprio período (comparação com a média da empresa e com o ano anterior) — não é IA analisando texto, é lógica determinística sobre os dados.</div>
   <div id="planosHierNote"></div>
   <div class="opp-grid" id="planos-cards"></div>

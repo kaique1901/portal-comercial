@@ -18,7 +18,7 @@ Chart.defaults.font.family = "'Segoe UI',system-ui,sans-serif";
 Chart.defaults.font.size = 11;
 
 // ── FONTE DE DADOS: 100% via API ─────────────────────────────────
-window.API_BASE_URL = window.API_BASE_URL || `${window.location.origin}/api/v1/dashboard`;
+window.API_BASE_URL = window.API_BASE_URL || `http://${window.location.hostname}:4001/api/v1/dashboard`;
 window.REAL_DATA = {};
 
 // ── TEMA CLARO / ESCURO ──────────────────────────────────────────
@@ -1159,7 +1159,7 @@ function showMod(id, el){
 function renderAll(){
   // Cliente selecionado → garante o recorte real vindo da API (re-renderiza ao chegar).
   ensureCliScope();
-  renderVisao(); renderComp(); renderMargemCash(); renderObjetivos(); renderMetasExtra(); renderDias(); renderRank(); renderMix(); renderAbcd(); renderPlanos(); renderEstoque(); renderProdutosParadosVend(); renderProdutosLetraP(); renderPagamento(); renderRiscoOport(); renderRiscoOportCat(); renderCascata(); renderQual();
+  renderVisao(); renderComp(); renderMargemCash(); renderObjetivos(); renderMetasExtra(); renderDias(); renderDowCascata(); renderRank(); renderMix(); renderAbcd(); renderPlanos(); renderEstoque(); renderProdutosParadosVend(); renderProdutosLetraP(); renderPagamento(); renderRiscoOport(); renderRiscoOportCat(); renderCascata(); renderQual();
 }
 
 // O mês selecionado é o mês CORRENTE? Nesse caso o realizado é parcial (só os dias
@@ -1406,6 +1406,10 @@ function nodeMetaFor(d, level, name, mes){
   const metaMargem = metaFat>0 ? +(metaCash/metaFat*100).toFixed(2) : 0;
   return {metaFat, metaCash, metaMargem};
 }
+// trendCash de cada nó = Tendência de Faturamento menos Tendência de Custo
+// (mesma tendencia() já usada em Acompanhamento Objetivos/Planos de Ação,
+// aplicada separadamente a r e c) — em mês fechado ou sem filtro de Mês,
+// tendencia() devolve o valor realizado sem alterar, então trendCash=cash.
 function buildMargemHierTree(d, mes){
   const eff = effectiveGerentes(d), effSup = effectiveSupervisores(d);
   const tree = {};
@@ -1417,11 +1421,11 @@ function buildMargemHierTree(d, mes){
       const vendChildren = {};
       Object.keys(d.full_vendedores).filter(n=>d.full_vendedores[n].supervisor===supNome && (ST.vend.length===0||ST.vend.includes(n))).forEach(vendNome=>{
         const vv = margemValueFor(d,'vendedor',vendNome,mes);
-        vendChildren[vendNome] = Object.assign({r:vv.r, c:vv.c, m:margemMFrom(vv.r,vv.c), children:null}, nodeMetaFor(d,'vendedor',vendNome,mes));
+        vendChildren[vendNome] = Object.assign({r:vv.r, c:vv.c, m:margemMFrom(vv.r,vv.c), trendCash:tendencia(vv.r,d,mes)-tendencia(vv.c,d,mes), children:null}, nodeMetaFor(d,'vendedor',vendNome,mes));
       });
-      supChildren[supNome] = Object.assign({r:sv.r, c:sv.c, m:margemMFrom(sv.r,sv.c), children:Object.keys(vendChildren).length?vendChildren:null}, nodeMetaFor(d,'supervisor',supNome,mes));
+      supChildren[supNome] = Object.assign({r:sv.r, c:sv.c, m:margemMFrom(sv.r,sv.c), trendCash:tendencia(sv.r,d,mes)-tendencia(sv.c,d,mes), children:Object.keys(vendChildren).length?vendChildren:null}, nodeMetaFor(d,'supervisor',supNome,mes));
     });
-    tree[gerNome] = Object.assign({r:gv.r, c:gv.c, m:margemMFrom(gv.r,gv.c), children:Object.keys(supChildren).length?supChildren:null}, nodeMetaFor(d,'gerente',gerNome,mes));
+    tree[gerNome] = Object.assign({r:gv.r, c:gv.c, m:margemMFrom(gv.r,gv.c), trendCash:tendencia(gv.r,d,mes)-tendencia(gv.c,d,mes), children:Object.keys(supChildren).length?supChildren:null}, nodeMetaFor(d,'gerente',gerNome,mes));
   });
   return tree;
 }
@@ -1462,11 +1466,14 @@ function mcHierRowHtml(nome, nivel, pathKey, node, prevNode){
   const pvM = prevNode ? prevNode.m : null;
   const atingCash = node.metaCash>0 ? cm/node.metaCash*100 : null;
   const atingMargem = node.metaMargem>0 ? node.m/node.metaMargem*100 : null;
+  const atingTrendCash = node.metaCash>0 ? node.trendCash/node.metaCash*100 : null;
   return `<tr class="casc-lvl${nivel}"><td style="padding-left:${indent}px">${toggle}${escAttr(nome)}</td>
     <td class="tv">${fF(node.r)}</td>
     <td class="tv">${node.metaCash>0?fF(node.metaCash):'<span style="color:var(--t3)">—</span>'}</td>
     <td class="tv tn">${fF(cm)}</td>
     <td class="tv">${atingBadge(atingCash)}</td>
+    <td class="tv">${fF(node.trendCash)}</td>
+    <td class="tv">${atingBadge(atingTrendCash)}</td>
     <td class="tv">${deltaPillSmall(cm,pcm)}</td>
     <td class="tv">${node.metaMargem>0?fPct(node.metaMargem):'<span style="color:var(--t3)">—</span>'}</td>
     <td class="tv">${margemBadge(node.m)}</td>
@@ -1699,6 +1706,17 @@ function renderMargemCash(){
   const prevM = prevEff ? (prevEff.r>0?100*(1-prevEff.c/prevEff.r):0) : null;
   const cashPerCliente = d.n_cli>0 ? cash/d.n_cli : 0;
 
+  // Tendência de fechamento do Cash Margem: mesmo racional de tendencia() já
+  // usado em Acompanhamento Objetivos/Planos de Ação (ritmo diário do mês em
+  // curso projetado pros dias úteis totais) — aplicado a Faturamento e Custo
+  // separadamente (tendencia() só ajusta quando ST.mes é o mês em curso; em
+  // mês fechado ou sem filtro de Mês, devolve o valor realizado sem alterar).
+  const parcial = mesParcialInfo();
+  const trendR = tendencia(effR, d, ST.mes);
+  const trendC = tendencia(effC, d, ST.mes);
+  const trendCash = trendR - trendC;
+  const trendM = trendR>0 ? 100*(1-trendC/trendR) : effM;
+
   // Meta de rentabilidade (R$) = meta de receita x % de margem alvo — Meta Margem
   // (%) é a MESMA fórmula do usuário (faturamento-custo)/faturamento aplicada à
   // meta: como custo-meta = faturamento-meta − cash-margem-meta, isso se reduz a
@@ -1710,12 +1728,16 @@ function renderMargemCash(){
 
   const kpiDefs = [
     {lbl:"Faturamento", val:fM(effR), cur:effR, prevv:prevEff?prevEff.r:null},
-    {lbl:"Realizado Margem %", val:fPct(effM), cur:effM, prevv:prevM},
+    {lbl:"Realizado Margem %", val:fPct(effM), cur:trendM, prevv:prevM,
+     note: parcial ? `Comparativo com o ano anterior calculado sobre a margem de tendência de fechamento do mês (mesmo racional do Cash Margem projetado abaixo) — como Margem é uma razão, esse valor coincide com o realizado parcial.` : undefined},
     {lbl:"Meta Margem %", val:metaMargemPct>0?fPct(metaMargemPct):"—",
      note:metaMargemPct>0?"meta cash margem ÷ meta faturamento":"sem meta de margem cadastrada no ERP p/ este período"},
     {lbl:"% Atingimento Margem", val:atingMargem!=null?fPct(atingMargem):"—",
      note:atingMargem!=null?`margem realizada ${fPct(effM)} vs meta ${fPct(metaMargemPct)}`:"depende da meta de margem"},
     {lbl:"Cash Margem Total", val:fM(cash), cur:cash, prevv:prevCash},
+    {lbl:"Tendência de Fechamento — Cash Margem", val:fM(trendCash),
+     note: parcial ? `Projeção pelo ritmo diário atual (dia ${parcial.dia} de ${parcial.diasNoMes} — ${(parcial.pct*100).toFixed(0)}% do mês); mesmo cálculo de Acompanhamento Objetivos/Planos de Ação.`
+       : (ST.mes!=null ? "Mês selecionado já fechado — tendência = realizado." : "Sem mês específico selecionado — tendência = realizado do semestre inteiro.")},
     {lbl:"Meta Cash Margem", val:metaValRent>0?fM(metaValRent):"—",
      note:metaValRent>0?`meta de receita × margem alvo (${fPct(metaMargemPct)})`:"sem meta cadastrada no ERP p/ este período"},
     {lbl:"% Atingimento Cash Margem", val:metaValRent>0?fPct(cash/metaValRent*100):"—",
@@ -1731,19 +1753,35 @@ function renderMargemCash(){
     </div>`).join("");
 
   const mcTree = buildMargemHierTree(d, ST.mes);
-  document.getElementById("tMcGer").innerHTML = `<thead><tr><th>Gerente / Supervisor / Vendedor</th><th class="tv">Faturamento</th><th class="tv">Meta Cash Margem</th><th class="tv">Cash Margem</th><th class="tv">% Ating.</th><th class="tv">Δ vs ano ant.</th><th class="tv">Meta Margem %</th><th class="tv">Margem %</th><th class="tv">% Ating.</th><th class="tv">Δ Margem (p.p.)</th></tr></thead><tbody>${
+  document.getElementById("tMcGer").innerHTML = `<thead><tr><th>Gerente / Supervisor / Vendedor</th><th class="tv">Faturamento</th><th class="tv">Meta Cash Margem</th><th class="tv">Cash Margem</th><th class="tv">% Ating.</th><th class="tv">Tendência Cash Margem</th><th class="tv">% Ating. Tendência</th><th class="tv">Δ vs ano ant.</th><th class="tv">Meta Margem %</th><th class="tv">Margem %</th><th class="tv">% Ating.</th><th class="tv">Δ Margem (p.p.)</th></tr></thead><tbody>${
     renderMcHierRows(prev, mcTree, [], 0, ST.mes, ['gerente','supervisor','vendedor'])
   }</tbody>`;
 
   const catInfo = categoriaCascadeRowsFor(d, ST.mes);
   const catRows = catInfo.rows.sort((a,b)=>(b[1].r-b[1].c)-(a[1].r-a[1].c));
   const mcCatNotes = [];
-  if (catInfo.level) mcCatNotes.push(`Recortado por ${catInfo.level} — <strong>${labelJoin(catInfo.names)}</strong>: Faturamento/Cash Margem/Margem exatos (cubo hierárquico Gerente/Supervisor/Vendedor × Categoria); Meta continua no nível empresa (meta não tem essa quebra).`);
+  if (catInfo.level) mcCatNotes.push(`Recortado por ${catInfo.level} — <strong>${labelJoin(catInfo.names)}</strong>: Faturamento/Cash Margem/Margem/Meta exatos (cubo hierárquico Gerente/Supervisor/Vendedor × Categoria × Mês).`);
   if (catInfo.monthNote) mcCatNotes.push(catInfo.monthNote);
   document.getElementById("mcCatNote").innerHTML = mcCatNotes.length ? `<div class="alert">${mcCatNotes.join(" ")}</div>` : "";
-  const metaCashCat = metaValRentCategoriaFor(d, ST.mes);
-  const metaFatCat = ST.mes!=null ? ((d.meta.por_mes_categoria&&d.meta.por_mes_categoria[ST.mes])||{}) : (d.meta.por_categoria||{});
-  document.getElementById("tMcCat").innerHTML = `<thead><tr><th>Categoria</th><th class="tv">Faturamento</th><th class="tv">Meta Cash Margem</th><th class="tv">Cash Margem</th><th class="tv">% Ating.</th><th class="tv">Δ vs ano ant.</th><th class="tv">Meta Margem %</th><th class="tv">Margem %</th><th class="tv">% Ating.</th><th class="tv">Δ Margem (p.p.)</th></tr></thead><tbody>${
+  // BUG CORRIGIDO: Meta Cash Margem/Meta Faturamento por categoria vinham SEMPRE
+  // do nível empresa, mesmo com Gerente/Supervisor/Vendedor filtrado — um
+  // Gerente comparava a própria Cash Margem contra a meta da empresa inteira.
+  // Com filtro de hierarquia ativo, usa a MESMA fonte hierárquica que
+  // Acompanhamento Objetivos já usa (d.meta.hier_por_mes_categoria) — nunca
+  // meta/realizado de fora do recorte selecionado (regra permanente, ver
+  // CLAUDE.md/memória: toda métrica nova por Categoria tem que respeitar
+  // Gerente/Supervisor/Vendedor tanto no Realizado quanto na Meta).
+  let metaCashCat, metaFatCat;
+  if (catInfo.level){
+    const mesesSel = ST.mes!=null ? [ST.mes] : Object.keys(d.meta.por_mes||{}).map(Number);
+    const agg = metaCategoriaHierMesFor(d, catInfo.level, catInfo.names, mesesSel);
+    metaCashCat = {}; metaFatCat = {};
+    Object.keys(agg).forEach(cat=>{ metaCashCat[cat]=agg[cat].metaCash; metaFatCat[cat]=agg[cat].meta; });
+  } else {
+    metaCashCat = metaValRentCategoriaFor(d, ST.mes);
+    metaFatCat = ST.mes!=null ? ((d.meta.por_mes_categoria&&d.meta.por_mes_categoria[ST.mes])||{}) : (d.meta.por_categoria||{});
+  }
+  document.getElementById("tMcCat").innerHTML = `<thead><tr><th>Categoria</th><th class="tv">Faturamento</th><th class="tv">Meta Cash Margem</th><th class="tv">Cash Margem</th><th class="tv">% Ating.</th><th class="tv">Tendência Cash Margem</th><th class="tv">% Ating. Tendência</th><th class="tv">Δ vs ano ant.</th><th class="tv">Meta Margem %</th><th class="tv">Margem %</th><th class="tv">% Ating.</th><th class="tv">Δ Margem (p.p.)</th></tr></thead><tbody>${
     catRows.map(([n,v])=>{
       const cm = v.r-v.c;
       const metaCash = metaCashCat[n]||0;
@@ -1751,10 +1789,12 @@ function renderMargemCash(){
       const metaMargemCat = metaFat>0 ? metaCash/metaFat*100 : 0;
       const atingCash = metaCash>0 ? cm/metaCash*100 : null;
       const atingMargemCat = metaMargemCat>0 ? v.m/metaMargemCat*100 : null;
+      const trendCash = tendencia(v.r,d,ST.mes)-tendencia(v.c,d,ST.mes);
+      const atingTrendCash = metaCash>0 ? trendCash/metaCash*100 : null;
       const pe = ST.mes!=null ? categoriaMonthValueFor(prev, catInfo.level, catInfo.names, n, ST.mes) : categoriaValueFor(prev, catInfo.level, catInfo.names, n);
       const pcm = pe ? (pe.r-pe.c) : null;
       const pvM = pe ? pe.m : null;
-      return `<tr><td class="tn">${n}</td><td class="tv">${fF(v.r)}</td><td class="tv">${metaCash>0?fF(metaCash):'<span style="color:var(--t3)">—</span>'}</td><td class="tv tn">${fF(cm)}</td><td class="tv">${atingBadge(atingCash)}</td><td class="tv">${deltaPillSmall(cm,pcm)}</td><td class="tv">${metaMargemCat>0?fPct(metaMargemCat):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${margemBadge(v.m)}</td><td class="tv">${atingBadge(atingMargemCat)}</td><td class="tv">${deltaPP(v.m,pvM,false)}</td></tr>`;
+      return `<tr><td class="tn">${n}</td><td class="tv">${fF(v.r)}</td><td class="tv">${metaCash>0?fF(metaCash):'<span style="color:var(--t3)">—</span>'}</td><td class="tv tn">${fF(cm)}</td><td class="tv">${atingBadge(atingCash)}</td><td class="tv">${fF(trendCash)}</td><td class="tv">${atingBadge(atingTrendCash)}</td><td class="tv">${deltaPillSmall(cm,pcm)}</td><td class="tv">${metaMargemCat>0?fPct(metaMargemCat):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${margemBadge(v.m)}</td><td class="tv">${atingBadge(atingMargemCat)}</td><td class="tv">${deltaPP(v.m,pvM,false)}</td></tr>`;
     }).join("")}</tbody>`;
 
   const level = hierLevelActive();
@@ -2015,13 +2055,15 @@ function buildCategoriaTable(d, prev, meses, level, names){
     perMes = meses.map(mes=>{
       const catAgg = monthlyCategoriaAgg(d, mes);
       const r = catNames.reduce((s,c)=>s+((catAgg[c]&&catAgg[c].r)||0),0);
-      return { mes, catAgg, r };
+      const c = catNames.reduce((s,cat)=>s+((catAgg[cat]&&catAgg[cat].c)||0),0);
+      return { mes, catAgg, r, c };
     });
   } else if (level==='gerente'){
     perMes = meses.map(mes=>{
       const catAgg = monthlyGerenteUnionCategoriaAgg(d, names, mes);
       const r = Object.values(catAgg).reduce((s,v)=>s+(v.r||0),0);
-      return { mes, catAgg, r };
+      const c = Object.values(catAgg).reduce((s,v)=>s+(v.c||0),0);
+      return { mes, catAgg, r, c };
     });
   } else {
     const base = hierUnionCategoria(d, level, names);
@@ -2055,6 +2097,8 @@ function buildCategoriaTable(d, prev, meses, level, names){
   const totalRealCat = catNames.reduce((s,c)=>s+((realCatSel[c]&&realCatSel[c].r)||0),0);
   const totalCustoCat = catNames.reduce((s,c)=>s+((realCatSel[c]&&realCatSel[c].c)||0),0);
   const totalTrend = perMes.reduce((s,pm)=>s+tendencia(pm.r, d, pm.mes),0);
+  const totalTrendC = perMes.reduce((s,pm)=>s+tendencia(pm.c, d, pm.mes),0);
+  const totalTrendCash = totalTrend - totalTrendC;
 
   const prevRealCatSel = {};
   if (prev){
@@ -2112,15 +2156,18 @@ function buildCategoriaTable(d, prev, meses, level, names){
     if (prev) Object.assign(prevNCliCatSel, somaDistinta(prev, meses));
   }
 
-  function catRow(nome, metaVal, r, c, prevR, prevC, trend, metaCash, nCliCat, prevNCliCat){
+  function catRow(nome, metaVal, r, c, prevR, prevC, trend, trendC, metaCash, nCliCat, prevNCliCat){
     const pctReal = metaVal>0 ? r/metaVal*100 : null;
     const pctTrend = metaVal>0 ? trend/metaVal*100 : null;
     const margem = r>0 ? 100*(1-c/r) : null;
+    const metaMargemPct = metaVal>0 ? metaCash/metaVal*100 : null;
     const prevMargem = (prevR!=null && prevR>0) ? 100*(1-prevC/prevR) : null;
     const pesoMeta = totalMetaCat>0 ? metaVal/totalMetaCat*100 : 0;
     const pesoReal = totalRealCat>0 ? r/totalRealCat*100 : 0;
     const cash = r-c;
     const pctRealCash = metaCash>0 ? cash/metaCash*100 : null;
+    const trendCash = trend-trendC;
+    const pctTrendCash = metaCash>0 ? trendCash/metaCash*100 : null;
     const estoque = (REAL_DATA._estoque && REAL_DATA._estoque.por_categoria[nome]) ? REAL_DATA._estoque.por_categoria[nome].valor_carga : null;
     return `<tr><td class="tv">${pesoMeta.toFixed(1)}%</td><td class="tv">${pesoReal.toFixed(1)}%</td><td class="tn">${nome}</td>
       <td class="tv">${fF(metaVal)}</td><td class="tv">${fF(r)}</td><td class="tv">${atingBadge(pctReal)}</td>
@@ -2130,6 +2177,9 @@ function buildCategoriaTable(d, prev, meses, level, names){
       <td class="tv">${metaCash>0?fF(metaCash):'<span style="color:var(--t3)">—</span>'}</td>
       <td class="tv">${fF(cash)}</td>
       <td class="tv">${atingBadge(pctRealCash)}</td>
+      <td class="tv">${fF(trendCash)}</td>
+      <td class="tv">${atingBadge(pctTrendCash)}</td>
+      <td class="tv">${metaMargemPct!=null?fPct(metaMargemPct):'<span style="color:var(--t3)">—</span>'}</td>
       <td class="tv">${margem!=null?margemBadge(margem):'<span style="color:var(--t3)">—</span>'}</td>
       <td class="tv">${prevMargem!=null?fPct(prevMargem):'<span style="color:var(--t3)">sem base</span>'}</td>
       <td class="tv">${(margem!=null&&prevMargem!=null)?deltaPP(margem,prevMargem,false):'<span style="color:var(--t3)">sem base</span>'}</td>
@@ -2141,12 +2191,14 @@ function buildCategoriaTable(d, prev, meses, level, names){
   const catBodyRows = catNames.slice().sort((a,b)=>(metaCatSel[b]||0)-(metaCatSel[a]||0)).map(cat=>{
     const agg = realCatSel[cat]||{r:0,c:0}; const pagg = prevRealCatSel[cat];
     const trend = perMes.reduce((s,pm)=>s+tendencia((pm.catAgg[cat]&&pm.catAgg[cat].r)||0, d, pm.mes),0);
-    return catRow(cat, metaCatSel[cat]||0, agg.r, agg.c, pagg?pagg.r:null, pagg?pagg.c:null, trend, metaCashCatSel[cat]||0, level?null:(nCliCatSel[cat]||0), level?null:(prevNCliCatSel[cat]||0));
+    const trendC = perMes.reduce((s,pm)=>s+tendencia((pm.catAgg[cat]&&pm.catAgg[cat].c)||0, d, pm.mes),0);
+    return catRow(cat, metaCatSel[cat]||0, agg.r, agg.c, pagg?pagg.r:null, pagg?pagg.c:null, trend, trendC, metaCashCatSel[cat]||0, level?null:(nCliCatSel[cat]||0), level?null:(prevNCliCatSel[cat]||0));
   }).join("");
   const totalNCli = level?null:catNames.reduce((s,c)=>s+(nCliCatSel[c]||0),0);
   const prevTotalNCli = level?null:catNames.reduce((s,c)=>s+(prevNCliCatSel[c]||0),0);
   const totalMetaCash = catNames.reduce((s,c)=>s+(metaCashCatSel[c]||0),0);
   const totalCash = totalRealCat-totalCustoCat;
+  const totalMetaMargemPct = totalMetaCat>0 ? totalMetaCash/totalMetaCat*100 : null;
   const totalRow = `<tr style="font-weight:700"><td class="tv">100,0%</td><td class="tv">100,0%</td><td class="tn">TOTAL GERAL</td>
     <td class="tv">${fF(totalMetaCat)}</td><td class="tv">${fF(totalRealCat)}</td><td class="tv">${atingBadge(totalMetaCat>0?totalRealCat/totalMetaCat*100:null)}</td>
     <td class="tv">${fF(totalTrend)}</td><td class="tv">${atingBadge(totalMetaCat>0?totalTrend/totalMetaCat*100:null)}</td>
@@ -2155,6 +2207,9 @@ function buildCategoriaTable(d, prev, meses, level, names){
     <td class="tv">${totalMetaCash>0?fF(totalMetaCash):'<span style="color:var(--t3)">—</span>'}</td>
     <td class="tv">${fF(totalCash)}</td>
     <td class="tv">${atingBadge(totalMetaCash>0?totalCash/totalMetaCash*100:null)}</td>
+    <td class="tv">${fF(totalTrendCash)}</td>
+    <td class="tv">${atingBadge(totalMetaCash>0?totalTrendCash/totalMetaCash*100:null)}</td>
+    <td class="tv">${totalMetaMargemPct!=null?fPct(totalMetaMargemPct):'<span style="color:var(--t3)">—</span>'}</td>
     <td class="tv">${totalMargemGeral!=null?margemBadge(totalMargemGeral):'<span style="color:var(--t3)">—</span>'}</td>
     <td class="tv">${prevTotalMargemGeral!=null?fPct(prevTotalMargemGeral):'<span style="color:var(--t3)">sem base</span>'}</td>
     <td class="tv">${(totalMargemGeral!=null&&prevTotalMargemGeral!=null)?deltaPP(totalMargemGeral,prevTotalMargemGeral,false):'<span style="color:var(--t3)">sem base</span>'}</td>
@@ -2162,9 +2217,9 @@ function buildCategoriaTable(d, prev, meses, level, names){
     <td class="tv">${totalNCli!=null?deltaPillSmall(totalNCli,prevTotalNCli):'<span style="color:var(--t3)">—</span>'}</td>
     <td class="tv"><span style="color:var(--t3)">—</span></td><td class="tv"><span style="color:var(--t3)">—</span></td>
     <td class="tv"><span style="color:var(--t3)">—</span></td></tr>`;
-  const html = `<thead><tr><th>% Peso Meta</th><th>% Peso Real</th><th>Categoria</th><th class="tv">Meta</th><th class="tv">Realizado</th><th class="tv">% Real</th><th class="tv">Tendência</th><th class="tv">% Tendência</th><th class="tv">Realizado ano ant.</th><th class="tv">Δ Fat. vs ano ant.</th><th class="tv">Meta Cash Margem</th><th class="tv">Real Cash Margem</th><th class="tv">% Real Cash Margem</th><th class="tv">Margem %</th><th class="tv">Margem % ano ant.</th><th class="tv">Δ Margem vs ano ant.</th><th class="tv">Positivação</th><th class="tv">Positivação ano ant.</th><th class="tv">Δ Positivação</th><th class="tv">Bonificação</th><th class="tv">% Bonif. x Venda</th><th class="tv">Estoque Box (snapshot)</th></tr></thead><tbody>${catBodyRows}${totalRow}</tbody>`;
+  const html = `<thead><tr><th>% Peso Meta</th><th>% Peso Real</th><th>Categoria</th><th class="tv">Meta</th><th class="tv">Realizado</th><th class="tv">% Real</th><th class="tv">Tendência</th><th class="tv">% Tendência</th><th class="tv">Realizado ano ant.</th><th class="tv">Δ Fat. vs ano ant.</th><th class="tv">Meta Cash Margem</th><th class="tv">Real Cash Margem</th><th class="tv">% Real Cash Margem</th><th class="tv">Tendência Cash Margem</th><th class="tv">% Tendência Cash Margem</th><th class="tv">Meta Margem %</th><th class="tv">Margem %</th><th class="tv">Margem % ano ant.</th><th class="tv">Δ Margem vs ano ant.</th><th class="tv">Positivação</th><th class="tv">Positivação ano ant.</th><th class="tv">Δ Positivação</th><th class="tv">Bonificação</th><th class="tv">% Bonif. x Venda</th><th class="tv">Estoque Box (snapshot)</th></tr></thead><tbody>${catBodyRows}${totalRow}</tbody>`;
 
-  return { html, totalMetaCat, totalRealCat, totalCustoCat, totalTrend, prevTotalRealCat, prevTotalCustoCat, totalMargemGeral, prevTotalMargemGeral, realCatMonthNote };
+  return { html, totalMetaCat, totalRealCat, totalCustoCat, totalTrend, totalTrendCash, totalMetaCash, totalCash, totalMetaMargemPct, prevTotalRealCat, prevTotalCustoCat, totalMargemGeral, prevTotalMargemGeral, realCatMonthNote };
 }
 function renderObjetivos(){
   const d = curPeriod();
@@ -2218,7 +2273,7 @@ function renderObjetivos(){
   const level = hierLevelActive();
   const names = level ? hierSelectedNames(level) : [];
   const built = buildCategoriaTable(d, prev, meses, level, names);
-  const { totalMetaCat, totalRealCat, totalTrend, prevTotalRealCat, totalMargemGeral, prevTotalMargemGeral, realCatMonthNote } = built;
+  const { totalMetaCat, totalRealCat, totalTrend, totalTrendCash, totalMetaCash, totalCash, totalMetaMargemPct, prevTotalRealCat, totalMargemGeral, prevTotalMargemGeral, realCatMonthNote } = built;
 
   const totalMetaGeral = scope ? scope.metaGeral : totalMetaCat;
   const totalRealGeral = scope ? scope.realGeral : totalRealCat;
@@ -2248,9 +2303,13 @@ function renderObjetivos(){
           {lbl:"Tendência (fechamento)", val:fM(totalTrend)},
           {lbl:"% Tendência", val: totalTrendAting!=null?totalTrendAting.toFixed(1)+"%":"—"},
           {lbl:"Margem", val:fPct(totalMargemGeral), cur:totalMargemGeral, prevv:prevTotalMargemGeral},
+          {lbl:"Meta Margem %", val: totalMetaMargemPct!=null?fPct(totalMetaMargemPct):"—",
+           note: totalMetaMargemPct!=null?"meta cash margem ÷ meta faturamento":"sem meta de margem cadastrada no ERP p/ este período"},
+          {lbl:"Tendência de Fechamento — Cash Margem", val:fM(totalTrendCash),
+           note: totalMetaCash>0?`${fPct(totalTrendCash/totalMetaCash*100)} da meta de Cash Margem (${fM(totalMetaCash)})`:"sem meta de Cash Margem cadastrada no ERP p/ este período"},
         ]).map((k,i)=>`<div class="kpi k${i%7}"><div class="kpi-stripe"></div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div>
         ${k.cur!=null?deltaPillSmall(k.cur,k.prevv):''}
-        <div class="kpi-note">${k.cur!=null?'vs. mesmo(s) mês(es) ano anterior':''}</div></div>`).join(""));
+        <div class="kpi-note">${k.note || (k.cur!=null?'vs. mesmo(s) mês(es) ano anterior':'')}</div></div>`).join(""));
 
   // ── por Gerente / Supervisor / Vendedor (Meta Geral, somada nos meses
   // selecionados) — cada linha é clicável (efeito cascata): clicar num Gerente
@@ -2520,25 +2579,38 @@ function businessDaysInMonth(year, month){
   for (let dnum=1; dnum<=daysInMonth; dnum++){ const dow = new Date(year, month-1, dnum).getDay(); if (dow>=1 && dow<=5) count++; }
   return count;
 }
-function businessDaysWithData(period, mes){
-  if (!period || !period.por_dia) return 0;
-  const mesStr = String(mes).padStart(2,'0');
-  let count=0;
-  Object.keys(period.por_dia).forEach(dateKey=>{
-    if (dateKey.slice(5,7)!==mesStr) return;
-    if (new Date(dateKey+"T00:00:00").getDay()>=1 && new Date(dateKey+"T00:00:00").getDay()<=5) count++;
-  });
+// Dias úteis JÁ CONCLUÍDOS de (year,month) — regra determinística por
+// calendário + horário (não depende de o ERP já ter registrado a venda de
+// hoje): mês já fechado (antes do mês real de hoje) = todos os dias úteis;
+// mês futuro = 0; mês vigente = dias úteis estritamente antes de hoje, MAIS
+// hoje só a partir de meio-dia (12h) — antes das 12h, hoje ainda não conta
+// como dia útil concluído (regra confirmada com o usuário: dia 10/08, 14º dia
+// útil do mês, conta 13 dias concluídos até 12h e 14 a partir das 12h).
+function businessDaysElapsed(year, month){
+  const hoje = new Date();
+  const totalDiasUteis = businessDaysInMonth(year, month);
+  const chaveAvaliado = year*12 + month, chaveAtual = hoje.getFullYear()*12 + (hoje.getMonth()+1);
+  if (chaveAvaliado < chaveAtual) return totalDiasUteis;
+  if (chaveAvaliado > chaveAtual) return 0;
+  let count = 0;
+  const diaHoje = hoje.getDate();
+  for (let dnum=1; dnum<=diaHoje; dnum++){
+    const dow = new Date(year, month-1, dnum).getDay();
+    if (dow<1 || dow>5) continue;
+    if (dnum===diaHoje){ if (hoje.getHours()>=12) count++; }
+    else count++;
+  }
   return count;
 }
 // Tendência = projeção de fechamento do mês pelo ritmo diário observado até aqui.
-// Em meses já fechados (todo dia útil tem dado), diasComDados=diasTotais => Tendência=Realizado.
+// Em meses já fechados, diasDecorridos=diasTotais => Tendência=Realizado.
 function tendencia(realizado, period, mes){
   const year = monthYearFor(period, mes);
   if (!year) return realizado;
   const total = businessDaysInMonth(year, mes);
-  const comDados = businessDaysWithData(period, mes);
-  if (comDados<=0) return realizado;
-  return realizado * (total/comDados);
+  const decorridos = businessDaysElapsed(year, mes);
+  if (decorridos<=0) return realizado;
+  return realizado * (total/decorridos);
 }
 // ── 3C. SAZONALIDADE — DIA ÚTIL / DIA DA SEMANA ─────────────────
 // Análise à parte de Meta x Realizado: é sobre PADRÃO de vendas (data real do
@@ -2587,131 +2659,208 @@ function diaFilterNote(hierOn){
   return "";
 }
 
-// ── SAZONALIDADE SEMANAL ─────────────────────────────────────────
-// Agrega por SEMANA do calendário (segunda a domingo). Cada semana é
-// identificada pela data da 2ª-feira (início da semana). A comparação com o ano
-// anterior é feita alinhando semana-a-semana por ORDEM (1ª semana do período vs
-// 1ª semana do período do ano anterior, 2ª vs 2ª, ...), já que as datas mudam
-// de um ano para o outro. Fonte: por_dia (data real do pedido), 100% via API.
+// ── SAZONALIDADE POR DIA DA SEMANA ────────────────────────────────
+// Substitui a antiga visão por semana do calendário (S1, S2...) — a pedido do
+// usuário, TODA análise desta aba passa a ser por DIA DA SEMANA (Segunda a
+// Sexta). Um seletor no topo troca a BASE de comparação entre 3 janelas:
+//   • "90dias" — últimos 90 dias corridos, SEMPRE até hoje (independente do
+//     Período selecionado no topo da tela — mesmo racional já usado em
+//     Estoque x Venda/Clientes de A a I/Planos de Ação). Pode atravessar a
+//     fronteira de semestre (ex.: hoje=20/ago, 90 dias atrás cai em maio, que
+//     é do semestre anterior) — por isso junta por_dia de TODOS os semestres
+//     em cache (janelaPorDiaMultiPeriodo), em vez de usar só curPeriod().
+//   • "mes" — mês vigente (calendário real de hoje), do dia 1 até hoje.
+//   • "semestre" — o semestre CALENDÁRIO imediatamente anterior ao atual
+//     (ex.: hoje no 2º semestre/2026 → base = 1º semestre/2026), sempre
+//     fechado (nunca o semestre em curso).
+// Cada base compara com o "ano anterior" equivalente (mesma janela um ano
+// antes) via PREV_OF/PERIOD_ORDER. Fonte: por_dia/por_dia_categoria (data real
+// do pedido), 100% via API — igual ao resto do painel.
 function fmtBR(iso){ const p = String(iso).split('-'); return p.length===3 ? `${p[2]}/${p[1]}` : iso; }
-function isoMonday(dateStr){
-  const d = new Date(dateStr+"T00:00:00");
-  const dow = d.getDay();               // 0=Dom..6=Sáb
-  const off = dow===0 ? 6 : dow-1;      // recua até a 2ª-feira
-  d.setDate(d.getDate()-off);
-  return d.toISOString().slice(0,10);
+const DOW_ORDER = [1,2,3,4,5];
+// O semestre calendário imediatamente ANTES do semestre real de hoje — não
+// confundir com PREV_OF (que dá o mesmo semestre um ANO antes). Usa
+// PERIOD_ORDER ("mais recente primeiro") pra achar a entrada seguinte.
+function periodoAnteriorAoAtual(){
+  const atual = periodoDoMesAtual();
+  const idx = PERIOD_ORDER.indexOf(atual);
+  return idx>=0 && idx+1<PERIOD_ORDER.length ? PERIOD_ORDER[idx+1] : null;
 }
-function emptyWeekSeries(){
-  return { weeks:[], byMonday:{}, start:null, end:null, nWeeks:0,
-    totalReceita:0, totalCash:0, mediaReceita:0, mediaCash:0, mediaMargem:0 };
+// {porDia,porDiaCategoria} de um período, recortados por Gerente quando
+// aplicável (mesma trava de Supervisor/Vendedor não suportados aqui — só
+// existe cubo hierárquico por dia no nível Gerente, ver diaHierAvailable).
+function porDiaHierScoped(period, names){
+  if (!period) return { porDia:{}, porDiaCategoria:{} };
+  const hierOn = names && names.length && period.hier_por_dia && period.hier_por_dia.gerente;
+  if (!hierOn) return { porDia: period.por_dia||{}, porDiaCategoria: period.por_dia_categoria||{} };
+  return { porDia: mergeHierPorDia(period, names), porDiaCategoria: mergeHierPorDiaCategoria(period, names) };
 }
-// Agrupa {data:[r,c]} em semanas (chave = 2ª-feira). Retorna semanas ordenadas
-// (com ordinal + monday + receita/cash/margem) e um índice byMonday p/ lookup.
-function computeWeekSeries(porDia){
-  if (!porDia) return null;
-  const dates = Object.keys(porDia).sort();
-  if (!dates.length) return null;
-  const agg = {}; // monday -> {r,c}
-  dates.forEach(dt=>{
-    const v = porDia[dt];
-    const r = v ? (v[0]||0) : 0, c = v ? (v[1]||0) : 0;
-    const mon = isoMonday(dt);
-    if (!agg[mon]) agg[mon] = { r:0, c:0 };
-    agg[mon].r += r; agg[mon].c += c;
+// Junta por_dia/por_dia_categoria de TODOS os semestres em cache (REAL_DATA),
+// recortando ao intervalo [iniStr,finStr] — necessário pra janela de 90 dias,
+// que pode atravessar fronteira de semestre (datas de semestres diferentes
+// nunca se sobrepõem, então somar é seguro).
+function janelaPorDiaMultiPeriodo(iniStr, finStr, names){
+  const porDia = {}, porDiaCategoria = {};
+  PERIOD_ORDER.forEach(key=>{
+    const p = REAL_DATA[key]; if (!p) return;
+    const scoped = porDiaHierScoped(p, names);
+    Object.keys(scoped.porDia).forEach(dt=>{
+      if (dt<iniStr || dt>finStr) return;
+      if (!porDia[dt]) porDia[dt]=[0,0];
+      porDia[dt][0]+=scoped.porDia[dt][0]||0; porDia[dt][1]+=scoped.porDia[dt][1]||0;
+    });
+    Object.keys(scoped.porDiaCategoria).forEach(dt=>{
+      if (dt<iniStr || dt>finStr) return;
+      const catMap = scoped.porDiaCategoria[dt];
+      const cur = porDiaCategoria[dt] || (porDiaCategoria[dt] = {});
+      Object.keys(catMap).forEach(cat=>{
+        if (!cur[cat]) cur[cat]=[0,0];
+        cur[cat][0]+=catMap[cat][0]||0; cur[cat][1]+=catMap[cat][1]||0;
+      });
+    });
   });
-  const mons = Object.keys(agg).sort();
-  let totalR=0, totalC=0;
-  const byMonday = {};
-  const weeks = mons.map((mon,i)=>{
-    const { r, c } = agg[mon]; totalR+=r; totalC+=c;
-    const w = { ordinal:i+1, monday:mon,
-      receita: round2c(r), cash: round2c(r-c), margem: r>0 ? round2c(100*(1-c/r)) : 0 };
-    byMonday[mon] = w;
-    return w;
+  return { porDia, porDiaCategoria };
+}
+let sazonalidadeBase = '90dias'; // '90dias' | 'mes' | 'semestre'
+function sazonalidadeBaseChange(v){ sazonalidadeBase = v; renderDias(); }
+// Resolve a janela {porDia,porDiaCategoria,iniStr,finStr} da base ATUAL e a
+// mesma janela um ano antes (prevPorDia/prevPorDiaCategoria/prevIniStr/prevFinStr).
+function resolveSazonalidadeWindow(base, names){
+  const hoje = new Date();
+  const fmt = dt=>dt.toISOString().slice(0,10);
+  if (base==='90dias'){
+    const fim = new Date(hoje), ini = new Date(hoje); ini.setDate(ini.getDate()-89);
+    const iniStr=fmt(ini), finStr=fmt(fim);
+    const finPrev = new Date(fim); finPrev.setFullYear(finPrev.getFullYear()-1);
+    const iniPrev = new Date(finPrev); iniPrev.setDate(iniPrev.getDate()-89);
+    const iniPrevStr = fmt(iniPrev), finPrevStr = fmt(finPrev);
+    const cur = janelaPorDiaMultiPeriodo(iniStr, finStr, names);
+    const prevW = janelaPorDiaMultiPeriodo(iniPrevStr, finPrevStr, names);
+    return { porDia:cur.porDia, porDiaCategoria:cur.porDiaCategoria, iniStr, finStr,
+      prevPorDia:prevW.porDia, prevPorDiaCategoria:prevW.porDiaCategoria, prevIniStr:iniPrevStr, prevFinStr:finPrevStr,
+      label: `Últimos 90 dias corridos (${fmtBR(iniStr)} a ${fmtBR(finStr)}), sempre até hoje` };
+  }
+  if (base==='mes'){
+    const perKey = periodoDoMesAtual(), p = REAL_DATA[perKey];
+    const mesAtual = hoje.getMonth()+1, anoAtual = hoje.getFullYear(), diaAtual = hoje.getDate();
+    const iniStr = fmt(new Date(anoAtual,mesAtual-1,1)), finStr = fmt(hoje);
+    const scoped = porDiaHierScoped(p, names);
+    const prevKey = PREV_OF[perKey], pv = prevKey ? REAL_DATA[prevKey] : null;
+    const scopedPrev = porDiaHierScoped(pv, names);
+    const anoPrev = anoAtual-1;
+    const iniPrevStr = fmt(new Date(anoPrev,mesAtual-1,1)), finPrevStr = fmt(new Date(anoPrev,mesAtual-1,diaAtual));
+    return { porDia:scoped.porDia, porDiaCategoria:scoped.porDiaCategoria, iniStr, finStr,
+      prevPorDia:scopedPrev.porDia, prevPorDiaCategoria:scopedPrev.porDiaCategoria, prevIniStr:iniPrevStr, prevFinStr:finPrevStr,
+      label: `${MESES_NOME[mesAtual]}/${anoAtual} — mês vigente, dia 1 a ${diaAtual}` };
+  }
+  // 'semestre': semestre calendário anterior ao atual (sempre fechado).
+  const perKey = periodoAnteriorAoAtual(), p = perKey ? REAL_DATA[perKey] : null;
+  const scoped = porDiaHierScoped(p, names);
+  const datesCur = Object.keys(scoped.porDia).sort();
+  const iniStr = datesCur[0]||null, finStr = datesCur[datesCur.length-1]||null;
+  const prevKey = perKey ? PREV_OF[perKey] : null, pv = prevKey ? REAL_DATA[prevKey] : null;
+  const scopedPrev = porDiaHierScoped(pv, names);
+  const datesPrev = Object.keys(scopedPrev.porDia).sort();
+  return { porDia:scoped.porDia, porDiaCategoria:scoped.porDiaCategoria, iniStr, finStr,
+    prevPorDia:scopedPrev.porDia, prevPorDiaCategoria:scopedPrev.porDiaCategoria,
+    prevIniStr:datesPrev[0]||null, prevFinStr:datesPrev[datesPrev.length-1]||null,
+    label: `${p?p.label:(perKey||'—')} — semestre anterior ao atual (fechado)` };
+}
+// Médias por dia da semana (Seg-Sex) de UMA série {data:[r,c]} (ou de uma
+// categoria dela, via porDiaForCategoria) dentro de [iniStr,finStr] — dias
+// sem registro contam como 0, mas TODO dia útil do intervalo entra no
+// denominador da média (mesmo critério de tendencia()/computeDayDrivers).
+function computeDowSeries(porDia, porDiaCategoria, catName, iniStr, finStr){
+  const emptyByDow = {}; DOW_ORDER.forEach(dow=>{ emptyByDow[dow]={receita:0,cash:0,margem:0,n:0}; });
+  if (!iniStr || !finStr) return { byDow:emptyByDow, nDiasUteis:0, totalReceita:0, totalCash:0, mediaReceita:0, mediaCash:0, mediaMargem:0 };
+  const src = catName ? porDiaForCategoria(porDiaCategoria, catName) : porDia;
+  const dowCount = {1:0,2:0,3:0,4:0,5:0};
+  const tot = {1:{r:0,c:0},2:{r:0,c:0},3:{r:0,c:0},4:{r:0,c:0},5:{r:0,c:0}};
+  const start = new Date(iniStr+"T00:00:00"), end = new Date(finStr+"T00:00:00");
+  for (let dt=new Date(start); dt<=end; dt.setDate(dt.getDate()+1)){
+    const dow = dt.getDay();
+    if (dow<1 || dow>5) continue;
+    dowCount[dow]++;
+    const v = src[dt.toISOString().slice(0,10)];
+    tot[dow].r += (v&&v[0])||0; tot[dow].c += (v&&v[1])||0;
+  }
+  const byDow = {}; let totR=0, totC=0, nDiasUteis=0;
+  DOW_ORDER.forEach(dow=>{
+    const n = dowCount[dow], r = tot[dow].r, c = tot[dow].c;
+    const mediaR = n>0?r/n:0, mediaC = n>0?c/n:0;
+    byDow[dow] = { receita: round2c(mediaR), cash: round2c(mediaR-mediaC), margem: mediaR>0?round2c(100*(1-mediaC/mediaR)):0, n };
+    totR+=r; totC+=c; nDiasUteis+=n;
   });
-  const n = weeks.length;
-  return {
-    weeks, byMonday, start: mons[0], end: mons[mons.length-1], nWeeks: n,
-    totalReceita: round2c(totalR), totalCash: round2c(totalR-totalC),
-    mediaReceita: n>0 ? round2c(totalR/n) : 0,
-    mediaCash: n>0 ? round2c((totalR-totalC)/n) : 0,
-    mediaMargem: totalR>0 ? round2c(100*(1-totalC/totalR)) : 0,
+  return { byDow, nDiasUteis,
+    totalReceita: round2c(totR), totalCash: round2c(totR-totC),
+    mediaReceita: nDiasUteis>0?round2c(totR/nDiasUteis):0,
+    mediaCash: nDiasUteis>0?round2c((totR-totC)/nDiasUteis):0,
+    mediaMargem: totR>0?round2c(100*(1-totC/totR)):0,
   };
 }
-function renderDias(){
-  const d = curPeriod();
-  const prevKey = PREV_OF[ST.per];
-  const prev = prevPeriod();
-  const hierOn = diaHierAvailable(d);
-  const porDiaBase = hierOn ? mergeHierPorDia(d, ST.ger) : d.por_dia;
-  const porDiaCatBase = hierOn ? mergeHierPorDiaCategoria(d, ST.ger) : d.por_dia_categoria;
-  document.getElementById('diasHierNote').innerHTML = diaFilterNote(hierOn);
-  const geral = computeWeekSeries(porDiaBase);
-  if (!geral){
-    document.getElementById('diaSemanaSub').textContent = "Sem dados diários disponíveis para este período/recorte.";
-    ['tDiaSemanaReceita','tDiaSemanaCash','tDiaSemanaMargem'].forEach(id=>document.getElementById(id).innerHTML="");
-    if (charts["cDiaSemana"]) { charts["cDiaSemana"].destroy(); delete charts["cDiaSemana"]; }
-    return;
-  }
-  const prevHierOn = hierOn && prev && prev.hier_por_dia && prev.hier_por_dia.gerente;
-  const prevPorDiaBase = prevHierOn ? mergeHierPorDia(prev, ST.ger) : (prev ? prev.por_dia : null);
-  const prevPorDiaCatBase = prevHierOn ? mergeHierPorDiaCategoria(prev, ST.ger) : (prev ? prev.por_dia_categoria : null);
-  const prevGeral = prevPorDiaBase ? computeWeekSeries(prevPorDiaBase) : null;
-  document.getElementById('diaSemanaSub').textContent =
-    `${geral.nWeeks} semanas · ${fmtBR(geral.start)} a ${fmtBR(geral.end)}`
-    + (prevGeral ? ` · comparado ao ano anterior (${prevGeral.nWeeks} semanas, alinhado por ordem da semana)` : ' · sem base do ano anterior para comparar');
-
-  let catNames = d.meta && d.meta.por_categoria ? Object.keys(d.meta.por_categoria) : Object.keys(d.por_categoria);
-  if (ST.cat.length) catNames = catNames.filter(c=>ST.cat.includes(c));
-  const rows = [{ nome:"GERAL"+(ST.cat.length?" (categorias selecionadas)":" (todas as categorias)"), s:geral, sPrev:prevGeral }];
-  catNames.forEach(cat=>{
-    const s = computeWeekSeries(porDiaForCategoria(porDiaCatBase, cat));
-    const sPrev = (prevGeral && prevPorDiaCatBase) ? computeWeekSeries(porDiaForCategoria(prevPorDiaCatBase, cat)) : null;
-    rows.push({ nome:cat, s: s || emptyWeekSeries(), sPrev });
-  });
-
-  document.getElementById('tDiaSemanaReceita').innerHTML = buildWeekTable(rows, 'receita', false, geral, prevGeral);
-  document.getElementById('tDiaSemanaCash').innerHTML = buildWeekTable(rows, 'cash', false, geral, prevGeral);
-  document.getElementById('tDiaSemanaMargem').innerHTML = buildWeekTable(rows, 'margem', true, geral, prevGeral);
-
-  const labels = geral.weeks.map(w=>"S"+w.ordinal);
-  const datasets = [{ label:d.label, data:geral.weeks.map(w=>w.receita), backgroundColor:C.acc+"cc", borderRadius:4 }];
-  if (prevGeral) datasets.push({ label:prev.label, type:'line',
-    data:geral.weeks.map(w=>{ const pw = prevGeral.weeks[w.ordinal-1]; return pw ? pw.receita : null; }),
-    borderColor:C.t2, borderDash:[4,4], backgroundColor:'transparent', tension:.3, pointRadius:2 });
-  mkChart("cDiaSemana",{type:"bar",data:{labels,datasets},
-    options:{responsive:true,plugins:{legend:{display:!!prevGeral,position:"top",labels:{boxWidth:10,font:{size:10}}},
-      tooltip:{callbacks:{
-        title:items=>{ const w=geral.weeks[items[0].dataIndex]; return `Semana ${w.ordinal} (início ${fmtBR(w.monday)})`; },
-        label:c=>" "+(c.dataset.label||"")+": "+fF(c.raw) }}},
-      scales:{y:{ticks:{callback:v=>fM(v)}}}}});
-}
-// metricKey: 'receita' | 'cash' (R$, delta relativo) | 'margem' (%, delta em p.p.)
-// Alinhamento: colunas = semanas canônicas do período (série GERAL). Cada linha
-// (categoria) busca seu valor pela DATA da 2ª-feira daquela semana. O comparativo
-// com o ano anterior usa a semana de mesma ORDEM no período anterior.
-function buildWeekTable(rows, metricKey, isPercent, geral, prevGeral){
+// metricKey: 'receita' | 'cash' (R$) | 'margem' (%). Colunas = Segunda...Sexta;
+// "Média/dia útil" = média geral do intervalo (todos os dias úteis juntos).
+function buildDowTable(rows, metricKey, isPercent){
   const fmt = v => isPercent ? fPct(v) : fF(v);
   const pill = (cur,prevv) => isPercent ? deltaPP(cur,prevv,false) : deltaPillSmall(cur,prevv);
   const cell = (cur,prevv) => `<div>${fmt(cur)}</div><div style="margin-top:2px">${pill(cur,prevv)}</div>`;
   const mediaKey = metricKey==='receita' ? 'mediaReceita' : metricKey==='cash' ? 'mediaCash' : 'mediaMargem';
-  const weeks = geral.weeks;
-  const head = `<thead><tr><th>Categoria</th><th class="tv">Média/semana</th>${
-    weeks.map(w=>`<th class="tv" title="início ${fmtBR(w.monday)}">S${w.ordinal}</th>`).join("")}</tr></thead>`;
+  const head = `<thead><tr><th>Categoria</th><th class="tv">Média/dia útil</th>${
+    DOW_ORDER.map(dow=>`<th class="tv">${DOW_NAMES[dow]}</th>`).join("")}</tr></thead>`;
   const body = rows.map(r=>{
-    const cur = r.s[mediaKey] || 0;
+    const cur = r.s[mediaKey]||0;
     const prevv = r.sPrev ? r.sPrev[mediaKey] : null;
-    const weekCells = weeks.map((w,i)=>{
-      const cw = r.s.byMonday ? r.s.byMonday[w.monday] : null;
-      const cv = cw ? cw[metricKey] : 0;
-      const prevMon = prevGeral && prevGeral.weeks[i] ? prevGeral.weeks[i].monday : null;
-      const pw = (r.sPrev && r.sPrev.byMonday && prevMon) ? r.sPrev.byMonday[prevMon] : null;
-      const pv = pw ? pw[metricKey] : (r.sPrev ? 0 : null);
+    const dowCells = DOW_ORDER.map(dow=>{
+      const cv = r.s.byDow[dow][metricKey];
+      const pv = r.sPrev ? r.sPrev.byDow[dow][metricKey] : null;
       return `<td class="tv">${cell(cv,pv)}</td>`;
     }).join("");
-    return `<tr><td class="tn">${r.nome}</td><td class="tv tn">${cell(cur,prevv)}</td>${weekCells}</tr>`;
+    return `<tr><td class="tn">${r.nome}</td><td class="tv tn">${cell(cur,prevv)}</td>${dowCells}</tr>`;
   }).join("");
   return head + `<tbody>${body}</tbody>`;
+}
+function renderDias(){
+  const d = curPeriod();
+  const level = hierLevelActive();
+  const names = level==='gerente' ? hierSelectedNames('gerente') : null;
+  document.getElementById('diasHierNote').innerHTML = diaFilterNote(!!(names && names.length));
+
+  const win = resolveSazonalidadeWindow(sazonalidadeBase, names);
+  const temDados = Object.keys(win.porDia||{}).length>0;
+  if (!temDados){
+    document.getElementById('diaSemanaSub').textContent = `${win.label} — sem dados diários disponíveis.`;
+    ['tDiaSemanaReceita','tDiaSemanaCash','tDiaSemanaMargem'].forEach(id=>document.getElementById(id).innerHTML="");
+    if (charts["cDiaSemana"]) { charts["cDiaSemana"].destroy(); delete charts["cDiaSemana"]; }
+    return;
+  }
+  const geral = computeDowSeries(win.porDia, win.porDiaCategoria, null, win.iniStr, win.finStr);
+  const temPrev = Object.keys(win.prevPorDia||{}).length>0;
+  const geralPrev = temPrev ? computeDowSeries(win.prevPorDia, win.prevPorDiaCategoria, null, win.prevIniStr, win.prevFinStr) : null;
+  document.getElementById('diaSemanaSub').textContent = win.label
+    + (geralPrev ? ` · comparado a ${fmtBR(win.prevIniStr)} a ${fmtBR(win.prevFinStr)} do ano anterior` : ' · sem base do ano anterior para comparar');
+
+  let catNames = d.meta && d.meta.por_categoria ? Object.keys(d.meta.por_categoria) : Object.keys(d.por_categoria);
+  if (ST.cat.length) catNames = catNames.filter(c=>ST.cat.includes(c));
+  const rows = [{ nome:"GERAL"+(ST.cat.length?" (categorias selecionadas)":" (todas as categorias)"), s:geral, sPrev:geralPrev }];
+  catNames.forEach(cat=>{
+    const s = computeDowSeries(win.porDia, win.porDiaCategoria, cat, win.iniStr, win.finStr);
+    const sPrev = geralPrev ? computeDowSeries(win.prevPorDia, win.prevPorDiaCategoria, cat, win.prevIniStr, win.prevFinStr) : null;
+    rows.push({ nome:cat, s, sPrev });
+  });
+
+  document.getElementById('tDiaSemanaReceita').innerHTML = buildDowTable(rows, 'receita', false);
+  document.getElementById('tDiaSemanaCash').innerHTML = buildDowTable(rows, 'cash', false);
+  document.getElementById('tDiaSemanaMargem').innerHTML = buildDowTable(rows, 'margem', true);
+
+  const labels = DOW_ORDER.map(dow=>DOW_NAMES[dow]);
+  const datasets = [{ label:'Período atual', data:DOW_ORDER.map(dow=>geral.byDow[dow].receita), backgroundColor:C.acc+"cc", borderRadius:4 }];
+  if (geralPrev) datasets.push({ label:'Ano anterior', type:'line',
+    data:DOW_ORDER.map(dow=>geralPrev.byDow[dow].receita),
+    borderColor:C.t2, borderDash:[4,4], backgroundColor:'transparent', tension:.3, pointRadius:2 });
+  mkChart("cDiaSemana",{type:"bar",data:{labels,datasets},
+    options:{responsive:true,plugins:{legend:{display:!!geralPrev,position:"top",labels:{boxWidth:10,font:{size:10}}},
+      tooltip:{callbacks:{ label:c=>" "+(c.dataset.label||"")+": "+fF(c.raw) }}},
+      scales:{y:{ticks:{callback:v=>fM(v)}}}}});
 }
 // Reconstrói uma série {data: [r,c]} para UMA categoria a partir de por_dia_categoria
 // (que é {data: {categoria: [r,c]}}) — usado para repetir a análise por categoria.
@@ -2722,6 +2871,56 @@ function porDiaForCategoria(porDiaCategoria, categoria){
     if (v!=null) out[date] = v;
   });
   return out;
+}
+
+// ── VENDAS POR DIA DA SEMANA — cascata Dia → Categoria → Produto ──────────
+// REAL_DATA._dowCascata (ETL) já vem com o Top 10 produto/categoria/dia da
+// semana pronto (últimos 90 dias corridos até hoje, nível empresa) — aqui só
+// soma receita/custo de categoria a partir dos itens pra ordenar e exibir.
+let dowCascataExpanded = new Set();
+function toggleDowCascata(pathKey){
+  if (dowCascataExpanded.has(pathKey)) dowCascataExpanded.delete(pathKey); else dowCascataExpanded.add(pathKey);
+  renderDowCascata();
+}
+function renderDowCascata(){
+  const dc = REAL_DATA._dowCascata;
+  const sub = document.getElementById('dowCascataSub');
+  const el = document.getElementById('tDowCascata');
+  if (!dc){ sub.textContent = 'Dados não disponíveis.'; el.innerHTML = ''; return; }
+  sub.textContent = `Últimos 90 dias corridos (${fmtBR(dc.janela.inicio)} a ${fmtBR(dc.janela.fim)}), sempre até hoje — nível empresa.`;
+
+  const rowsHtml = DOW_ORDER.map(dow=>{
+    const catMap = dc.porDow[dow] || {};
+    const cats = Object.keys(catMap).map(cat=>{
+      const items = catMap[cat];
+      const r = items.reduce((s,p)=>s+p.r,0), c = items.reduce((s,p)=>s+p.c,0);
+      return { cat, items, r, c };
+    }).sort((a,b)=>b.r-a.r);
+    const totR = cats.reduce((s,x)=>s+x.r,0), totC = cats.reduce((s,x)=>s+x.c,0);
+    const dowKey = 'DOWC|||'+dow;
+    const dowExpanded = dowCascataExpanded.has(dowKey);
+    const dowToggle = `<span class="casc-toggle" onclick="toggleDowCascata('${dowKey}')">${dowExpanded?'−':'+'}</span>`;
+    let html = `<tr class="casc-lvl0"><td>${dowToggle}${DOW_NAMES[dow]}</td>
+      <td class="tv">${fF(totR)}</td><td class="tv">${fF(totR-totC)}</td><td class="tv">${margemBadge(totR>0?100*(1-totC/totR):0)}</td></tr>`;
+    if (dowExpanded){
+      cats.forEach(({cat,items,r,c})=>{
+        const catKey = dowKey+'|||'+cat;
+        const catExpanded = dowCascataExpanded.has(catKey);
+        const catToggle = `<span class="casc-toggle" onclick="toggleDowCascata('${catKey}')">${catExpanded?'−':'+'}</span>`;
+        html += `<tr class="casc-lvl1"><td style="padding-left:18px">${catToggle}${escAttr(cat)}</td>
+          <td class="tv">${fF(r)}</td><td class="tv">${fF(r-c)}</td><td class="tv">${margemBadge(r>0?100*(1-c/r):0)}</td></tr>`;
+        if (catExpanded){
+          items.forEach((p,i)=>{
+            html += `<tr class="casc-lvl2"><td style="padding-left:36px;color:var(--t2);font-style:italic">${i+1}. ${escAttr(p.nome)}</td>
+              <td class="tv">${fF(p.r)}</td><td class="tv">${fF(p.r-p.c)}</td><td class="tv">${margemBadge(p.r>0?100*(1-p.c/p.r):0)}</td></tr>`;
+          });
+        }
+      });
+    }
+    return html;
+  }).join("");
+
+  el.innerHTML = `<thead><tr><th>Dia da Semana / Categoria / Produto</th><th class="tv">Faturamento</th><th class="tv">Cash Margem</th><th class="tv">Margem %</th></tr></thead><tbody>${rowsHtml}</tbody>`;
 }
 
 
@@ -2832,11 +3031,158 @@ function renderMotivos(){
   document.getElementById('tMotivosMargem').innerHTML = buildTable('contribMargem', true);
 }
 
+// ── 6B0. PLANO DE AÇÃO — MÊS VIGENTE (foco em fechar 100% da meta) ─────────
+// Pedido explícito do usuário: um plano de ação sobre as metas/tendências já
+// calculadas em Acompanhamento Objetivos (Faturamento por Categoria) e Metas
+// KG Fumo/Papel/Produto Estratégico, mas SEMPRE sobre o mês CALENDÁRIO real
+// de hoje — independente do filtro de Período/Mês do resto da tela (mesmo
+// racional "sempre até hoje" já usado em Estoque x Venda e Clientes de A a
+// I) — indicando o ritmo diário necessário nos dias úteis restantes para
+// cada meta fechar em 100%.
+function acaoVerdict(pctReal, pctTrend){
+  if (pctReal!=null && pctReal>=100) return {cls:'g', label:'Meta batida'};
+  if (pctTrend!=null && pctTrend>=100) return {cls:'g', label:'No ritmo'};
+  if (pctTrend!=null && pctTrend>=90) return {cls:'a', label:'Atenção'};
+  return {cls:'r', label:'Ação urgente'};
+}
+// Tendência aqui usa o MESMO racional da função tendencia() (ritmo diário
+// observado projetado pros dias úteis totais do mês), mas recebendo os dias
+// úteis já calculados 1x pro mês vigente inteiro — assim KG/Papel/Estratégico
+// (que não têm grão diário) usam exatamente o mesmo cálculo do Faturamento.
+function buildAcaoItem(meta, real, diasUteisComDados, diasUteisRestantes, totalDiasUteis){
+  const pctReal = meta>0 ? real/meta*100 : null;
+  const trend = diasUteisComDados>0 ? real*(totalDiasUteis/diasUteisComDados) : real;
+  const pctTrend = meta>0 ? trend/meta*100 : null;
+  const gap = Math.max(0, meta-real);
+  const ritmoAtual = diasUteisComDados>0 ? real/diasUteisComDados : 0;
+  const ritmoNecessario = diasUteisRestantes>0 ? gap/diasUteisRestantes : (gap>0 ? null : 0);
+  return { meta, real, pctReal, trend, pctTrend, gap, ritmoAtual, ritmoNecessario, verdict: acaoVerdict(pctReal, pctTrend) };
+}
+function acaoTexto(item, diasUteisRestantes, fmt){
+  const {meta,real,pctReal,pctTrend,gap,ritmoAtual,ritmoNecessario} = item;
+  if (meta<=0) return 'Sem meta cadastrada para o mês vigente.';
+  if (pctReal>=100) return `Meta já batida (${pctReal.toFixed(1)}%) — manter o ritmo até o fechamento do mês.`;
+  if (diasUteisRestantes<=0) return `Mês sem dias úteis restantes e meta não atingida (${pctReal.toFixed(1)}%) — sem margem de recuperação neste mês; ajustar o planejamento do próximo.`;
+  if (pctTrend!=null && pctTrend>=100) return `No ritmo atual (${fmt(ritmoAtual)}/dia útil) a tendência já fecha em ${pctTrend.toFixed(1)}% da meta — manter regularidade nos ${fN(diasUteisRestantes)} dias úteis restantes.`;
+  const aumento = ritmoAtual>0 ? ((ritmoNecessario/ritmoAtual-1)*100) : null;
+  return `Faltam ${fmt(gap)} para bater a meta (hoje em ${pctReal.toFixed(1)}%, tendência ${pctTrend!=null?pctTrend.toFixed(1)+'%':'—'}). Ritmo atual: ${fmt(ritmoAtual)}/dia útil. Para fechar em 100%, é preciso vender ${fmt(ritmoNecessario)}/dia útil nos ${fN(diasUteisRestantes)} dias úteis restantes${aumento!=null&&aumento>0?` (+${aumento.toFixed(0)}% sobre o ritmo atual)`:''}.`;
+}
+function extraAcaoCard(titulo, item, diasUteisRestantes, fmt){
+  return `<div class="card">
+    <div class="card-h"><div class="card-title">${titulo}</div><div class="card-badge ${item.verdict.cls}">${item.verdict.label}</div></div>
+    <div style="padding:2px 2px 10px;font-size:12px;line-height:1.8">
+      <div>Meta do mês: <b>${fmt(item.meta)}</b> · Realizado: <b>${fmt(item.real)}</b> ${atingBadge(item.pctReal)}</div>
+      <div>Tendência de fechamento: <b>${fmt(item.trend)}</b> ${atingBadge(item.pctTrend)}</div>
+      <div>Falta para 100%: <b>${fmt(item.gap)}</b></div>
+    </div>
+    <div class="exec-sec"><div class="exec-item-lbl">Ação recomendada</div><div class="exec-item-body" style="font-size:12px">${acaoTexto(item, diasUteisRestantes, fmt)}</div></div>
+  </div>`;
+}
+function renderPlanoMesVigente(){
+  const perAtual = periodoDoMesAtual();
+  const dAtual = REAL_DATA[perAtual];
+  const hoje = new Date();
+  const mesAtual = hoje.getMonth()+1, anoAtual = hoje.getFullYear();
+  const elSub = document.getElementById('planosMesSub');
+  const elKpis = document.getElementById('planosMes-kpis');
+  const elCatSub = document.getElementById('planosMesCatSub');
+  const elCatTbl = document.getElementById('tPlanosMesCat');
+  const elExtra = document.getElementById('planosMesExtra');
+
+  if (!dAtual || !dAtual.meta){
+    elSub.textContent = 'Sem dados de meta cadastrados para o mês vigente.';
+    elKpis.innerHTML=''; elCatSub.textContent='—'; elCatTbl.innerHTML=''; elExtra.innerHTML='';
+    return;
+  }
+
+  const diasNoMes = new Date(anoAtual, mesAtual, 0).getDate();
+  const diaAtual = hoje.getDate();
+  const totalDiasUteis = businessDaysInMonth(anoAtual, mesAtual);
+  const diasUteisComDados = businessDaysElapsed(anoAtual, mesAtual);
+  const diasUteisRestantes = Math.max(0, totalDiasUteis - diasUteisComDados);
+
+  elSub.textContent = `${MESES_NOME[mesAtual]}/${anoAtual} — dia ${diaAtual} de ${diasNoMes} (${(diaAtual/diasNoMes*100).toFixed(0)}% do mês corrido) · ${fN(diasUteisComDados)} de ${fN(totalDiasUteis)} dias úteis decorridos · ${fN(diasUteisRestantes)} dias úteis restantes`;
+
+  const level = hierLevelActive();
+  const names = level ? hierSelectedNames(level) : [];
+
+  // ── Geral (Faturamento total do mês, respeita hierarquia) ──
+  let metaGeral=0, realGeral=0;
+  if (level){
+    names.forEach(n=>{ metaGeral+=objMetaGeralFor(dAtual, level, n, [mesAtual]); realGeral+=objRealGeralFor(dAtual, level, n, [mesAtual]); });
+  } else {
+    const gerNames = Object.keys(dAtual.meta.por_gerente||{});
+    gerNames.forEach(n=>{ metaGeral+=objMetaGeralFor(dAtual,'gerente',n,[mesAtual]); realGeral+=objRealGeralFor(dAtual,'gerente',n,[mesAtual]); });
+  }
+  const itemGeral = buildAcaoItem(metaGeral, realGeral, diasUteisComDados, diasUteisRestantes, totalDiasUteis);
+
+  elKpis.innerHTML = [
+    {lbl:"Meta Geral do Mês", val:fF(itemGeral.meta)},
+    {lbl:"Realizado até hoje", val:fF(itemGeral.real)},
+    {lbl:"% Atingimento", val: itemGeral.pctReal!=null?itemGeral.pctReal.toFixed(1)+'%':'—'},
+    {lbl:"Tendência de Fechamento", val:fF(itemGeral.trend)},
+    {lbl:"% Tendência", val: itemGeral.pctTrend!=null?itemGeral.pctTrend.toFixed(1)+'%':'—'},
+    {lbl:"Falta para 100%", val:fF(itemGeral.gap)},
+    {lbl:"Ritmo Necessário/dia útil", val: itemGeral.ritmoNecessario!=null?fF(itemGeral.ritmoNecessario):'—'},
+  ].map((k,i)=>`<div class="kpi k${i%7}"><div class="kpi-stripe"></div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div></div>`).join("");
+
+  // ── por Categoria — mesma limitação já documentada em Acompanhamento
+  // Objetivos: grão mensal por categoria só existe sem filtro ou com Gerente.
+  if (level==='supervisor' || level==='vendedor'){
+    elCatSub.textContent = 'Indisponível recortado por Supervisor/Vendedor';
+    elCatTbl.innerHTML = `<tbody><tr><td style="padding:16px;color:var(--t3)">Detalhamento por Categoria não tem grão mensal recortado por Supervisor/Vendedor (só Gerente ou empresa inteira) — use o painel Geral acima.</td></tr></tbody>`;
+  } else {
+    let catNames = Object.keys(dAtual.por_categoria||{});
+    if (ST.cat.length) catNames = catNames.filter(c=>ST.cat.includes(c));
+    const realAgg = level==='gerente' ? monthlyGerenteUnionCategoriaAgg(dAtual, names, mesAtual) : monthlyCategoriaAgg(dAtual, mesAtual);
+    let metaAgg = {};
+    if (level==='gerente'){
+      const merged = metaCategoriaHierMesFor(dAtual, 'gerente', names, [mesAtual]);
+      Object.keys(merged).forEach(cat=>{ metaAgg[cat]=merged[cat].meta; });
+    } else {
+      metaAgg = (dAtual.meta.por_mes_categoria && dAtual.meta.por_mes_categoria[mesAtual]) || {};
+    }
+    const itens = catNames.map(cat=>{
+      const meta = metaAgg[cat]||0;
+      const real = (realAgg[cat]&&realAgg[cat].r)||0;
+      return Object.assign({cat}, buildAcaoItem(meta, real, diasUteisComDados, diasUteisRestantes, totalDiasUteis));
+    }).filter(x=>x.meta>0 || x.real>0)
+      .sort((a,b)=>(a.pctTrend==null?Infinity:a.pctTrend)-(b.pctTrend==null?Infinity:b.pctTrend)); // mais urgente primeiro; sem meta cadastrada vai pro fim (nada a agir)
+
+    elCatSub.textContent = `${fN(itens.length)} categorias com meta ou venda no mês` + (level==='gerente'?` — recortado por Gerente: ${labelJoin(names)}`:'');
+    elCatTbl.innerHTML = `<thead><tr><th>Categoria</th><th class="tv">Meta</th><th class="tv">Realizado</th><th class="tv">% Ating.</th><th class="tv">Tendência</th><th class="tv">% Tend.</th><th class="tv">Falta p/ 100%</th><th class="tv">Ritmo Necessário/dia útil</th><th>Ação recomendada</th></tr></thead><tbody>${
+      itens.length ? itens.map(x=>`<tr><td class="tn">${x.cat}</td><td class="tv">${fF(x.meta)}</td><td class="tv">${fF(x.real)}</td><td class="tv">${atingBadge(x.pctReal)}</td><td class="tv">${fF(x.trend)}</td><td class="tv">${atingBadge(x.pctTrend)}</td><td class="tv">${fF(x.gap)}</td><td class="tv">${x.ritmoNecessario!=null?fF(x.ritmoNecessario):'—'}</td><td style="max-width:340px;font-size:11.5px;color:var(--t2)">${acaoTexto(x, diasUteisRestantes, fF)}</td></tr>`).join("")
+      : '<tr><td colspan="9" style="text-align:center;color:var(--t3);padding:16px">Nenhuma categoria com meta ou venda no mês vigente.</td></tr>'
+    }</tbody>`;
+  }
+
+  // ── KG Fumo / Papel / Produto Estratégico ──
+  const mesKeyAtual = String(mesAtual);
+  let metaKg=0, realKg=0, metaPapel=0, realPapel=0, metaEst=0, realEst=0;
+  const entidades = level ? names : Object.keys(dAtual.meta.por_gerente||{});
+  const nivelAgg = level || 'gerente';
+  entidades.forEach(n=>{
+    metaKg += metaExtraFor(dAtual, nivelAgg, n, mesKeyAtual, 'meta_kg'); realKg += realExtraFor(dAtual, nivelAgg, n, mesKeyAtual, 'rkg');
+    metaPapel += metaExtraFor(dAtual, nivelAgg, n, mesKeyAtual, 'meta_papel'); realPapel += realExtraFor(dAtual, nivelAgg, n, mesKeyAtual, 'rp');
+    metaEst += metaExtraFor(dAtual, nivelAgg, n, mesKeyAtual, 'meta_estrategico'); realEst += realExtraFor(dAtual, nivelAgg, n, mesKeyAtual, 'rest');
+  });
+  const itemKg = buildAcaoItem(metaKg, realKg, diasUteisComDados, diasUteisRestantes, totalDiasUteis);
+  const itemPapel = buildAcaoItem(metaPapel, realPapel, diasUteisComDados, diasUteisRestantes, totalDiasUteis);
+  const itemEst = buildAcaoItem(metaEst, realEst, diasUteisComDados, diasUteisRestantes, totalDiasUteis);
+
+  elExtra.innerHTML = [
+    extraAcaoCard('KG Fumo', itemKg, diasUteisRestantes, v=>fN(v)+' kg'),
+    extraAcaoCard('Papel (Qtd)', itemPapel, diasUteisRestantes, v=>fN(v)),
+    extraAcaoCard('Produto Estratégico', itemEst, diasUteisRestantes, fF),
+  ].join("");
+}
+
 // ── 6B. PLANOS DE AÇÃO POR CATEGORIA (formato executivo/diretoria) ──
 // Cada categoria = 1 "memo" de diretoria com 3 partes (Panorama, Diagnóstico,
 // Proposta). Todo número citado vem direto da base — nada aqui é redigido
 // livremente, é template determinístico sobre os agregados já calculados.
 function renderPlanos(){
+  renderPlanoMesVigente();
   const d = curPeriod();
   const prevKey = PREV_OF[ST.per];
   const prev = prevPeriod();

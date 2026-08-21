@@ -879,6 +879,40 @@ class DashboardETLService {
     return { janela: { inicio: iniStr, fim: fimStr }, clientes, clientes_categoria };
   }
 
+  // ── SAZONALIDADE — cascata Dia da Semana → Categoria → Produto (Top 10) ──
+  // Sempre sobre os últimos 90 dias corridos até hoje (mesmo racional "sempre
+  // até hoje" de _buildEstoque()/_buildAbcd90()) — independente do filtro de
+  // Período. dow: 1=Segunda...5=Sexta (ISODOW do Postgres — sábado/domingo já
+  // excluídos no próprio SQL). Nível empresa apenas (sem cubo hierárquico
+  // Gerente/Supervisor/Vendedor aqui — GROUP BY adicional por vendedor
+  // multiplicaria o volume de linhas sem um pedido explícito por esse recorte;
+  // front avisa isso na tela).
+  async _buildDowCascata() {
+    const hoje = new Date();
+    const iniJanela = new Date(hoje); iniJanela.setDate(iniJanela.getDate() - 89);
+    const fmt = dt => dt.toISOString().slice(0, 10);
+    const [iniStr, fimStr] = [fmt(iniJanela), fmt(hoje)];
+
+    const rows = (await db.query(`
+      SELECT EXTRACT(ISODOW FROM DataPed)::int dow, categoria, Codigo codigo, Descricao produto,
+             SUM(Total) r, SUM(customedio) c, SUM(Qtde) q
+      FROM (${BASE_CTE}) s
+      WHERE categoria IS NOT NULL AND Descricao IS NOT NULL AND EXTRACT(ISODOW FROM DataPed) BETWEEN 1 AND 5
+      GROUP BY dow, categoria, Codigo, Descricao
+    `, [iniStr, fimStr])).rows;
+
+    const porDow = { 1: {}, 2: {}, 3: {}, 4: {}, 5: {} };
+    for (const row of rows) {
+      const catMap = porDow[row.dow][row.categoria] || (porDow[row.dow][row.categoria] = []);
+      catMap.push({ codigo: String(row.codigo), nome: row.produto, r: round2(num(row.r)), c: round2(num(row.c)), q: round2(num(row.q)) });
+    }
+    for (const dow in porDow) for (const cat in porDow[dow]) {
+      porDow[dow][cat].sort((a, b) => b.r - a.r);
+      porDow[dow][cat] = porDow[dow][cat].slice(0, 10);
+    }
+    return { janela: { inicio: iniStr, fim: fimStr }, porDow };
+  }
+
   // Árvore REAL da força de vendas (cadastro: supervisor + eqvend, só ativos).
   async _hierarquiaReal() {
     const sql = `
@@ -910,6 +944,7 @@ class DashboardETLService {
     for (const periodo of PERIODOS) resultado[periodo.key] = await this._buildPeriodo(periodo);
     try { resultado._estoque = await this._buildEstoque(); } catch (e) { console.error('[ETL] estoque falhou:', e.message); }
     try { resultado._abcd90 = await this._buildAbcd90(); } catch (e) { console.error('[ETL] abcd90 falhou:', e.message); }
+    try { resultado._dowCascata = await this._buildDowCascata(); } catch (e) { console.error('[ETL] dowCascata falhou:', e.message); }
     try { resultado._hierarquia = await this._hierarquiaReal(); } catch (e) { console.error('[ETL] hierarquia falhou:', e.message); }
     return resultado;
   }
