@@ -18,7 +18,7 @@ Chart.defaults.font.family = "'Segoe UI',system-ui,sans-serif";
 Chart.defaults.font.size = 11;
 
 // ── FONTE DE DADOS: 100% via API ─────────────────────────────────
-window.API_BASE_URL = window.API_BASE_URL || `http://${window.location.hostname}:4001/api/v1/dashboard`;
+window.API_BASE_URL = window.API_BASE_URL || `${window.location.origin}/api/v1/dashboard`;
 window.REAL_DATA = {};
 
 // ── TEMA CLARO / ESCURO ──────────────────────────────────────────
