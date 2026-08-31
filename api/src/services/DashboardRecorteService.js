@@ -304,6 +304,61 @@ class DashboardRecorteService {
     cacheSet(key, dados);
     return dados;
   }
+
+  // Vendas por Dia da Semana (cascata Dia → Categoria → Top 10 Produtos),
+  // recortada por Gerente/Supervisor/Vendedor — mesmo raciocínio de getScope()
+  // (reaproveita BASE_CTE com WHERE dinâmico), mas SEMPRE sobre os últimos 90
+  // dias corridos até hoje (não usa período/mês do filtro de Período — mesmo
+  // racional "sempre até hoje" do cubo principal _buildDowCascata do ETL, que
+  // esta função espelha para o caso COM filtro de hierarquia).
+  // filtros: { ger:[], sup:[], vend:[] }
+  async getDowCascata(filtros) {
+    const campos = CAMPOS_INTERNOS.filter(c => ['ger', 'sup', 'vend'].includes(c.key));
+    const ativos = [];
+    for (const campo of campos) {
+      const vals = filtros[campo.key];
+      if (!Array.isArray(vals) || !vals.length) continue;
+      const txt = [...new Set(vals.map(v => String(v)).filter(Boolean))];
+      if (txt.length) ativos.push({ ...campo, vals: txt });
+    }
+    if (!ativos.length) throw new Error('nenhum filtro informado');
+
+    const hoje = new Date();
+    const iniJanela = new Date(hoje); iniJanela.setDate(iniJanela.getDate() - 89);
+    const fmt = dt => dt.toISOString().slice(0, 10);
+    const [iniStr, fimStr] = [fmt(iniJanela), fmt(hoje)];
+
+    const key = `dow|${iniStr}|${fimStr}|` + ativos.map(a => `${a.key}=${a.vals.slice().sort().join('~')}`).sort().join('&');
+    const hit = cacheGet(key);
+    if (hit) return hit;
+
+    const params = [iniStr, fimStr];
+    const cond = a => { params.push(a.vals); return `${a.expr} = ANY($${params.length}::${a.tipo})`; };
+    const internos = ativos.map(cond);
+    if (!ETL.BASE_CTE.includes(ANCHOR)) throw new Error('âncora do filtro não encontrada no BASE_CTE');
+    const cte = ETL.BASE_CTE.replace(ANCHOR, `${ANCHOR}\n    and ${internos.join('\n    and ')}`);
+
+    const rows = (await db.query(`
+      SELECT EXTRACT(ISODOW FROM DataPed)::int dow, categoria, Codigo codigo, Descricao produto,
+             SUM(Total) r, SUM(customedio) c, SUM(Qtde) q
+      FROM (${cte}) s
+      WHERE categoria IS NOT NULL AND Descricao IS NOT NULL AND EXTRACT(ISODOW FROM DataPed) BETWEEN 1 AND 5
+      GROUP BY dow, categoria, Codigo, Descricao
+    `, params)).rows;
+
+    const porDow = { 1: {}, 2: {}, 3: {}, 4: {}, 5: {} };
+    for (const row of rows) {
+      const catMap = porDow[row.dow][row.categoria] || (porDow[row.dow][row.categoria] = []);
+      catMap.push({ codigo: String(row.codigo), nome: row.produto, r: round2(num(row.r)), c: round2(num(row.c)), q: round2(num(row.q)) });
+    }
+    for (const dow in porDow) for (const cat in porDow[dow]) {
+      porDow[dow][cat].sort((a, b) => b.r - a.r);
+      porDow[dow][cat] = porDow[dow][cat].slice(0, 10);
+    }
+    const dados = { janela: { inicio: iniStr, fim: fimStr }, porDow };
+    cacheSet(key, dados);
+    return dados;
+  }
 }
 
 module.exports = new DashboardRecorteService();

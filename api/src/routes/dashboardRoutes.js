@@ -10,5 +10,6 @@ router.get('/categorias', DashboardController.getCategorias.bind(DashboardContro
 router.get('/hierarquia', DashboardController.getHierarquia.bind(DashboardController));
 router.get('/clientes', DashboardController.getClientes.bind(DashboardController));
 router.get('/recorte', DashboardController.getRecorte.bind(DashboardController));
+router.get('/dow-cascata', DashboardController.getDowCascata.bind(DashboardController));
 
 module.exports = router;

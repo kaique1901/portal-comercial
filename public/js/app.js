@@ -2874,23 +2874,70 @@ function porDiaForCategoria(porDiaCategoria, categoria){
 }
 
 // ── VENDAS POR DIA DA SEMANA — cascata Dia → Categoria → Produto ──────────
-// REAL_DATA._dowCascata (ETL) já vem com o Top 10 produto/categoria/dia da
-// semana pronto (últimos 90 dias corridos até hoje, nível empresa) — aqui só
-// soma receita/custo de categoria a partir dos itens pra ordenar e exibir.
+// Sem filtro de Gerente/Supervisor/Vendedor: usa REAL_DATA._dowCascata (ETL,
+// pré-computado, instantâneo, nível empresa). COM filtro, busca sob demanda em
+// /dow-cascata (DashboardRecorteService.getDowCascata — mesmo BASE_CTE com
+// WHERE dinâmico do /recorte, mas SEMPRE últimos 90 dias, nunca o período/mês
+// selecionado) — mesmo padrão de ensureCliScope()/CLI_SCOPE já usado no resto
+// do painel. Categoria (ST.cat) é filtrada aqui no front (a resposta já traz
+// todas as categorias do recorte).
 let dowCascataExpanded = new Set();
+let DOW_CASCATA_SCOPE = null, dowCascataScopePending = null, dowCascataScopeFetch = null;
+function dowCascataScopeKey(){
+  const p = new URLSearchParams();
+  const add = (k, arr) => { if (arr && arr.length) p.set(k, arr.join('|')); };
+  add('ger', ST.ger); add('sup', ST.sup); add('vend', ST.vend);
+  return p.toString();
+}
+function ensureDowCascataScope(){
+  const key = dowCascataScopeKey();
+  if (!key){ DOW_CASCATA_SCOPE = null; dowCascataScopePending = null; return Promise.resolve(); }
+  if (DOW_CASCATA_SCOPE && DOW_CASCATA_SCOPE.key === key) return Promise.resolve();
+  if (dowCascataScopePending === key && dowCascataScopeFetch) return dowCascataScopeFetch;
+  dowCascataScopePending = key;
+  dowCascataScopeFetch = fetch(`${API_BASE_URL}/dow-cascata?${key}`)
+    .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+    .then(j => {
+      if (j && j.error) throw new Error(j.error);
+      DOW_CASCATA_SCOPE = { key, dados: j };
+      if (dowCascataScopePending === key){ dowCascataScopePending = null; renderDowCascata(); }
+    })
+    .catch(e => {
+      console.warn('[dow-cascata] falha:', e.message);
+      if (dowCascataScopePending === key) dowCascataScopePending = null;
+    });
+  return dowCascataScopeFetch;
+}
 function toggleDowCascata(pathKey){
   if (dowCascataExpanded.has(pathKey)) dowCascataExpanded.delete(pathKey); else dowCascataExpanded.add(pathKey);
   renderDowCascata();
 }
 function renderDowCascata(){
-  const dc = REAL_DATA._dowCascata;
+  const level = hierLevelActive();
+  const names = level ? hierSelectedNames(level) : [];
+  const scopeKey = dowCascataScopeKey();
   const sub = document.getElementById('dowCascataSub');
   const el = document.getElementById('tDowCascata');
-  if (!dc){ sub.textContent = 'Dados não disponíveis.'; el.innerHTML = ''; return; }
-  sub.textContent = `Últimos 90 dias corridos (${fmtBR(dc.janela.inicio)} a ${fmtBR(dc.janela.fim)}), sempre até hoje — nível empresa.`;
+
+  let dc;
+  if (scopeKey){
+    ensureDowCascataScope();
+    dc = (DOW_CASCATA_SCOPE && DOW_CASCATA_SCOPE.key === scopeKey) ? DOW_CASCATA_SCOPE.dados : null;
+    if (!dc){ sub.textContent = `Carregando recorte por ${level} — ${labelJoin(names)}…`; el.innerHTML = ''; return; }
+  } else {
+    dc = REAL_DATA._dowCascata;
+    if (!dc){ sub.textContent = 'Dados não disponíveis.'; el.innerHTML = ''; return; }
+  }
+  const escopoTxt = level ? ` — recortado por ${level}: ${labelJoin(names)}` : ' — nível empresa';
+  sub.textContent = `Últimos 90 dias corridos (${fmtBR(dc.janela.inicio)} a ${fmtBR(dc.janela.fim)}), sempre até hoje${escopoTxt}.`;
 
   const rowsHtml = DOW_ORDER.map(dow=>{
-    const catMap = dc.porDow[dow] || {};
+    let catMap = dc.porDow[dow] || {};
+    if (ST.cat.length){
+      const filtrado = {};
+      Object.keys(catMap).forEach(cat=>{ if (ST.cat.includes(cat)) filtrado[cat] = catMap[cat]; });
+      catMap = filtrado;
+    }
     const cats = Object.keys(catMap).map(cat=>{
       const items = catMap[cat];
       const r = items.reduce((s,p)=>s+p.r,0), c = items.reduce((s,p)=>s+p.c,0);

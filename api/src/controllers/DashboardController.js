@@ -32,6 +32,30 @@ class DashboardController {
     }
   }
 
+  // Vendas por Dia da Semana recortadas por Gerente/Supervisor/Vendedor — sempre
+  // últimos 90 dias corridos até hoje (não usa "periodo"/"mes"). Sem filtro
+  // nenhum, o front usa o cubo pré-computado (_dowCascata) em vez desta rota.
+  // GET /api/v1/dashboard/dow-cascata?ger=G02 - GUILHERME
+  async getDowCascata(req, res) {
+    try {
+      const filtros = {};
+      let n = 0;
+      for (const k of ['ger', 'sup', 'vend']) {
+        const raw = req.query[k];
+        if (raw == null || raw === '') continue;
+        const vals = String(raw).split('|').map(s => s.trim()).filter(Boolean);
+        if (!vals.length) continue;
+        if (vals.length > 500) return res.status(400).json({ error: `máximo de 500 valores em ${k}` });
+        filtros[k] = vals; n += vals.length;
+      }
+      if (!n) return res.status(400).json({ error: 'informe ao menos um filtro (ger/sup/vend)' });
+      res.json(await DashboardRecorteService.getDowCascata(filtros));
+    } catch (error) {
+      console.error('[dow-cascata]', error.message);
+      res.status(500).json({ error: 'Erro ao consultar vendas por dia da semana', details: error.message });
+    }
+  }
+
   // Recorte por cliente consultado sob demanda no banco (o cubo só tem Top-50).
   // GET /api/v1/dashboard/clientes?periodo=2026_1&cods=11274,659800157
   async getClientes(req, res) {
