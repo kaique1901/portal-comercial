@@ -1,12 +1,35 @@
 const db = require('../config/db');
 
 // Períodos que o ETL materializa a cada ciclo. Ajuste aqui p/ novos semestres.
-const PERIODOS = [
+const TODOS_PERIODOS = [
   { key: '2026_1', label: '2026 - 1º Semestre', ini: '2026-01-01', fim: '2026-06-30' },
   { key: '2026_2', label: '2026 - 2º Semestre', ini: '2026-07-01', fim: '2026-12-31' },
   { key: '2025_1', label: '2025 - 1º Semestre', ini: '2025-01-01', fim: '2025-06-30' },
   { key: '2025_2', label: '2025 - 2º Semestre', ini: '2025-07-01', fim: '2025-12-31' },
 ];
+
+// Cada período custa um CREATE TEMP TABLE varrendo a base inteira + ~60 agregações,
+// e o painel só responde 200 quando TODOS terminam — em máquina de dev isso é vários
+// minutos de 503. ETL_PERIODOS permite materializar um subconjunto durante o
+// desenvolvimento (ex: ETL_PERIODOS=2026_2,2025_2 = semestre atual + comparativo
+// ano-a-ano). O front tolera período ausente: periodoInicial() cai no mais recente
+// disponível. Vazio/ausente = todos os 4 (comportamento de produção, inalterado).
+// Mais recente primeiro (2026_2, 2026_1, 2025_2, 2025_1) — mesma ordem do
+// PERIOD_ORDER do front. Com a publicação incremental do run(), isso garante que a
+// PRIMEIRA etapa a ficar pronta seja justamente o semestre em que o painel abre.
+const porMaisRecente = (a, b) => b.key.localeCompare(a.key);
+
+const PERIODOS = (() => {
+  const filtro = (process.env.ETL_PERIODOS || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (!filtro.length) return [...TODOS_PERIODOS].sort(porMaisRecente);
+  const sel = TODOS_PERIODOS.filter(p => filtro.includes(p.key)).sort(porMaisRecente);
+  if (!sel.length) {
+    console.warn(`[ETL] ETL_PERIODOS="${process.env.ETL_PERIODOS}" não casou com nenhum período conhecido (${TODOS_PERIODOS.map(p => p.key).join(', ')}); usando todos.`);
+    return [...TODOS_PERIODOS].sort(porMaisRecente);
+  }
+  console.log(`[ETL] ETL_PERIODOS ativo — materializando só: ${sel.map(p => p.key).join(', ')} (produção usa todos os ${TODOS_PERIODOS.length}).`);
+  return sel;
+})();
 
 // Categorias de meta (codcategoriaprod) — as 7 do painel. metacategoria.codmetacategoria = codcategoriaprod.
 const META_CATS = [1, 2, 3, 4, 6, 8, 9];
@@ -939,13 +962,29 @@ class DashboardETLService {
     return data;
   }
 
-  async run() {
+  // onParcial(resultado) é chamado a cada etapa concluída, para o cache publicar o
+  // que já está pronto em vez de esperar o ciclo inteiro. Sem isso, /full responde
+  // 503 até o ÚLTIMO período terminar — em produção são 4 semestres em sequência,
+  // cada um varrendo a base, o que deixa o painel minutos sem carregar.
+  // O front tolera dado parcial: periodoInicial() cai no período mais recente que
+  // existir e as visões de _estoque/_abcd90/_hierarquia têm guarda própria
+  // ("Dados não disponíveis") até chegarem.
+  async run(onParcial) {
     const resultado = {};
-    for (const periodo of PERIODOS) resultado[periodo.key] = await this._buildPeriodo(periodo);
-    try { resultado._estoque = await this._buildEstoque(); } catch (e) { console.error('[ETL] estoque falhou:', e.message); }
-    try { resultado._abcd90 = await this._buildAbcd90(); } catch (e) { console.error('[ETL] abcd90 falhou:', e.message); }
-    try { resultado._dowCascata = await this._buildDowCascata(); } catch (e) { console.error('[ETL] dowCascata falhou:', e.message); }
-    try { resultado._hierarquia = await this._hierarquiaReal(); } catch (e) { console.error('[ETL] hierarquia falhou:', e.message); }
+    const publicar = () => {
+      if (typeof onParcial !== 'function') return;
+      try { onParcial(resultado); } catch (e) { console.error('[ETL] publicação parcial falhou:', e.message); }
+    };
+
+    for (const periodo of PERIODOS) {
+      resultado[periodo.key] = await this._buildPeriodo(periodo);
+      console.log(`[ETL] período ${periodo.key} pronto (${Object.keys(resultado).filter(k => !k.startsWith('_')).length}/${PERIODOS.length}).`);
+      publicar(); // já dá pra abrir o painel neste período
+    }
+    try { resultado._estoque = await this._buildEstoque(); publicar(); } catch (e) { console.error('[ETL] estoque falhou:', e.message); }
+    try { resultado._abcd90 = await this._buildAbcd90(); publicar(); } catch (e) { console.error('[ETL] abcd90 falhou:', e.message); }
+    try { resultado._dowCascata = await this._buildDowCascata(); publicar(); } catch (e) { console.error('[ETL] dowCascata falhou:', e.message); }
+    try { resultado._hierarquia = await this._hierarquiaReal(); publicar(); } catch (e) { console.error('[ETL] hierarquia falhou:', e.message); }
     return resultado;
   }
 }

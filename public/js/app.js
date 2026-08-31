@@ -1309,7 +1309,15 @@ function renderComp(){
     {lbl:"Nº Pedidos", a:d.n_pedidos, b:prev&&prev.n_pedidos, f:fN},
     {lbl:"Ticket médio", a:d.ticket_pedido, b:prev&&prev.ticket_pedido, f:fF}
   );
-  const compBanner = eff.monthNote ? `⚠ ${eff.monthNote}` : (eff.label?`Recorte ativo: <strong>${eff.label}</strong> — comparado ao mesmo recorte em ${prevKey?REAL_DATA[prevKey].label:"—"}.`:"");
+  // prevKey é só a CHAVE do semestre anterior ("2025_2"); ela existir não garante que
+  // o período já esteja no cubo. Testar a chave em vez do dado estourava
+  // "Cannot read properties of undefined (reading 'label')" e zerava o painel sempre
+  // que o período anterior não estivesse materializado — o que acontece de verdade
+  // enquanto o ETL publica os períodos de forma incremental. Usa o `prev` de
+  // prevPeriod(), que já resolve para null quando o período não existe (mesmo padrão
+  // do card logo abaixo).
+  const prevLabel = prev ? prev.label : "—";
+  const compBanner = eff.monthNote ? `⚠ ${eff.monthNote}` : (eff.label?`Recorte ativo: <strong>${eff.label}</strong> — comparado ao mesmo recorte em ${prevLabel}.`:"");
   document.getElementById("comp-cards").innerHTML = (compBanner?`<div class="alert" style="grid-column:1/-1">${compBanner}</div>`:"") + rows.map(r=>{
     const dl = (r.b!=null) ? fDelta(r.a,r.b) : {s:"sem base", c:"neu"};
     return `<div class="comp-card"><div class="cc-lbl">${r.lbl}</div><div class="cc-val">${r.f(r.a)}</div>
