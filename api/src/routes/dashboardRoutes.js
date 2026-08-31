@@ -4,6 +4,7 @@ const DashboardController = require('../controllers/DashboardController');
 
 // Fazemos o bind para não perder o "this" do controller
 router.get('/full', DashboardController.getFull.bind(DashboardController));
+router.get('/etl-status', DashboardController.getEtlStatus.bind(DashboardController));
 router.get('/resumo', DashboardController.getResumo.bind(DashboardController));
 router.get('/vendas-por-dia', DashboardController.getVendasPorDia.bind(DashboardController));
 router.get('/categorias', DashboardController.getCategorias.bind(DashboardController));

@@ -108,7 +108,7 @@ class DashboardRecorteService {
     // ("timeout exceeded when trying to connect") com dois usuários simultâneos.
     const client = await db.getClient();
     let tot, porMes, porCat, porGrp, porCli, topProd, porVend;
-    let porDia, porDiaCat, porGer, porSup, fullVend, porMesCli, pag, janProd, janRange, abcdCli, qual, casc, fumo;
+    let porDia, porDiaCat, porGer, porSup, fullVend, porMesCli, porMesCatCliCod, pag, janProd, janRange, abcdCli, qual, casc, fumo;
     try {
       await client.query('BEGIN');
       await client.query(`CREATE TEMP TABLE tmp_recorte ON COMMIT DROP AS ${base}`, params);
@@ -150,6 +150,15 @@ class DashboardRecorteService {
                                  SUM(realpapel) rp, SUM(realkg) rkg, SUM(estrategico) rest
                           FROM tmp_recorte WHERE Vendedor IS NOT NULL GROUP BY Vendedor, supervisor`);
       porMesCli = await q(`SELECT Mes mes, COUNT(DISTINCT CodCli) n FROM tmp_recorte GROUP BY Mes`);
+      // POSITIVAÇÃO recortada. Devolve a LISTA de códigos de cliente por mês+categoria,
+      // não a contagem: o painel soma vários meses e precisa unir os conjuntos antes de
+      // contar (cliente que comprou em jul e ago é UM positivado, não dois). Sem isto o
+      // recorte não trazia o insumo, o cubo da empresa ficava valendo no lugar dele e a
+      // coluna Positivação caía em "—" para qualquer usuário logado — que sempre tem
+      // escopo travado, portanto sempre com recorte ativo.
+      porMesCatCliCod = await q(`SELECT Mes mes, categoria, array_agg(DISTINCT CodCli) cods
+                                 FROM tmp_recorte WHERE categoria IS NOT NULL AND CodCli IS NOT NULL
+                                 GROUP BY Mes, categoria`);
       // Realizado da meta FUMO KG = realkg (produtos siglaagrufat='FF'), mesma regra
       // do ETL e da query oficial de Meta x Realizado.
       fumo = {
@@ -260,6 +269,17 @@ class DashboardRecorteService {
 
     dados.por_mes_clientes = {};
     for (const row of porMesCli) dados.por_mes_clientes[String(row.mes)] = parseInt(row.n, 10) || 0;
+
+    // Mesma forma do cubo: { mes: { categoria: [codCliente, ...] } }. O front une os
+    // conjuntos dos meses selecionados e só então conta (ver somaDistinta em app.js).
+    dados.por_mes_categoria_clientes_cod = {};
+    dados.por_mes_categoria_clientes = {};
+    for (const row of porMesCatCliCod) {
+      const mes = String(row.mes);
+      const cods = (row.cods || []).map(Number).filter(Number.isFinite);
+      (dados.por_mes_categoria_clientes_cod[mes] || (dados.por_mes_categoria_clientes_cod[mes] = {}))[row.categoria] = cods;
+      (dados.por_mes_categoria_clientes[mes] || (dados.por_mes_categoria_clientes[mes] = {}))[row.categoria] = cods.length;
+    }
 
     const dictKg = rows => { const o = {}; for (const r of rows) if (r.k) o[r.k] = round2(num(r.kg)); return o; };
     dados.por_mes_fumokg = {};

@@ -15,7 +15,14 @@ const connectionString = `postgresql://${process.env.DB_USER}:${encodeURICompone
 //   statement_timeout                    -> mata query órfã que ficou 'active'
 //   idle_in_transaction_session_timeout  -> mata transação órfã que ficou 'idle in transaction'
 // Juntos cobrem os dois estados possíveis de um fantasma.
-const STMT_TIMEOUT_MS = Math.max(60000, parseInt(process.env.DB_STATEMENT_TIMEOUT_MS, 10) || 600000);      // 10 min
+// O teto é rede de segurança contra query órfã, NÃO limite de tempo de trabalho:
+// tem que ser maior que a etapa legítima mais lenta. Medido nesta base, o ciclo
+// completo leva ~1480s (24,7 min) e o _buildAbcd90 (janela de 90 dias) passa de
+// 10 min sozinho — com o teto em 10 min ele morria com
+// "canceling statement due to statement timeout" e a aba Clientes A-I ficava sem
+// dado. 30 min cobre a etapa mais lenta com folga e ainda mata órfã em tempo útil.
+// Se alguma etapa passar disso, sobe via DB_STATEMENT_TIMEOUT_MS em vez de remover.
+const STMT_TIMEOUT_MS = Math.max(60000, parseInt(process.env.DB_STATEMENT_TIMEOUT_MS, 10) || 1800000);     // 30 min
 const IDLE_TX_TIMEOUT_MS = Math.max(30000, parseInt(process.env.DB_IDLE_TX_TIMEOUT_MS, 10) || 120000);      // 2 min
 
 const pool = new Pool({

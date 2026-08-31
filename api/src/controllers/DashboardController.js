@@ -84,6 +84,15 @@ class DashboardController {
     res.json(cache);
   }
 
+  // Só o metadado de progresso do ETL (~400 bytes), sem o payload de 5 MB. O front
+  // consulta isto periodicamente enquanto o ciclo não terminou e rebusca /full uma
+  // única vez, quando a etapa que faltava chega. Sempre 200: "ainda não tem nada"
+  // é uma resposta legítima aqui (pronto:false), não um erro.
+  async getEtlStatus(req, res) {
+    res.set('Cache-Control', 'no-store');
+    res.json(DashboardCacheManager.getStatus());
+  }
+
   // Função auxiliar para interpretar o 'periodo' (ex: "2026_1")
   _parsePeriodo(periodo) {
     // Valores padrão de segurança (se não informar período)

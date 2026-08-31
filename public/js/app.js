@@ -21,6 +21,71 @@ Chart.defaults.font.size = 11;
 window.API_BASE_URL = window.API_BASE_URL || `http://${window.location.hostname}:4001/api/v1/dashboard`;
 window.REAL_DATA = {};
 
+// ── DIAGNÓSTICO: por que uma visão/filtro está sem dado ───────────
+// Existe porque "vazio" no painel tinha várias causas indistinguíveis na tela:
+// (a) etapa do ETL que ainda não chegou (o /full responde 200 logo após o 1º
+//     período, então _hierarquia/_estoque/_abcd90/_dowCascata podem faltar);
+// (b) recorte do escopo do usuário ainda em vôo;
+// (c) nome vindo da API de auth que não casa com a chave do cubo — a barreira de
+//     acesso então não libera ninguém e o filtro fica vazio;
+// (d) escopo legitimamente sem venda no mês.
+// Todas as quatro produziam a MESMA tela em branco. Aqui elas viram texto.
+const DIAG = {
+  filtros: {},          // key -> { total, motivo }
+  naoResolvidos: [],    // nomes do auth que não casaram no cadastro
+  cadastroVazio: false, // _hierarquia ausente
+  escopo: null,         // resumo da barreira de acesso
+  etl: null,            // último /etl-status
+  _seen: new Set(),
+
+  reset(){ this.filtros = {}; this.naoResolvidos = []; this._seen = new Set(); },
+
+  resolucaoFalhou(nome, tamanhoIndice){
+    if (tamanhoIndice === 0){ this.cadastroVazio = true; return; }  // (a), não (c)
+    const k = normNome(nome);
+    if (this._seen.has(k)) return;
+    this._seen.add(k);
+    this.naoResolvidos.push(nome);
+  },
+
+  filtro(key, total, motivo){ this.filtros[key] = { total, motivo: total ? null : motivo }; },
+
+  // Motivo de um filtro estar vazio, em ordem de precedência da causa raiz.
+  motivoVazio(key){
+    if (!window.REAL_DATA || !Object.keys(window.REAL_DATA).length) return 'dados da API ainda não carregados';
+    const pendente = (this.etl && !this.etl.completo && Array.isArray(this.etl.faltando) && this.etl.faltando.length)
+      ? this.etl.faltando.join(', ') : null;
+    if ((key === 'vend' || key === 'sup' || key === 'ger') && this.cadastroVazio)
+      return `cadastro da força de vendas (_hierarquia) ainda não veio da API${pendente ? ' — ETL pendente: ' + pendente : ''}`;
+    let carregando = false;
+    try { const p = curPeriod(); carregando = !!(p && p._carregando); } catch (e) {}
+    if (carregando) return 'recorte do seu escopo ainda carregando';
+    if (key === 'vend' && this.naoResolvidos.length)
+      return `${this.naoResolvidos.length} nome(s) da API de login não casaram com o cadastro (ex.: ${this.naoResolvidos.slice(0,3).join(' | ')}) — barreira de acesso não liberou ninguém`;
+    if (pendente) return `etapa do ETL ainda não concluída: ${pendente}`;
+    return 'nenhuma opção dentro do escopo/mês selecionados';
+  },
+
+  // Dump completo no console: window.__diag()
+  dump(){
+    const out = {
+      etl: this.etl,
+      cadastro_hierarquia: this.cadastroVazio ? 'AUSENTE' : 'ok',
+      escopo: this.escopo,
+      nomes_nao_resolvidos: this.naoResolvidos,
+      filtros: this.filtros,
+      periodo: (typeof ST !== 'undefined' ? ST.per : null),
+      mes: (typeof ST !== 'undefined' ? ST.mes : null),
+      filtros_ativos: (typeof ST !== 'undefined'
+        ? Object.fromEntries(['ger','sup','vend','cat','grp','cli','canal','status'].map(k=>[k,ST[k]]))
+        : null),
+    };
+    console.log('%c[DIAG] estado dos dados', 'font-weight:bold', out);
+    return out;
+  },
+};
+window.__diag = () => DIAG.dump();
+
 // ── TEMA CLARO / ESCURO ──────────────────────────────────────────
 // Default = claro (verde). O toggle aplica [data-theme="dark"] no <html>; cores
 // vêm das CSS variables. Persiste no localStorage. Charts acompanham.
@@ -133,65 +198,142 @@ function gerenteDoVendedor(d, vendName){ const sup=supervisorDoVendedor(d,vendNa
 
 // Lista completa da força de vendas real: full_vendedores (com venda) + ativos do
 // cadastro (REAL_DATA._hierarquia, via API) que ainda não venderam no período.
-function vendedoresReais(d){
-  const bySales = d.full_vendedores || {};
-  const map = new Map();
-  
-  // Barreira de segurança: mesma resolução canônica de applyAccessLock (casa por
-  // código/nome) para bater com as chaves reais do cubo. Leitura via pickCI porque
-  // a API de auth devolve PascalCase (Vendedores/Supervisores).
-  let allowedVends = null;
-  let allowedSups = null;
-  if (authSession) {
-    const idx = buildCanonIndex();
-    if (authSession.role === 'supervisor') {
-      // vendedoresCarteira (resolvida na API) é a fonte mais confiável; cai p/ a
-      // lista crua do login se ainda não foi carregada.
-      const vc = Array.isArray(authSession.vendedoresCarteira) && authSession.vendedoresCarteira.length
-        ? authSession.vendedoresCarteira.map(v => ({ codven: v.cod, nome: v.nome }))
-        : pickCI(authSession, 'vendedores');
-      if (Array.isArray(vc) && vc.length){
-        allowedVends = new Set(vc.map(v => resolveVend(idx, v)).filter(Boolean).map(n => n.toUpperCase().trim()));
-      }
-    }
-    if (authSession.role === 'gerente') {
-      const sups = pickCI(authSession, 'supervisores');
-      if (Array.isArray(sups) && sups.length){
-        allowedSups = new Set(sups.map(s => resolveSup(idx, s)).filter(Boolean).map(n => n.toUpperCase().trim()));
-      }
+// Escopo de vendedores/supervisores que o usuário logado pode ver, em chaves
+// NORMALIZADAS (normNome). null = sem restrição própria deste nível.
+//
+// Por que existe separado de vendedoresReais: a barreira precisa de um fallback.
+// A versão anterior montava o Set só por NOME resolvido; quando a resolução falhava
+// (índice canônico vazio porque _hierarquia não tinha chegado, ou grafia diferente
+// entre auth e cadastro), o Set saía vazio — e um Set VAZIO, no teste
+// `if (allowed && !allowed.has(x)) return`, nega TODO MUNDO. Resultado: filtro
+// Vendedor em branco, sem nenhum aviso. Agora, se o nome não casa, tentamos pelo
+// CÓDIGO (codven/codsupervisor, imune a formatação) contra a árvore do cadastro,
+// que é a fonte autoritativa. Só negamos tudo se nem o código resolver — e nesse
+// caso o motivo fica registrado no DIAG e aparece na tela.
+// sess é injetável só para inspeção/teste (window.__escopo({...})); em produção
+// sempre cai na sessão real.
+function escopoPermitido(sess){
+  const authSession = (sess !== undefined) ? sess : window.__authSession();
+  const out = { vends:null, sups:null, motivo:null };
+  if (!authSession) return out;
+  const idx = buildCanonIndex();
+
+  // Ordem: CÓDIGO (imune a formatação) → nome casado no cadastro → nome cru.
+  const resolverLista = (lista, codKeys, nameKeys, cadastro) => {
+    const nomes = new Set();
+    let brutos = 0, viaCodigo = 0, viaNome = 0, viaCru = 0;
+    (Array.isArray(lista) ? lista : []).forEach(item => {
+      brutos++;
+      const cod = pickCI(item, ...codKeys);
+      const porCod = cod != null ? cadastro.byCod.get(String(cod)) : null;
+      if (porCod){ nomes.add(normNome(porCod)); viaCodigo++; return; }
+
+      const bruto = (item && typeof item === 'object') ? pickCI(item, ...nameKeys) : item;
+      if (bruto == null || String(bruto).trim() === '') return;
+      const porNome = cadastro.byName.get(normNome(bruto));
+      if (porNome){ nomes.add(normNome(porNome)); viaNome++; return; }
+
+      // Nome desconhecido no cadastro: aceita cru (comportamento antigo, cobre o
+      // cubo tendo alguém que o cadastro não tem) e registra para o diagnóstico.
+      nomes.add(normNome(bruto)); viaCru++;
+      DIAG.resolucaoFalhou(String(bruto), cadastro.byName.size);
+    });
+    return { nomes, brutos, viaCodigo, viaNome, viaCru };
+  };
+
+  if (authSession.role === 'supervisor'){
+    // vendedoresCarteira (já resolvida contra a API de roteiro) é a fonte mais
+    // confiável; cai p/ a lista crua do login se ainda não foi carregada.
+    const vc = Array.isArray(authSession.vendedoresCarteira) && authSession.vendedoresCarteira.length
+      ? authSession.vendedoresCarteira.map(v => ({ codven: v.cod, nome: v.nome }))
+      : pickCI(authSession, 'vendedores');
+    if (Array.isArray(vc) && vc.length){
+      const r = resolverLista(vc, ['codvendedor','codven','codvend','cod'], ['vendedor','nomven','nome'],
+                              { byName: idx.vendByName, byCod: idx.vendByCod });
+      // Reforço: se o supervisor logado é identificável por código, a equipe dele
+      // no cadastro entra no escopo — cobre o caso de a API de roteiro devolver
+      // menos vendedores do que o cadastro tem (vendedor novo, sem carteira ainda).
+      const codSup = pickCI(authSession, 'codsupervisor', 'codsup');
+      const daEquipe = codSup != null ? (idx.vendsBySupCod.get(String(codSup)) || []) : [];
+      daEquipe.forEach(n => r.nomes.add(normNome(n)));
+      out.vends = r.nomes;
+      out.motivo = { nivel:'vendedor', recebidos:r.brutos, por_codigo:r.viaCodigo, por_nome:r.viaNome, nome_cru:r.viaCru,
+                     da_equipe_cadastro:daEquipe.length, liberados:r.nomes.size };
     }
   }
 
+  if (authSession.role === 'gerente'){
+    const sups = pickCI(authSession, 'supervisores');
+    if (Array.isArray(sups) && sups.length){
+      const r = resolverLista(sups, ['codsupervisor','codsup','cod'], ['supervisor','nomesupervisor','nome'],
+                              { byName: idx.supByName, byCod: idx.supByCod });
+      const codGer = pickCI(authSession, 'codgerente', 'codger');
+      const codsDaArvore = codGer != null ? (idx.supsByGerCod.get(String(codGer)) || []) : [];
+      codsDaArvore.forEach(cod => { const nm = idx.supByCod.get(cod); if (nm) r.nomes.add(normNome(nm)); });
+      out.sups = r.nomes;
+      out.motivo = { nivel:'supervisor', recebidos:r.brutos, por_codigo:r.viaCodigo, por_nome:r.viaNome, nome_cru:r.viaCru,
+                     da_arvore_cadastro:codsDaArvore.length, liberados:r.nomes.size };
+    }
+  }
+
+  // Barreira que não reconheceu NADA não é escopo, é falha de resolução — e o
+  // teste `if (allowed && !allowed.has(x)) return` transforma isso em "nega todo
+  // mundo", que na tela virava um filtro vazio sem explicação. Dois casos:
+  //   size === 0                      -> nada sequer entrou no conjunto;
+  //   só entrou nome cru, 0 por código/nome/cadastro -> entrou lixo que não casa
+  //                                      com chave nenhuma do cubo.
+  // Nos dois desligamos a barreira DESTE nível e registramos. O escopo continua
+  // garantido: ST.ger/ST.sup ficam travados por applyAccessLock e o /recorte da API
+  // devolve os números já filtrados por eles — a barreira local é uma segunda
+  // camada sobre a LISTA de opções, não a única.
+  const m = out.motivo;
+  const nadaResolveu = m && !m.por_codigo && !m.por_nome
+    && !(m.da_equipe_cadastro || m.da_arvore_cadastro);
+  ['vends','sups'].forEach(k => {
+    if (out[k] && (out[k].size === 0 || nadaResolveu)){
+      out[k] = null;
+      if (m) m.barreira_ignorada = out[k] === null && m.recebidos
+        ? `nenhum dos ${m.recebidos} ${m.nivel}(es) do login casou por código, por nome ou pela árvore do cadastro — barreira local desligada para não zerar a lista; escopo segue garantido pelo recorte da API (ST.ger/ST.sup)`
+        : 'nenhum nome/código resolveu — barreira local desligada; escopo segue garantido pelo recorte da API';
+    }
+  });
+
+  DIAG.escopo = out.motivo;
+  return out;
+}
+
+function vendedoresReais(d){
+  const bySales = d.full_vendedores || {};
+  const map = new Map();
+  const semVenda = new Set();
+  const { vends: allowedVends, sups: allowedSups } = escopoPermitido();
+
   Object.keys(bySales).forEach(n => {
-    const sup = String(bySales[n].supervisor).toUpperCase().trim();
-    const nm = String(n).toUpperCase().trim();
-    
-    // Barreira Rígida de Segurança
+    const sup = normNome(bySales[n].supervisor);
+    const nm = normNome(n);
     if (allowedVends && !allowedVends.has(nm)) return;
     if (allowedSups && !allowedSups.has(sup)) return;
-
     map.set(n, bySales[n].supervisor);
   });
-  
+
+  // Ativos do cadastro que ainda não venderam no período/escopo — é o que a
+  // legenda do filtro promete ("reais/ativos"). Depende de _hierarquia.
   const h = window.REAL_DATA && REAL_DATA._hierarquia;
   if (h && Array.isArray(h.gerentes)){
-    const comVenda = new Set(Object.keys(bySales).map(n=>n.trim().toUpperCase()));
+    const comVenda = new Set(Object.keys(bySales).map(normNome));
     h.gerentes.forEach(g=>(g.supervisores||[]).forEach(s=>{
       (s.vendedores||[]).forEach(v=>{
         if (!v || !v.nomven) return;
         const nm = String(v.nomven).trim();
-        const nmU = nm.toUpperCase();
-        const sup = String(s.nomesupervisor).toUpperCase().trim();
-        
-        // Barreira Rígida de Segurança para sem venda
-        if (allowedVends && !allowedVends.has(nmU)) return;
-        if (allowedSups && !allowedSups.has(sup)) return;
-        
-        if (!comVenda.has(nmU)) map.set(nm, s.nomesupervisor);
+        const nmN = normNome(nm);
+        const supN = normNome(s.nomesupervisor);
+        if (allowedVends && !allowedVends.has(nmN)) return;
+        if (allowedSups && !allowedSups.has(supN)) return;
+        if (!comVenda.has(nmN)){ map.set(nm, s.nomesupervisor); semVenda.add(nm); }
       });
     }));
   }
-  return [...map.entries()].map(([nome,supervisor])=>({ nome, supervisor }));
+  return [...map.entries()].map(([nome,supervisor])=>({ nome, supervisor, semVenda: semVenda.has(nome) }));
 }
 
 // ── TRAVA DE ACESSO: resolução de nomes canônicos ───────────────────────────
@@ -202,19 +344,68 @@ function vendedoresReais(d){
 // precisamos mapear o que o auth devolve → chave exata do cubo. Casamos primeiro
 // por CÓDIGO (codven/codsupervisor, imunes a formatação) e, na falta, por nome
 // caixa-alta/trim. Índice montado a partir do cadastro real (_hierarquia).
+// Normalização de nome para COMPARAÇÃO (nunca para exibição): caixa alta, sem
+// acento, espaços colapsados e sem o prefixo de código que só o cubo/cadastro usa
+// ("S20 - CHARLESTON…" e "CHARLESTON…" passam a ser a mesma chave). Sem isto, um
+// único ponto de divergência de formato entre a API de auth e o cubo derruba a
+// resolução inteira — e a barreira de acesso, ao não casar nada, esvazia o filtro.
+function normNome(s){
+  return String(s == null ? '' : s)
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')  // remove acentos
+    .toUpperCase()
+    .replace(/^[GSV]\s*\d+\s*-\s*/, '')                // "S41- WAGNER" e "S20 - WAGNER"
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Memoizado pela referência de _hierarquia: percorre a árvore inteira (~1.100
+// vendedores) e passou a ser chamado a cada render de filtro. A chave é a própria
+// referência do objeto, então a rebusca de /full (que troca REAL_DATA) invalida
+// sozinha.
+let _canonIdxCache = null, _canonIdxSrc = null;
 function buildCanonIndex(){
-  const idx = { gerByCod:new Map(), gerByName:new Map(), supByCod:new Map(), supByName:new Map(), vendByCod:new Map(), vendByName:new Map() };
+  const src = window.REAL_DATA && REAL_DATA._hierarquia;
+  if (_canonIdxCache && _canonIdxSrc === src) return _canonIdxCache;
+  const idx = _buildCanonIndexRaw();
+  _canonIdxCache = idx; _canonIdxSrc = src;
+  return idx;
+}
+
+function _buildCanonIndexRaw(){
+  const idx = { gerByCod:new Map(), gerByName:new Map(), supByCod:new Map(), supByName:new Map(), vendByCod:new Map(), vendByName:new Map(),
+                supCodByName:new Map(), vendCodByName:new Map(), vendsBySupCod:new Map(), supsByGerCod:new Map(), vazio:true };
   const h = window.REAL_DATA && REAL_DATA._hierarquia;
-  if (h && Array.isArray(h.gerentes)){
+  if (h && Array.isArray(h.gerentes) && h.gerentes.length){
+    idx.vazio = false;
     for (const g of h.gerentes){
       const gn = g.nomegerente;
-      if (gn){ idx.gerByName.set(String(gn).toUpperCase().trim(), gn); if (g.codgerente!=null) idx.gerByCod.set(String(g.codgerente), gn); }
+      if (gn){ idx.gerByName.set(normNome(gn), gn); if (g.codgerente!=null) idx.gerByCod.set(String(g.codgerente), gn); }
       for (const s of (g.supervisores||[])){
         const sn = s.nomesupervisor;
-        if (sn){ idx.supByName.set(String(sn).toUpperCase().trim(), sn); if (s.codsupervisor!=null) idx.supByCod.set(String(s.codsupervisor), sn); }
+        if (sn){
+          idx.supByName.set(normNome(sn), sn);
+          if (s.codsupervisor!=null){
+            idx.supByCod.set(String(s.codsupervisor), sn);
+            idx.supCodByName.set(normNome(sn), String(s.codsupervisor));
+          }
+        }
+        if (g.codgerente!=null && s.codsupervisor!=null){
+          const arr = idx.supsByGerCod.get(String(g.codgerente)) || [];
+          arr.push(String(s.codsupervisor)); idx.supsByGerCod.set(String(g.codgerente), arr);
+        }
         for (const v of (s.vendedores||[])){
           const vn = v.nomven;
-          if (vn){ idx.vendByName.set(String(vn).toUpperCase().trim(), vn); if (v.codven!=null) idx.vendByCod.set(String(v.codven), vn); }
+          if (vn){
+            idx.vendByName.set(normNome(vn), vn);
+            if (v.codven!=null){
+              idx.vendByCod.set(String(v.codven), vn);
+              idx.vendCodByName.set(normNome(vn), String(v.codven));
+            }
+          }
+          if (s.codsupervisor!=null && vn){
+            const arr = idx.vendsBySupCod.get(String(s.codsupervisor)) || [];
+            arr.push(vn); idx.vendsBySupCod.set(String(s.codsupervisor), arr);
+          }
         }
       }
     }
@@ -228,11 +419,18 @@ function _resolveCanon(byCod, byName, codKeys, nameKeys, obj){
     // e o cubo usa minúsculo — normalizamos as chaves do objeto p/ casar ambos.
     const lk = {}; for (const k in obj) lk[k.toLowerCase()] = obj[k];
     for (const ck of codKeys){ const c=lk[ck.toLowerCase()]; if (c!=null && byCod.has(String(c))) return byCod.get(String(c)); }
-    let nm=null; for (const nk of nameKeys){ const val=lk[nk.toLowerCase()]; if (val!=null){ nm=val; break; } }
+    let nm=null; for (const nk of nameKeys){ const val=lk[nk.toLowerCase()]; if (val!=null && String(val).trim()!==''){ nm=val; break; } }
     obj = nm;
   }
-  if (obj==null) return null;
-  return byName.get(String(obj).toUpperCase().trim()) || String(obj);
+  if (obj==null || String(obj).trim()==='') return null;
+  const hit = byName.get(normNome(obj));
+  if (hit) return hit;
+  // Não casou no cadastro. Devolvemos o nome cru (comportamento antigo, para não
+  // travar quem já funcionava por igualdade exata) MAS registramos: quando isso
+  // acontece em massa é exatamente o sintoma de "filtro vazio", e sem o registro
+  // não há como distinguir de "escopo realmente vazio".
+  DIAG.resolucaoFalhou(String(obj), byName.size);
+  return String(obj);
 }
 // codKeys/nameKeys cobrem os nomes do cubo E os do auth (codVendedor/codSupervisor);
 // o lookup em _resolveCanon é case-insensitive, então basta listar em minúsculo.
@@ -241,8 +439,27 @@ const resolveSup  = (idx,o)=>_resolveCanon(idx.supByCod, idx.supByName, ['codsup
 const resolveVend = (idx,o)=>_resolveCanon(idx.vendByCod, idx.vendByName, ['codvendedor','codven','codvend','cod'], ['vendedor','nomven','nome'], o);
 
 // Aplica a trava conforme o cargo logado, gravando SEMPRE chaves canônicas do cubo.
-function applyAccessLock(){
+// true quando o cargo logado EXIGE escopo e nenhum pôde ser determinado. Nesse
+// estado o painel não pode renderizar: com ST.ger e ST.sup vazios,
+// activeFilterCount() é 0 e curPeriod() devolve o cubo da EMPRESA INTEIRA — ou
+// seja, a falha de resolução abriria tudo em vez de fechar.
+let travaSemEscopo = false;
+
+// preservarSelecao: reaplica a trava SEM descartar o que o usuário escolheu à mão.
+// Necessário porque o vigia do ETL rebusca /full várias vezes por ciclo e chamava
+// esta função a cada rebusca — como ela zera ST.sup/ST.vend por definição, a
+// seleção do usuário sumia de 30 em 30 segundos e cada reset disparava um recorte
+// novo, deixando os filtros piscando em branco. Na rebusca só interessa recalcular
+// a trava quando ela AINDA não está satisfeita (ex.: _hierarquia acabou de chegar
+// e o nível do cargo continua vazio).
+function applyAccessLock(preservarSelecao){
+  travaSemEscopo = false;
   if (!authSession) return;
+  if (preservarSelecao){
+    const jaTravado = (authSession.role === 'gerente'    && ST.ger.length)
+                   || (authSession.role === 'supervisor' && ST.sup.length);
+    if (jaTravado) return;   // trava vale e a seleção do usuário fica de pé
+  }
   const idx = buildCanonIndex();
   if (authSession.role === 'gerente'){
     // Passa o próprio authSession p/ casar por código (codGerente) + nome.
@@ -251,6 +468,7 @@ function applyAccessLock(){
     // Níveis abaixo começam DESMARCADOS (= todos, dentro do escopo do gerente).
     ST.sup = [];
     ST.vend = [];
+    if (!ST.ger.length) travaSemEscopo = true;
   } else if (authSession.role === 'supervisor'){
     // authSession tem codSupervisor + supervisor no topo — casa por código primeiro.
     let sup = resolveSup(idx, authSession);
@@ -261,12 +479,23 @@ function applyAccessLock(){
       const sset = new Set();
       (Array.isArray(vends) ? vends : []).map(v=>resolveVend(idx,v)).filter(Boolean)
         .forEach(n=>{ if (fv[n] && fv[n].supervisor) sset.add(fv[n].supervisor); });
+      // 2ª tentativa: equipe do supervisor na árvore do cadastro, por CÓDIGO.
+      if (!sset.size){
+        const codSup = pickCI(authSession, 'codsupervisor', 'codsup');
+        const nomeSup = codSup != null ? idx.supByCod.get(String(codSup)) : null;
+        if (nomeSup) sset.add(nomeSup);
+      }
       if (sset.size) ST.sup = [...sset];
     } else {
       ST.sup = [sup];
     }
     // Vendedor fica liberado e desmarcado (opções já restritas ao supervisor).
     ST.vend = [];
+    if (!ST.sup.length) travaSemEscopo = true;
+  }
+  if (travaSemEscopo){
+    console.error('[trava] escopo do usuário não resolvido — painel bloqueado. Sessão:',
+      Object.keys(authSession || {}), 'cadastro carregado:', !buildCanonIndex().vazio);
   }
 }
 
@@ -507,7 +736,7 @@ function periodoInicial(){
   return disponivel || alvo;
 }
 
-let ST = { per:periodoDoMesAtual(), mes:null, ger:[], sup:[], vend:[], cat:[], grp:[], cli:[], canal:[], inadimplente:[], status:[] };
+let ST = { per:periodoDoMesAtual(), mes:null, ger:[], sup:[], vend:[], cat:[], grp:[], cli:[], canal:[], status:[] };
 
 function curPeriodRaw(){ return REAL_DATA[ST.per]; }
 // TODAS as abas leem o período por aqui. Quando existe recorte carregado (consulta
@@ -543,6 +772,7 @@ function recorteVazio(){
     n_clientes:0, n_vendedores:0, ticket_pedido:0,
     por_mes:{}, por_categoria:{}, por_grupo:{}, por_gerente:{}, por_supervisor:{},
     full_vendedores:{}, por_dia:{}, por_dia_categoria:{}, por_mes_clientes:{},
+    por_mes_categoria_clientes_cod:{}, por_mes_categoria_clientes:{},
     por_mes_fumokg:{}, realizado_fumokg:{ por_gerente:{}, por_supervisor:{}, por_vendedor:{} },
     clientes:[], top_produtos:[], vendedores:[],
     top_clientes_cash:[], top_produtos_cash:[], top_vendedores_cash:[],
@@ -571,6 +801,12 @@ function mesclarRecorte(p, rec){
     por_dia: rec.por_dia,
     por_dia_categoria: rec.por_dia_categoria,
     por_mes_clientes: rec.por_mes_clientes,
+    // POSITIVAÇÃO: sem estas duas o merge mantinha os códigos do cubo da EMPRESA
+    // sobre a receita já recortada — positivação de todo mundo contra faturamento
+    // de um gerente. `|| {}` e não `|| p.<campo>`: cair no cubo aqui é justamente
+    // o vazamento de escopo que se quer evitar.
+    por_mes_categoria_clientes_cod: rec.por_mes_categoria_clientes_cod || {},
+    por_mes_categoria_clientes: rec.por_mes_categoria_clientes || {},
     // FUMO KG: sem isso a aba Meta comparava meta do escopo com realizado da empresa.
     por_mes_fumokg: rec.por_mes_fumokg,
     realizado_fumokg: rec.realizado_fumokg,
@@ -597,7 +833,7 @@ function mesclarRecorte(p, rec){
   return o;
 }
 function labelJoin(arr){ return arr.length<=2 ? arr.join(" + ") : arr.length+" selecionados"; }
-function activeFilterCount(){ return ["ger","sup","vend","cat","grp","cli","canal","inadimplente","status"].filter(k=>ST[k].length>0).length; }
+function activeFilterCount(){ return ["ger","sup","vend","cat","grp","cli","canal","status"].filter(k=>ST[k].length>0).length; }
 
 // ── ESCOPO ATIVO (soma real dentro de UMA dimensão) ─────────────
 function sumDict(dict, keys){
@@ -644,7 +880,7 @@ function cliCodesFromST(){
 // Hierarquia sozinha e Categoria (+hierarquia) continuam vindo do cubo: é exato e
 // instantâneo.
 function precisaRecorte(){
-  if (ST.canal.length || ST.inadimplente.length || ST.status.length) return true;
+  if (ST.canal.length || ST.status.length) return true;
   if (ST.cli.length) return true;
   if (ST.grp.length && hierLevelActive()) return true;
   return false;
@@ -656,7 +892,7 @@ function recorteQuery(){
   add('cli', cliCodesFromST());
   add('ger', ST.ger); add('sup', ST.sup); add('vend', ST.vend);
   add('cat', ST.cat); add('grp', ST.grp);
-  add('canal', ST.canal); add('inad', ST.inadimplente); add('status', ST.status);
+  add('canal', ST.canal); add('status', ST.status);
   // O painel é mensal: o recorte já vem filtrado pelo mês, então TODAS as abas
   // (inclusive as que não tinham grão mensal no cubo) passam a refletir o mês.
   if (ST.mes != null) p.set('mes', String(ST.mes));
@@ -701,12 +937,13 @@ function ensureCliScope(){
         if (j && j.error) throw new Error(j.error);
         CLI_SCOPE = { key, dados: j };
         recorteErro = null;
-        if (cliScopePending === key){ cliScopePending = null; renderAll(); }
+        if (cliScopePending === key){ cliScopePending = null; atualizarFiltrosEDiag(); renderAll(); }
       })
       .catch(e => {
         console.warn('[recorte] falha ao consultar:', e.message);
         recorteErro = e.message;
         if (cliScopePending === key) cliScopePending = null;
+        atualizarFiltrosEDiag();
         renderAll();
       });
     p = cliScopeFetch;
@@ -765,7 +1002,6 @@ function recorteLabel(){
   if (ST.grp.length) partes.push("Grupo: "+labelJoin(ST.grp));
   if (ST.cat.length) partes.push("Categoria: "+labelJoin(ST.cat));
   if (ST.canal.length) partes.push("Canal: "+labelJoin(ST.canal));
-  if (ST.inadimplente.length) partes.push("Inadimplente: "+labelJoin(ST.inadimplente));
   if (ST.status.length) partes.push("Status: "+labelJoin(ST.status));
   return partes.join(" · ");
 }
@@ -948,18 +1184,33 @@ function closeAllMs(exceptId){
 }
 document.addEventListener("click", e => { if (!e.target.closest(".ms-wrap")) { closeAllMs(); } });
 
-function buildMultiSelect(elId, options, selectedArr, placeholderAll, onChange){
+// options: array de string OU de { val, label, hint, badge }.
+//   val   -> valor guardado em ST (tem que ser a chave exata do cubo)
+//   label -> texto exibido
+//   hint  -> texto extra pesquisável e mostrado em cinza (ex.: código, supervisor)
+//   badge -> etiqueta curta (ex.: "sem venda")
+// meta.emptyMsg é o motivo mostrado quando a lista sai vazia — sem isso o usuário
+// via só "Nenhuma opção" e não tinha como saber se era falta de dado, ETL em
+// andamento ou escopo sem venda.
+function buildMultiSelect(elId, options, selectedArr, placeholderAll, onChange, meta){
   const wrap = document.getElementById(elId);
   if (!wrap) return;
+  const opts = (options||[]).map(o => typeof o === 'string' ? { val:o, label:o } : o);
   const label = selectedArr.length===0 ? placeholderAll : labelJoin(selectedArr);
   let disabledStr = "";
   if (authSession) {
     if (elId === 'ms-ger' && (authSession.role === 'gerente' || authSession.role === 'supervisor')) disabledStr = "disabled";
     if (elId === 'ms-sup' && authSession.role === 'supervisor') disabledStr = "disabled";
   }
+  const emptyMsg = (meta && meta.emptyMsg) || 'Nenhuma opção';
+  // Contador de opções disponíveis: distingue "todos = 9" de "todos = 0" direto no
+  // botão fechado, que é onde o usuário olha primeiro.
+  const disp = opts.length
+    ? `<span class="ms-avail" title="opções disponíveis neste escopo/mês">${opts.length}</span>`
+    : `<span class="ms-avail ms-avail-zero" title="${escAttr(emptyMsg)}">0</span>`;
 
   wrap.innerHTML = `
-    <button type="button" class="ms-btn" ${disabledStr}><span class="ms-label">${escAttr(label)}</span>${selectedArr.length?`<span class="ms-count">${selectedArr.length}</span>`:''}<span class="ms-arrow">▾</span></button>
+    <button type="button" class="ms-btn" ${disabledStr}><span class="ms-label">${escAttr(label)}</span>${selectedArr.length?`<span class="ms-count">${selectedArr.length}</span>`:disp}<span class="ms-arrow">▾</span></button>
     <div class="ms-dropdown">
       <input class="ms-search" placeholder="🔍 Buscar...">
       <div class="ms-list"></div>
@@ -972,8 +1223,11 @@ function buildMultiSelect(elId, options, selectedArr, placeholderAll, onChange){
 
   function renderList(filterText){
     const ft = (filterText||"").toLowerCase();
-    const filtered = options.filter(o=>o.toLowerCase().includes(ft));
-    list.innerHTML = filtered.map(o=>`<div class="ms-opt${selectedArr.includes(o)?' selected':''}" data-val="${escAttr(o)}"><input type="checkbox" ${selectedArr.includes(o)?'checked':''}><span>${escAttr(o)}</span></div>`).join("") || `<div class="ms-opt" style="cursor:default">Nenhuma opção</div>`;
+    const filtered = opts.filter(o => (o.label + ' ' + (o.hint||'')).toLowerCase().includes(ft));
+    list.innerHTML = filtered.map(o=>{
+      const sel = selectedArr.includes(o.val);
+      return `<div class="ms-opt${sel?' selected':''}" data-val="${escAttr(o.val)}"><input type="checkbox" ${sel?'checked':''}><span>${escAttr(o.label)}${o.hint?`<i class="ms-hint">${escAttr(o.hint)}</i>`:''}${o.badge?`<b class="ms-badge">${escAttr(o.badge)}</b>`:''}</span></div>`;
+    }).join("") || `<div class="ms-opt ms-empty" style="cursor:default">${escAttr(opts.length ? 'Nenhuma opção casa com a busca' : emptyMsg)}</div>`;
   }
   renderList(msOpenId===elId ? msOpenSearch : "");
 
@@ -1011,6 +1265,26 @@ function buildMultiSelect(elId, options, selectedArr, placeholderAll, onChange){
 }
 
 // ── CONFIG DE FILTROS + CASCATA ──────────────────────────────────
+// Gerente de um supervisor olhando primeiro o cubo (por_supervisor[].gerente) e,
+// na falta, a árvore do cadastro (_hierarquia). O supervisor pode existir só num
+// dos dois: no cubo há supervisores sem cadastro ativo ("KEY ACCOUNT") e no
+// cadastro há supervisor ativo que não vendeu no período. A comparação é
+// normalizada porque as duas fontes divergem em prefixo/acento.
+function gerenteDoSupervisorAmplo(d, supNome){
+  const viaCubo = d && d.por_supervisor && d.por_supervisor[supNome];
+  if (viaCubo && viaCubo.gerente) return viaCubo.gerente;
+  const h = window.REAL_DATA && REAL_DATA._hierarquia;
+  if (h && Array.isArray(h.gerentes)){
+    const alvo = normNome(supNome);
+    for (const g of h.gerentes){
+      for (const s of (g.supervisores||[])){
+        if (normNome(s.nomesupervisor) === alvo) return g.nomegerente;
+      }
+    }
+  }
+  return null;
+}
+
 const FILTERS = {
   ger:  { elId:"ms-ger",  placeholder:"Gerente — todos",              dependents:["sup","vend","cli"],
           getOptions:d=>Object.keys(d.por_gerente).sort() },
@@ -1018,28 +1292,30 @@ const FILTERS = {
           getOptions:d=>Object.keys(d.por_supervisor).filter(s=>ST.ger.length===0||ST.ger.includes(d.por_supervisor[s].gerente)).sort() },
   vend: { elId:"ms-vend", placeholder:"Vendedor — todos (reais/ativos)", dependents:["cli"],
           getOptions:d=>{
-            const list = vendedoresReais(d).filter(v=>{
-              if (ST.sup.length && !ST.sup.includes(v.supervisor)) return false;
-              if (ST.ger.length){ 
-                let ger=null;
-                const sup=d.por_supervisor[v.supervisor]; 
-                if (sup) ger=sup.gerente;
-                else {
-                  const h = window.REAL_DATA && REAL_DATA._hierarquia;
-                  if (h && Array.isArray(h.gerentes)) {
-                    for (const g of h.gerentes) {
-                      for (const s of g.supervisores || []) {
-                        if (s.nomesupervisor === v.supervisor) { ger = g.nomegerente; break; }
-                      }
-                      if (ger) break;
-                    }
-                  }
-                }
-                if(!ger||!ST.ger.includes(ger)) return false; 
-              }
-              return true;
+            const idx = buildCanonIndex();
+            const supSel = new Set(ST.sup.map(normNome));
+            const gerSel = new Set(ST.ger.map(normNome));
+            const vistos = new Set();
+            const out = [];
+            vendedoresReais(d).forEach(v=>{
+              if (supSel.size && !supSel.has(normNome(v.supervisor))) return;
+              if (gerSel.size && !gerSel.has(normNome(gerenteDoSupervisorAmplo(d, v.supervisor)))) return;
+              const k = v.nome;
+              if (vistos.has(k)) return;
+              vistos.add(k);
+              const cod = idx.vendCodByName.get(normNome(v.nome));
+              out.push({
+                val: v.nome,
+                label: v.nome,
+                // Código entra como hint (pesquisável) em vez de ir para o rótulo:
+                // o valor precisa continuar sendo a chave EXATA do cubo.
+                hint: [cod ? '#' + cod : null, v.supervisor].filter(Boolean).join(' · '),
+                badge: v.semVenda ? 'sem venda no mês' : null,
+              });
             });
-            return [...new Set(list.map(v=>v.nome))].sort();
+            // Quem vendeu primeiro; ativos sem venda no fim, ambos em ordem alfabética.
+            out.sort((a,b)=> (a.badge?1:0)-(b.badge?1:0) || a.label.localeCompare(b.label,'pt-BR'));
+            return out;
           } },
   cat:  { elId:"ms-cat",  placeholder:"Categoria — todas",            dependents:["grp"],
           getOptions:d=>Object.keys(d.por_categoria).sort() },
@@ -1049,33 +1325,122 @@ const FILTERS = {
           getOptions:d=>{ const carteira = authClienteNames(); return carteira || d.top_clientes.map(c=>c.nome); } },
   canal: { elId:"ms-canal", placeholder:"Canal de Vendas — todos",    dependents:[],
           getOptions:d=>Object.keys(d.por_canal || {}).sort() },
-  inadimplente: { elId:"ms-inadimplente", placeholder:"Inadimplente (S/N)", dependents:[],
-          getOptions:d=>Object.keys(d.por_inadimplente || {}).sort() },
   status: { elId:"ms-status", placeholder:"Status — todos",           dependents:[],
           getOptions:d=>Object.keys(d.por_status || {}).sort() },
 };
 
+// Valores de uma lista de opções (aceita string simples ou objeto rico).
+function optVals(options){ return (options||[]).map(o => typeof o === 'string' ? o : o.val); }
+
 function renderFilterWidget(key){
   const d = curPeriod();
   const cfg = FILTERS[key];
-  buildMultiSelect(cfg.elId, cfg.getOptions(d), ST[key], cfg.placeholder, (newSel) => {
+  const options = cfg.getOptions(d) || [];
+  const emptyMsg = options.length ? null : DIAG.motivoVazio(key);
+  DIAG.filtro(key, options.length, emptyMsg);
+  buildMultiSelect(cfg.elId, options, ST[key], cfg.placeholder, (newSel) => {
     ST[key] = newSel;
     renderFilterWidget(key); // refresh own button label/count (preserves open state via msOpenId)
     cfg.dependents.forEach(dep => {
-      const valid = new Set(FILTERS[dep].getOptions(d));
+      const valid = new Set(optVals(FILTERS[dep].getOptions(d)));
       ST[dep] = ST[dep].filter(v=>valid.has(v));
       renderFilterWidget(dep);
     });
     renderAll();
-  });
+  }, { emptyMsg });
 }
 
 function populateFilters(){
+  DIAG.reset();
   Object.keys(FILTERS).forEach(renderFilterWidget);
   const d = curPeriod();
   document.getElementById("topPeriodo").textContent = d.label;
   document.getElementById("sbFootTxt").textContent = `Base: ${fN(d.linhas)} linhas reais (API) — ${d.label}`;
   populateMesGlobalFilter();
+  renderDiagBox();
+}
+
+// ── Painel de diagnóstico ────────────────────────────────────────
+// Responde "onde não tem dado e por quê" sem abrir o console. Só aparece quando
+// existe algo a relatar.
+// Texto para a aba que ficou sem sua etapa do ETL. Antes era um "Dados não
+// disponíveis." seco, indistinguível de "não existe esse dado no banco".
+function motivoEtapaAusente(etapa){
+  const etl = DIAG.etl;
+  if (etl && Array.isArray(etl.faltando) && etl.faltando.includes('_' + etapa)){
+    const outras = etl.faltando.filter(k => k !== '_' + etapa).map(k=>k.replace(/^_/,''));
+    return `Etapa "${etapa}" do ETL ainda não concluída no servidor — esta aba se preenche sozinha quando terminar`
+         + (outras.length ? ` (também pendente: ${outras.join(', ')}).` : '.');
+  }
+  if (etl && etl.completo)
+    return `Sem dado: o ETL concluiu o ciclo e não produziu a etapa "${etapa}" — verificar "[ETL] ${etapa} falhou" no log da API.`;
+  return `Dados de "${etapa}" não disponíveis (aguardando a API).`;
+}
+
+const ETAPA_EXPLICA = {
+  hierarquia: 'cadastro da força de vendas — sem ele os filtros Gerente/Supervisor/Vendedor não resolvem nomes do login',
+  estoque:    'aba Estoque e Produtos Parados',
+  abcd90:     'abas Clientes A-I / Riscos (curva ABCD de 90 dias)',
+  dowCascata: 'Vendas por Dia da Semana sem filtro de hierarquia',
+  inadimplencia: 'aba Inadimplência por Carteira',
+};
+
+function renderDiagBox(){
+  const box = document.getElementById('diagBox');
+  if (!box) return;
+  const itens = [];
+
+  const etl = DIAG.etl;
+  if (etl && !etl.completo){
+    const faltando = (etl.faltando || []).map(k => k.replace(/^_/, ''));
+    const etapas = faltando.filter(k => ETAPA_EXPLICA[k]);
+    const periodos = faltando.filter(k => !ETAPA_EXPLICA[k]);
+    if (periodos.length) itens.push(`<li><b>Períodos ainda montando:</b> ${periodos.join(', ')}</li>`);
+    etapas.forEach(k => itens.push(`<li><b>${k}</b> ainda não chegou — afeta ${ETAPA_EXPLICA[k]}.</li>`));
+    if (faltando.length) itens.push(`<li>O ETL leva ~25 min no boot. Esta tela se atualiza sozinha quando as etapas chegam.</li>`);
+  }
+
+  if (DIAG.cadastroVazio && !(etl && (etl.faltando||[]).includes('_hierarquia')))
+    itens.push('<li><b>Cadastro (_hierarquia) ausente</b> no payload da API, e o ETL diz que já terminou — verificar <code>[ETL] hierarquia falhou</code> no log da API.</li>');
+
+  const esc = DIAG.escopo;
+  if (esc){
+    if (esc.barreira_ignorada)
+      itens.push(`<li><b>Escopo de acesso não resolveu:</b> ${esc.recebidos} ${esc.nivel}(es) vindos do login, nenhum casou por código nem por nome. Barreira local desligada; o recorte da API continua limitando ao seu escopo.</li>`);
+    else if (esc.nome_cru)
+      itens.push(`<li><b>${esc.nome_cru} ${esc.nivel}(es)</b> do login não existem no cadastro (aceitos pelo nome cru). Códigos casados: ${esc.por_codigo}, nomes casados: ${esc.por_nome}.</li>`);
+  }
+
+  if (DIAG.naoResolvidos.length)
+    itens.push(`<li><b>Nomes sem correspondência no cadastro:</b> ${DIAG.naoResolvidos.slice(0,5).map(n=>`<code>${escAttr(n)}</code>`).join(' ')}${DIAG.naoResolvidos.length>5?` +${DIAG.naoResolvidos.length-5}`:''}</li>`);
+
+  // Filtros vazios porque o recorte está em vôo NÃO são defeito: é o estado normal
+  // de meio segundo em que o painel se recusa a mostrar dado fora do seu escopo.
+  // Listar um item por filtro transformava isso num alarme de 4 linhas. Vira uma
+  // linha só, e o cabeçalho não conta como problema.
+  const vazios = Object.entries(DIAG.filtros).filter(([, v]) => !v.total);
+  const carregando = vazios.filter(([, v]) => /ainda carregando/.test(v.motivo || ''));
+  const problemas = vazios.filter(([, v]) => !/ainda carregando/.test(v.motivo || ''));
+
+  problemas.forEach(([k, v]) => {
+    itens.push(`<li>Filtro <b>${k}</b> sem opções — ${escAttr(v.motivo || 'motivo desconhecido')}.</li>`);
+  });
+
+  const nProblemas = itens.length;
+  if (carregando.length){
+    itens.push(`<li>Carregando o recorte do seu escopo — ${carregando.map(([k])=>`<b>${k}</b>`).join(', ')} se preenchem em seguida.</li>`);
+  }
+
+  if (!itens.length){ box.style.display = 'none'; return; }
+  box.style.display = 'block';
+  // Só conta no título o que exige ação; carregamento não entra na conta.
+  document.getElementById('diagTitle').textContent = nProblemas
+    ? `Diagnóstico (${nProblemas})`
+    : 'Carregando dados…';
+  document.getElementById('diagBody').innerHTML =
+    `<ul>${itens.join('')}</ul><div style="margin-top:6px;color:var(--sb-t3)">Detalhe completo: <code>__diag()</code> no console.</div>`;
+  const tog = document.getElementById('diagToggle');
+  if (tog && !tog._wired){ tog._wired = true; tog.onclick = () => box.classList.toggle('open'); }
 }
 // Filtro global de Mês (barra lateral) — reaproveita acompAvailableMonths (mesma
 // lista de meses com dado real usada na aba Acompanhamento de Meta).
@@ -1156,10 +1521,28 @@ function showMod(id, el){
   document.getElementById("topSection").textContent = el.querySelector(".nav-txt").textContent;
 }
 
+// Re-renderiza as LISTAS DE OPÇÕES dos filtros e o painel de diagnóstico.
+//
+// renderAll() só redesenha as abas — nunca os widgets de filtro. Com escopo ativo,
+// curPeriod() devolve um período VAZIO enquanto o recorte está em vôo, então os
+// widgets desenhados nesse instante ficavam congelados com zero opções mesmo depois
+// do recorte chegar: era exatamente o "Categoria — todas (0) / Grupo — todos (0)"
+// que aparecia depois de trocar de vendedor, junto com o diagnóstico preso em
+// "carregando". Chamado quando o recorte resolve (ou falha).
+//
+// Não chama populateMesGlobalFilter de propósito: aquela função pode reescrever
+// ST.per/ST.mes, e mexer no mês dentro de um callback assíncrono trocaria o período
+// debaixo do usuário.
+function atualizarFiltrosEDiag(){
+  DIAG.reset();
+  Object.keys(FILTERS).forEach(renderFilterWidget);
+  renderDiagBox();
+}
+
 function renderAll(){
   // Cliente selecionado → garante o recorte real vindo da API (re-renderiza ao chegar).
   ensureCliScope();
-  renderVisao(); renderComp(); renderMargemCash(); renderObjetivos(); renderMetasExtra(); renderDias(); renderDowCascata(); renderRank(); renderMix(); renderAbcd(); renderPlanos(); renderEstoque(); renderProdutosParadosVend(); renderProdutosLetraP(); renderPagamento(); renderRiscoOport(); renderRiscoOportCat(); renderCascata(); renderQual();
+  renderVisao(); renderComp(); renderMargemCash(); renderObjetivos(); renderMetasExtra(); renderDias(); renderDowCascata(); renderRank(); renderMix(); renderAbcd(); renderPlanos(); renderEstoque(); renderProdutosParadosVend(); renderProdutosLetraP(); renderPagamento(); renderInadimplencia(); renderRiscoOport(); renderRiscoOportCat(); renderCascata(); renderQual();
 }
 
 // O mês selecionado é o mês CORRENTE? Nesse caso o realizado é parcial (só os dias
@@ -2137,7 +2520,16 @@ function buildCategoriaTable(d, prev, meses, level, names){
   // (Set) os códigos dos meses selecionados antes de contar.
   const nCliCatSel = {};
   const prevNCliCatSel = {};
-  if (!level){
+  // Antes isto rodava só com `!level`, ou seja, nunca para um usuário logado — todo
+  // gerente/supervisor tem escopo travado, então `level` está sempre preenchido e a
+  // Positivação saía "—". Agora roda em qualquer nível: com recorte ativo, o
+  // por_mes_categoria_clientes_cod já vem filtrado pelo escopo (ver
+  // DashboardRecorteService), então contar os códigos distintos dele É a positivação
+  // do recorte. A exceção é o recorte ainda em vôo — aí não há insumo e segue "—",
+  // que é honesto, em vez de mostrar zero.
+  const positivacaoDisponivel = !(d._carregando) &&
+    (!!d.por_mes_categoria_clientes_cod && Object.keys(d.por_mes_categoria_clientes_cod).length > 0);
+  if (positivacaoDisponivel){
     const somaDistinta = (period, mesesSel) => {
       const out = {};
       if (!period.por_mes_categoria_clientes_cod){
@@ -2163,6 +2555,33 @@ function buildCategoriaTable(d, prev, meses, level, names){
     Object.assign(nCliCatSel, somaDistinta(d, meses));
     if (prev) Object.assign(prevNCliCatSel, somaDistinta(prev, meses));
   }
+
+  // Par de células "Bonificação" + "% Bonif. x Venda". valor null = a etapa não
+  // existe no cubo carregado (cache antigo) — aí sim mostra "—"; 0 é zero de
+  // verdade e aparece como R$ 0,00, que é informação diferente de "sem dado".
+  const celulasBonificacao = (valor, receita) => {
+    if (valor == null) return `<td class="tv"><span style="color:var(--t3)" title="cubo sem a etapa de bonificação — recarregue após o próximo ciclo do ETL">—</span></td><td class="tv"><span style="color:var(--t3)">—</span></td>`;
+    const pct = receita > 0 ? (valor / receita * 100) : null;
+    return `<td class="tv">${fF(valor)}</td><td class="tv">${pct!=null?fPct(pct):'<span style="color:var(--t3)">—</span>'}</td>`;
+  };
+
+  // Bonificação por categoria nos meses selecionados, no nível hierárquico ativo.
+  // Fonte: d.bonificacao (codtpo 6/19 — fora do BASE_CTE, ver _buildBonificacao no
+  // ETL). Com filtro de Gerente/Supervisor/Vendedor soma as entidades escolhidas;
+  // sem filtro usa o agregado da empresa.
+  const bonifCatSel = (() => {
+    const b = d.bonificacao;
+    if (!b || !b.por_mes_categoria) return null;   // cubo antigo, sem a etapa
+    const fontes = level && names && names.length
+      ? names.map(n => (b.hier && b.hier[level] && b.hier[level][n]) || {})
+      : [b.por_mes_categoria];
+    const out = {};
+    fontes.forEach(fonte => meses.forEach(mes => {
+      const mc = fonte[mes] || {};
+      Object.keys(mc).forEach(cat => { out[cat] = (out[cat] || 0) + (mc[cat].r || 0); });
+    }));
+    return out;
+  })();
 
   function catRow(nome, metaVal, r, c, prevR, prevC, trend, trendC, metaCash, nCliCat, prevNCliCat){
     const pctReal = metaVal>0 ? r/metaVal*100 : null;
@@ -2193,17 +2612,25 @@ function buildCategoriaTable(d, prev, meses, level, names){
       <td class="tv">${(margem!=null&&prevMargem!=null)?deltaPP(margem,prevMargem,false):'<span style="color:var(--t3)">sem base</span>'}</td>
       <td class="tv">${nCliCat!=null?fN(nCliCat):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${prevNCliCat!=null?fN(prevNCliCat):'<span style="color:var(--t3)">—</span>'}</td>
       <td class="tv">${nCliCat!=null?deltaPillSmall(nCliCat,prevNCliCat):'<span style="color:var(--t3)">—</span>'}</td>
-      <td class="tv"><span style="color:var(--t3)">—</span></td><td class="tv"><span style="color:var(--t3)">—</span></td>
+      ${celulasBonificacao(bonifCatSel ? (bonifCatSel[nome]||0) : null, r)}
       <td class="tv">${estoque!=null?fF(estoque):'<span style="color:var(--t3)">—</span>'}</td></tr>`;
   }
   const catBodyRows = catNames.slice().sort((a,b)=>(metaCatSel[b]||0)-(metaCatSel[a]||0)).map(cat=>{
     const agg = realCatSel[cat]||{r:0,c:0}; const pagg = prevRealCatSel[cat];
     const trend = perMes.reduce((s,pm)=>s+tendencia((pm.catAgg[cat]&&pm.catAgg[cat].r)||0, d, pm.mes),0);
     const trendC = perMes.reduce((s,pm)=>s+tendencia((pm.catAgg[cat]&&pm.catAgg[cat].c)||0, d, pm.mes),0);
-    return catRow(cat, metaCatSel[cat]||0, agg.r, agg.c, pagg?pagg.r:null, pagg?pagg.c:null, trend, trendC, metaCashCatSel[cat]||0, level?null:(nCliCatSel[cat]||0), level?null:(prevNCliCatSel[cat]||0));
+    return catRow(cat, metaCatSel[cat]||0, agg.r, agg.c, pagg?pagg.r:null, pagg?pagg.c:null, trend, trendC, metaCashCatSel[cat]||0, positivacaoDisponivel?(nCliCatSel[cat]||0):null, positivacaoDisponivel?(prevNCliCatSel[cat]||0):null);
   }).join("");
-  const totalNCli = level?null:catNames.reduce((s,c)=>s+(nCliCatSel[c]||0),0);
-  const prevTotalNCli = level?null:catNames.reduce((s,c)=>s+(prevNCliCatSel[c]||0),0);
+  // Estoque Box do TOTAL: soma o snapshot das categorias exibidas (a linha de
+  // total mostrava "—" mesmo com todas as categorias preenchidas).
+  const totalEstoqueBox = (REAL_DATA._estoque && REAL_DATA._estoque.por_categoria)
+    ? catNames.reduce((s,c)=>{
+        const e = REAL_DATA._estoque.por_categoria[c];
+        return s + ((e && e.valor_carga) || 0);
+      }, 0)
+    : null;
+  const totalNCli = positivacaoDisponivel?catNames.reduce((s,c)=>s+(nCliCatSel[c]||0),0):null;
+  const prevTotalNCli = positivacaoDisponivel?catNames.reduce((s,c)=>s+(prevNCliCatSel[c]||0),0):null;
   const totalMetaCash = catNames.reduce((s,c)=>s+(metaCashCatSel[c]||0),0);
   const totalCash = totalRealCat-totalCustoCat;
   const totalMetaMargemPct = totalMetaCat>0 ? totalMetaCash/totalMetaCat*100 : null;
@@ -2223,8 +2650,8 @@ function buildCategoriaTable(d, prev, meses, level, names){
     <td class="tv">${(totalMargemGeral!=null&&prevTotalMargemGeral!=null)?deltaPP(totalMargemGeral,prevTotalMargemGeral,false):'<span style="color:var(--t3)">sem base</span>'}</td>
     <td class="tv">${totalNCli!=null?fN(totalNCli):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${prevTotalNCli!=null?fN(prevTotalNCli):'<span style="color:var(--t3)">—</span>'}</td>
     <td class="tv">${totalNCli!=null?deltaPillSmall(totalNCli,prevTotalNCli):'<span style="color:var(--t3)">—</span>'}</td>
-    <td class="tv"><span style="color:var(--t3)">—</span></td><td class="tv"><span style="color:var(--t3)">—</span></td>
-    <td class="tv"><span style="color:var(--t3)">—</span></td></tr>`;
+    ${celulasBonificacao(bonifCatSel ? catNames.reduce((s,c)=>s+(bonifCatSel[c]||0),0) : null, totalRealCat)}
+    <td class="tv">${totalEstoqueBox!=null?fF(totalEstoqueBox):'<span style="color:var(--t3)">—</span>'}</td></tr>`;
   const html = `<thead><tr><th>% Peso Meta</th><th>% Peso Real</th><th>Categoria</th><th class="tv">Meta</th><th class="tv">Realizado</th><th class="tv">% Real</th><th class="tv">Tendência</th><th class="tv">% Tendência</th><th class="tv">Realizado ano ant.</th><th class="tv">Δ Fat. vs ano ant.</th><th class="tv">Meta Cash Margem</th><th class="tv">Real Cash Margem</th><th class="tv">% Real Cash Margem</th><th class="tv">Tendência Cash Margem</th><th class="tv">% Tendência Cash Margem</th><th class="tv">Meta Margem %</th><th class="tv">Margem %</th><th class="tv">Margem % ano ant.</th><th class="tv">Δ Margem vs ano ant.</th><th class="tv">Positivação</th><th class="tv">Positivação ano ant.</th><th class="tv">Δ Positivação</th><th class="tv">Bonificação</th><th class="tv">% Bonif. x Venda</th><th class="tv">Estoque Box (snapshot)</th></tr></thead><tbody>${catBodyRows}${totalRow}</tbody>`;
 
   return { html, totalMetaCat, totalRealCat, totalCustoCat, totalTrend, totalTrendCash, totalMetaCash, totalCash, totalMetaMargemPct, prevTotalRealCat, prevTotalCustoCat, totalMargemGeral, prevTotalMargemGeral, realCatMonthNote };
@@ -2355,9 +2782,16 @@ function renderObjetivos(){
   // Positivação (clientes ativos) por categoria conta código de cliente
   // DISTINTO em todo o período selecionado (união dos meses, não soma) — ver
   // buildCategoriaTable.
-  document.getElementById('objCashNote').innerHTML = level
-    ? `<div class="alert">⚠ Positivação por categoria não está disponível recortada por ${level} — sem esse cubo no ETL. Mostrando "—".</div>`
-    : '';
+  // O aviso agora depende de haver ou não o insumo, não do nível: com recorte
+  // carregado a positivação é calculada em qualquer nível (o recorte devolve os
+  // códigos de cliente por mês+categoria já filtrados pelo escopo).
+  {
+    const p = curPeriod();
+    const temCods = !!p.por_mes_categoria_clientes_cod && Object.keys(p.por_mes_categoria_clientes_cod).length > 0;
+    document.getElementById('objCashNote').innerHTML = temCods
+      ? ''
+      : `<div class="alert">⚠ Positivação por categoria indisponível: ${p._carregando ? 'recorte do seu escopo ainda carregando' : 'a API não devolveu os códigos de cliente por mês/categoria (cache antigo — recarregue após o próximo ciclo do ETL)'}. Mostrando "—".</div>`;
+  }
 
   document.getElementById('tObjCat').innerHTML = built.html;
 }
@@ -2934,7 +3368,7 @@ function renderDowCascata(){
     if (!dc){ sub.textContent = `Carregando recorte por ${level} — ${labelJoin(names)}…`; el.innerHTML = ''; return; }
   } else {
     dc = REAL_DATA._dowCascata;
-    if (!dc){ sub.textContent = 'Dados não disponíveis.'; el.innerHTML = ''; return; }
+    if (!dc){ sub.textContent = motivoEtapaAusente('dowCascata'); el.innerHTML = ''; return; }
   }
   const escopoTxt = level ? ` — recortado por ${level}: ${labelJoin(names)}` : ' — nível empresa';
   sub.textContent = `Últimos 90 dias corridos (${fmtBR(dc.janela.inicio)} a ${fmtBR(dc.janela.fim)}), sempre até hoje${escopoTxt}.`;
@@ -3521,7 +3955,7 @@ function abcd90Pool(){
 }
 function renderAbcd(){
   const a = REAL_DATA._abcd90;
-  if (!a){ document.getElementById('abcd-sub').textContent = "Dados não disponíveis."; return; }
+  if (!a){ document.getElementById('abcd-sub').textContent = motivoEtapaAusente('abcd90'); return; }
 
   const altoR = ABCD_OVERRIDE.altoR!=null ? ABCD_OVERRIDE.altoR : ABCD_DEFAULTS.altoR;
   const baixoR = ABCD_OVERRIDE.baixoR!=null ? ABCD_OVERRIDE.baixoR : ABCD_DEFAULTS.baixoR;
@@ -3608,18 +4042,20 @@ function renderAbcd(){
 function computeEstoqueDOS(rows, diasUteis){
   const byProduto = {};
   rows.forEach(r=>{
-    if (!byProduto[r.codproduto]) byProduto[r.codproduto] = {valor:0, saldo:0, venda90:0};
+    if (!byProduto[r.codproduto]) byProduto[r.codproduto] = {valor:0, saldo:0, venda90:0, remessa:0};
     byProduto[r.codproduto].valor += r.valor_carga;
     byProduto[r.codproduto].saldo += r.saldo;
     byProduto[r.codproduto].venda90 += (r.venda90||0);
+    byProduto[r.codproduto].remessa += (r.remessa||0);
   });
-  let valorTotal=0, saldoTotal=0, vendaTotal=0;
+  let valorTotal=0, saldoTotal=0, vendaTotal=0, remessaTotal=0;
   const codes = Object.keys(byProduto);
   codes.forEach(cod=>{
-    valorTotal += byProduto[cod].valor; saldoTotal += byProduto[cod].saldo; vendaTotal += byProduto[cod].venda90;
+    valorTotal += byProduto[cod].valor; saldoTotal += byProduto[cod].saldo;
+    vendaTotal += byProduto[cod].venda90; remessaTotal += byProduto[cod].remessa;
   });
   const avgDailyValor = diasUteis>0 ? vendaTotal/diasUteis : 0;
-  return { valorTotal, saldoTotal, avgDailyValor, dos: avgDailyValor>0 ? valorTotal/avgDailyValor : null, nProdutos: codes.length };
+  return { valorTotal, saldoTotal, remessaTotal, avgDailyValor, dos: avgDailyValor>0 ? valorTotal/avgDailyValor : null, nProdutos: codes.length };
 }
 // est.detalhe vem compacto — [codven, codproduto, saldo, valor_carga, venda90,
 // qtde90] — para não repetir nome de vendedor/supervisor/gerente e
@@ -3627,10 +4063,11 @@ function computeEstoqueDOS(rows, diasUteis){
 // que ESSE vendedor vendeu DESSE produto nos últimos 90 dias corridos reais
 // (sempre até hoje). "Hidrata" via os lookups vendedor_info/por_produto.
 function estoqueHydrate(est, tuple){
-  const codven=tuple[0], codproduto=tuple[1], saldo=tuple[2], valor_carga=tuple[3], venda90=tuple[4]||0, qtde90=tuple[5]||0;
+  const codven=tuple[0], codproduto=tuple[1], saldo=tuple[2], valor_carga=tuple[3], venda90=tuple[4]||0, qtde90=tuple[5]||0, remessa=tuple[6]||0;
   const vi = est.vendedor_info[codven] || {vendedor:"(desconhecido)", supervisor:"(desconhecido)", gerente:"(desconhecido)"};
-  const pi = est.por_produto[codproduto] || {descricao:codproduto, categoria:"(sem categoria)", grupo:""};
-  return { codven, codproduto, saldo, valor_carga, venda90, qtde90, vendedor:vi.vendedor, supervisor:vi.supervisor, gerente:vi.gerente, descricao:pi.descricao, categoria:pi.categoria, grupo:pi.grupo };
+  const pi = est.por_produto[codproduto] || {descricao:codproduto, categoria:"(sem categoria)", grupo:"", fornecedor:"(sem fornecedor)"};
+  return { codven, codproduto, saldo, valor_carga, venda90, qtde90, remessa, vendedor:vi.vendedor, supervisor:vi.supervisor, gerente:vi.gerente,
+           descricao:pi.descricao, categoria:pi.categoria, grupo:pi.grupo, fornecedor:pi.fornecedor||"(sem fornecedor)" };
 }
 // O estoque é uma fotografia por vendedor×produto (não tem cliente), então respeita
 // hierarquia + produto. Canal/Inadimplente/Status são atributos do CLIENTE e não se
@@ -3673,7 +4110,7 @@ function buildEstoqueCascadeTree(rows, keys, depth, diasUteis){
     const subset = groups[k];
     const agg = computeEstoqueDOS(subset, diasUteis);
     node[k] = {
-      valorTotal: agg.valorTotal, saldoTotal: agg.saldoTotal, dos: agg.dos,
+      valorTotal: agg.valorTotal, saldoTotal: agg.saldoTotal, remessaTotal: agg.remessaTotal, dos: agg.dos,
       descricao: (isLeafLevel && key==='codproduto') ? subset[0].descricao : null,
       children: isLeafLevel ? null : buildEstoqueCascadeTree(subset, keys, depth+1, diasUteis)
     };
@@ -3686,7 +4123,7 @@ function estoqueCascadeRowHtml(nome, nivel, pathKey, node){
   const toggle = hasChildren ? `<span class="casc-toggle" onclick="toggleEstoqueCascata('${pathKey.replace(/'/g,"\\'")}')">${expanded?'−':'+'}</span>` : '<span class="casc-toggle-spacer"></span>';
   const indent = nivel*18;
   return `<tr class="casc-lvl${nivel}"><td style="padding-left:${indent}px">${toggle}${escAttr(nome)}</td>
-    <td class="tv">${fF(node.valorTotal)}</td><td class="tv">${fN(node.saldoTotal)}</td><td class="tv">${dosBadge(node.dos)}</td></tr>`;
+    <td class="tv">${fN(node.remessaTotal)}</td><td class="tv">${fF(node.valorTotal)}</td><td class="tv">${fN(node.saldoTotal)}</td><td class="tv">${dosBadge(node.dos)}</td></tr>`;
 }
 function renderEstoqueCascadeRows(nodesObj, pathNames, nivel, prefix){
   prefix = prefix || 'ESTQ';
@@ -3770,9 +4207,124 @@ function computeProdutosParados(rows, diasUteis){
     return {...r, avgDailyQ, dos};
   }).filter(r=>r.dos==null || r.dos>90);
 }
+// ── INADIMPLÊNCIA POR CARTEIRA ────────────────────────────────────
+// Substitui o antigo filtro "Inadimplente (S/N)", que só dizia SE o cliente devia.
+// Fotografia atual do contas a receber (não recortável por Período — dívida
+// vencida não pertence ao mês da tela), em cascata Gerente → Supervisor →
+// Vendedor → Cliente, respeitando o filtro de hierarquia da barra lateral.
+const INAD_FAIXAS = [
+  { k:'f0_30',     lbl:'até 30d'  },
+  { k:'f31_90',    lbl:'31–90d'   },
+  { k:'f91_365',   lbl:'91–365d'  },
+  { k:'f365_mais', lbl:'+365d'    },
+];
+
+// Clientes do dataset dentro do escopo selecionado. Sem filtro, todos.
+function inadClientesNoEscopo(inad){
+  const ger = new Set(ST.ger.map(normNome));
+  const sup = new Set(ST.sup.map(normNome));
+  const vend = new Set(ST.vend.map(normNome));
+  return inad.clientes.filter(c => {
+    if (ger.size  && !ger.has(normNome(c.gerente)))    return false;
+    if (sup.size  && !sup.has(normNome(c.supervisor))) return false;
+    if (vend.size && !vend.has(normNome(c.vendedor)))  return false;
+    return true;
+  });
+}
+
+function inadAgregar(clientes){
+  const o = { clientes: clientes.length, titulos: 0, saldo: 0, atraso_max: 0 };
+  INAD_FAIXAS.forEach(f => { o[f.k] = 0; });
+  clientes.forEach(c => {
+    o.titulos += c.titulos; o.saldo += c.saldo;
+    o.atraso_max = Math.max(o.atraso_max, c.atraso_max);
+    INAD_FAIXAS.forEach(f => { o[f.k] += c[f.k] || 0; });
+  });
+  return o;
+}
+
+function inadRowHtml(nome, nivel, pathKey, agg, temFilhos){
+  const expanded = estoqueCascataExpanded.has(pathKey);
+  const toggle = temFilhos
+    ? `<span class="casc-toggle" onclick="toggleEstoqueCascata('${pathKey.replace(/'/g,"\\'")}')">${expanded?'−':'+'}</span>`
+    : '<span class="casc-toggle-spacer"></span>';
+  return `<tr class="casc-lvl${nivel}"><td style="padding-left:${nivel*18}px">${toggle}${escAttr(nome)}</td>
+    <td class="tv">${fN(agg.clientes)}</td><td class="tv">${fN(agg.titulos)}</td>
+    <td class="tv">${fF(agg.saldo)}</td>
+    ${INAD_FAIXAS.map(f=>`<td class="tv">${agg[f.k]?fF(agg[f.k]):'<span style="color:var(--t3)">—</span>'}</td>`).join('')}
+    <td class="tv">${fN(agg.atraso_max)}</td></tr>`;
+}
+
+// Agrupa a lista plana de clientes nos 3 níveis, sob demanda (só expande o que
+// o usuário abriu) — evita montar 4.681 linhas de cliente de uma vez.
+function renderInadCascata(clientes){
+  const porNivel = (lista, campo) => {
+    const m = new Map();
+    lista.forEach(c => { const k = c[campo]; (m.get(k) || m.set(k, []).get(k)).push(c); });
+    return [...m.entries()].sort((a,b)=> inadAgregar(b[1]).saldo - inadAgregar(a[1]).saldo);
+  };
+  let html = '';
+  porNivel(clientes, 'gerente').forEach(([g, cliG]) => {
+    const kG = 'INAD|||'+g;
+    html += inadRowHtml(g, 0, kG, inadAgregar(cliG), true);
+    if (!estoqueCascataExpanded.has(kG)) return;
+    porNivel(cliG, 'supervisor').forEach(([s, cliS]) => {
+      const kS = kG+'|||'+s;
+      html += inadRowHtml(s, 1, kS, inadAgregar(cliS), true);
+      if (!estoqueCascataExpanded.has(kS)) return;
+      porNivel(cliS, 'vendedor').forEach(([v, cliV]) => {
+        const kV = kS+'|||'+v;
+        html += inadRowHtml(v, 2, kV, inadAgregar(cliV), true);
+        if (!estoqueCascataExpanded.has(kV)) return;
+        cliV.slice().sort((a,b)=>b.saldo-a.saldo).forEach(c => {
+          html += inadRowHtml(`${c.codigo} - ${c.nome}`, 3, kV+'|||'+c.codigo, inadAgregar([c]), false);
+        });
+      });
+    });
+  });
+  return html;
+}
+
+function renderInadimplencia(){
+  const inad = REAL_DATA._inadimplencia;
+  const sub = document.getElementById('inadSub');
+  if (!inad){
+    sub.textContent = motivoEtapaAusente('inadimplencia');
+    document.getElementById('tInadHier').innerHTML = '';
+    document.getElementById('tInadClientes').innerHTML = '';
+    document.getElementById('inad-kpis').innerHTML = '';
+    return;
+  }
+  const clientes = inadClientesNoEscopo(inad);
+  const agg = inadAgregar(clientes);
+  const escopo = ST.vend.length ? 'Vendedor' : ST.sup.length ? 'Supervisor' : ST.ger.length ? 'Gerente' : 'empresa';
+  sub.textContent = `Posição em ${inad.gerado_em} — ${fN(agg.clientes)} clientes, ${fN(agg.titulos)} títulos vencidos (recorte: ${escopo}). Não muda com o filtro de Período/Mês.`;
+
+  const vencidoAntigo = agg.saldo>0 ? (agg.f365_mais/agg.saldo*100) : 0;
+  document.getElementById('inad-kpis').innerHTML = [
+    {lbl:'Saldo em aberto', val:fF(agg.saldo)},
+    {lbl:'Clientes inadimplentes', val:fN(agg.clientes)},
+    {lbl:'Títulos vencidos', val:fN(agg.titulos)},
+    {lbl:'Vencido há +1 ano', val:fF(agg.f365_mais), note:`${vencidoAntigo.toFixed(1)}% do saldo`},
+    {lbl:'Maior atraso', val:fN(agg.atraso_max)+' dias'},
+  ].map((k,i)=>`<div class="kpi${i===0?' k0':''}"><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div>${k.note?`<div class="kpi-note">${k.note}</div>`:''}</div>`).join('');
+
+  const cabecalho = `<thead><tr><th>Gerente / Supervisor / Vendedor / Cliente</th><th class="tv">Clientes</th><th class="tv">Títulos</th><th class="tv">Saldo em aberto</th>${INAD_FAIXAS.map(f=>`<th class="tv">${f.lbl}</th>`).join('')}<th class="tv">Maior atraso (dias)</th></tr></thead>`;
+  document.getElementById('tInadHier').innerHTML = cabecalho + `<tbody>${renderInadCascata(clientes)}</tbody>`;
+
+  const top = clientes.slice().sort((a,b)=>b.saldo-a.saldo).slice(0,100);
+  document.getElementById('inadTopSub').textContent = `Top ${top.length} por saldo em aberto, dentro do recorte atual`;
+  document.getElementById('tInadClientes').innerHTML =
+    `<thead><tr><th>Cliente</th><th>Vendedor</th><th>Supervisor</th><th class="tv">Títulos</th><th class="tv">Cheques dev.</th><th class="tv">Saldo</th><th class="tv">Atraso (dias)</th><th>Vencimento mais antigo</th></tr></thead><tbody>${
+      top.map(c=>`<tr><td class="tn">${escAttr(c.codigo+' - '+c.nome)}</td><td>${escAttr(c.vendedor)}</td><td>${escAttr(c.supervisor)}</td>
+        <td class="tv">${fN(c.titulos)}</td><td class="tv">${c.cheques?fN(c.cheques):'<span style="color:var(--t3)">—</span>'}</td>
+        <td class="tv">${fF(c.saldo)}</td><td class="tv">${fN(c.atraso_max)}</td><td>${c.venc_mais_antigo||'—'}</td></tr>`).join('')
+    }</tbody>`;
+}
+
 function renderEstoque(){
   const est = REAL_DATA._estoque;
-  if (!est){ document.getElementById('estoqueSub').textContent = "Dados de estoque não disponíveis."; return; }
+  if (!est){ document.getElementById('estoqueSub').textContent = motivoEtapaAusente('estoque'); return; }
   const diasUteis = est.dias_uteis_90 || 0;
   const win = est.janela_venda_90;
 
@@ -3790,18 +4342,31 @@ function renderEstoque(){
 
   document.getElementById('estoque-kpis').innerHTML = [
     {lbl:"Valor de Estoque (recorte)", val:fF(geral.valorTotal)},
+    // "Total da Remessa" é a linha que a planilha do gerente traz e que o painel
+    // não publicava — sem ela não dava para conferir uma contra a outra.
+    {lbl:"Total da Remessa (unidades)", val:fN(geral.remessaTotal)},
     {lbl:"Unidades em Estoque (recorte)", val:fN(geral.saldoTotal)},
     {lbl:"Cobertura Média (valor-ponderada)", val: geral.dos!=null?fN(geral.dos)+" dias":"sem venda 90d"},
     {lbl:"Itens (vend.×produto) c/ cobertura > 90d", val:fN(produtos90.length)+" de "+fN(rows.length)},
   ].map((k,i)=>`<div class="kpi k${i}"><div class="kpi-stripe"></div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div></div>`).join("");
 
+  // Colunas comuns às cascatas de estoque. "Remessa" entrou para bater com a
+  // planilha; a regra de cobertura (90 dias corridos ÷ dias úteis) é a mesma em
+  // todos os níveis — categoria, grupo, fornecedor e produto.
+  const thEstoque = nivel => `<thead><tr><th>${nivel}</th><th class="tv">Remessa (un)</th><th class="tv">Valor Estoque</th><th class="tv">Unidades</th><th class="tv">Cobertura</th></tr></thead>`;
+
   // "Cobertura por Categoria" agora em cascata (Categoria → Grupo → Produto).
   const treeCat = buildEstoqueCascadeTree(rows, ['categoria','grupo','codproduto'], 0, diasUteis);
-  document.getElementById('tEstoqueCat').innerHTML = `<thead><tr><th>Categoria / Grupo / Produto</th><th class="tv">Valor Estoque</th><th class="tv">Unidades</th><th class="tv">Cobertura</th></tr></thead><tbody>${renderEstoqueCascadeRows(treeCat, [], 0, 'ESTQ')}</tbody>`;
+  document.getElementById('tEstoqueCat').innerHTML = thEstoque('Categoria / Grupo / Produto') + `<tbody>${renderEstoqueCascadeRows(treeCat, [], 0, 'ESTQ')}</tbody>`;
+
+  // Cobertura por FORNECEDOR (Fornecedor → Grupo → Produto) — nível pedido pelo
+  // gerente junto com produto/grupo/categoria.
+  const treeForn = buildEstoqueCascadeTree(rows, ['fornecedor','grupo','codproduto'], 0, diasUteis);
+  document.getElementById('tEstoqueForn').innerHTML = thEstoque('Fornecedor / Grupo / Produto') + `<tbody>${renderEstoqueCascadeRows(treeForn, [], 0, 'ESTQF')}</tbody>`;
 
   // "Cobertura por Gerente/Supervisor/Vendedor" agora em cascata (Gerente → Supervisor → Vendedor).
   const treeHier = buildEstoqueCascadeTree(rows, ['gerente','supervisor','vendedor'], 0, diasUteis);
-  document.getElementById('tEstoqueHier').innerHTML = `<thead><tr><th>Gerente / Supervisor / Vendedor</th><th class="tv">Valor Estoque</th><th class="tv">Unidades</th><th class="tv">Cobertura</th></tr></thead><tbody>${renderEstoqueCascadeRows(treeHier, [], 0, 'ESTQH')}</tbody>`;
+  document.getElementById('tEstoqueHier').innerHTML = thEstoque('Gerente / Supervisor / Vendedor') + `<tbody>${renderEstoqueCascadeRows(treeHier, [], 0, 'ESTQH')}</tbody>`;
 
   // Estoque parado (>90 dias) também em cascata (Categoria → Grupo → Produto).
   document.getElementById('estoque90Sub').textContent = `${fN(produtos90.length)} itens (vendedor × produto) encontrados acima de 90 dias de cobertura`;
@@ -3818,7 +4383,7 @@ function renderEstoque(){
 // estoqueCascataExpanded com a cascata da aba Estoque x Venda).
 function renderProdutosParadosVend(){
   const est = REAL_DATA._estoque;
-  if (!est){ document.getElementById('produtosParadosVendSub').textContent = "Dados de estoque não disponíveis."; return; }
+  if (!est){ document.getElementById('produtosParadosVendSub').textContent = motivoEtapaAusente('estoque'); return; }
   const diasUteis = est.dias_uteis_90 || 0;
   const rows = estoqueFilterRows(est);
   const parados = computeProdutosParados(rows, diasUteis);
@@ -3834,7 +4399,7 @@ function renderProdutosParadosVend(){
 // específica de produtos independente do giro).
 function renderProdutosLetraP(){
   const est = REAL_DATA._estoque;
-  if (!est){ document.getElementById('produtosLetraPSub').textContent = "Dados de estoque não disponíveis."; return; }
+  if (!est){ document.getElementById('produtosLetraPSub').textContent = motivoEtapaAusente('estoque'); return; }
   const diasUteis = est.dias_uteis_90 || 0;
   const rows = estoqueFilterRows(est)
     .filter(r=>/^\(P\)/i.test((r.descricao||'').trim()))
@@ -4496,6 +5061,12 @@ document.getElementById("sbTog").onclick = () => {
 
 // ── AUTHENTICATION ──────────────────────────────────────────────────
 let authSession = null;
+// Leitor da sessão para código definido ACIMA desta linha (escopoPermitido) e para
+// inspeção de suporte no console. `authSession` é `let` de módulo: sem isto não há
+// como ler/simular a sessão de fora, e o diagnóstico de "por que meu filtro está
+// vazio" ficaria impossível de reproduzir sem as credenciais do usuário.
+window.__authSession = () => authSession;
+window.__escopo = (sess) => escopoPermitido(sess);
 
 function checkAuth() {
   const saved = localStorage.getItem('portalAuth');
@@ -4722,9 +5293,27 @@ async function loadAndInit(){
       const data = await res.json();
       if (!data || typeof data !== 'object') throw new Error('payload inválido');
       window.REAL_DATA = data;
-      
+      DIAG.etl = data._etl || null;
+
       // Aplicar Trava de Acesso Rígida (nomes resolvidos p/ chaves canônicas do cubo)
       applyAccessLock();
+
+      // Cargo que exige escopo, mas nenhum escopo resolveu: NÃO renderiza. Deixar
+      // passar aqui mostraria a empresa inteira (ST vazio => sem recorte).
+      if (travaSemEscopo){
+        const faltaCadastro = buildCanonIndex().vazio;
+        if (errBox){
+          errBox.textContent = faltaCadastro
+            ? 'Não foi possível validar seu escopo de acesso: o cadastro da força de vendas ainda não chegou da API. Aguarde o fim da carga e recarregue a página.'
+            : 'Não foi possível determinar seu escopo de acesso (usuário sem gerente/supervisor correspondente no cadastro). Procure o suporte — o painel não será exibido sem escopo.';
+          errBox.style.display = 'block';
+        }
+        if (overlay) overlay.style.display = 'none';
+        // Se o bloqueio foi por cadastro ausente, ele é temporário: o vigia rebusca
+        // /full quando _hierarquia chegar e a tela se destrava sozinha.
+        if (faltaCadastro) vigiarEtl();
+        return;
+      }
 
       // Espera o recorte do escopo do usuário ANTES de renderizar: sem ele as abas
       // cairiam no cubo da empresa por alguns segundos.
@@ -4759,6 +5348,60 @@ async function loadAndInit(){
   const btn = document.getElementById('themeTog'); if (btn) btn.textContent = (currentTheme()==='dark' ? '☀️' : '🌙');
   applyChartTheme();
   init();
+  vigiarEtl();
+}
+
+// /full responde 200 assim que o PRIMEIRO período fica pronto, mas o ciclo do ETL
+// só termina ~25 min depois. Quem abria o painel nesse intervalo ficava com um
+// REAL_DATA parcial pelo resto da sessão: sem _hierarquia (filtro Vendedor vazio,
+// nomes do login sem resolver), sem _estoque, sem _abcd90, sem _dowCascata — e
+// nada na tela dizia isso, porque não havia rebusca nenhuma.
+// Aqui consultamos /etl-status (~400 bytes) e rebuscamos /full UMA vez por etapa
+// que chega, re-renderizando filtros e abas.
+const ETL_POLL_MS = 30000;
+async function vigiarEtl(){
+  let assinatura = JSON.stringify((DIAG.etl && DIAG.etl.faltando) || null);
+  if (DIAG.etl && DIAG.etl.completo) return;  // nada pendente
+  for (;;){
+    await new Promise(r => setTimeout(r, ETL_POLL_MS));
+    let st = null;
+    try {
+      const r = await fetch(`${API_BASE_URL}/etl-status`, { cache: 'no-store' });
+      if (!r.ok) continue;
+      st = await r.json();
+    } catch (e) { continue; }               // API reiniciando: tenta no próximo tick
+    if (!st || !st.pronto) continue;
+
+    const nova = JSON.stringify(st.faltando || null);
+    DIAG.etl = st;
+    if (nova === assinatura){ renderDiagBox(); if (st.completo) return; continue; }
+    assinatura = nova;
+
+    // Alguma etapa mudou de estado → o payload de /full agora tem mais dado.
+    try {
+      const r = await fetch(`${API_BASE_URL}/full`);
+      if (!r.ok) continue;
+      const data = await r.json();
+      if (!data || typeof data !== 'object') continue;
+      window.REAL_DATA = data;
+      DIAG.etl = data._etl || st;
+      // O índice canônico depende de _hierarquia: se ela acabou de chegar, a trava
+      // precisa ser reaplicada para gravar as chaves certas em ST — mas sem apagar
+      // o que o usuário selecionou desde o boot.
+      applyAccessLock(true);
+      // Ainda sem escopo: segue bloqueado (não renderiza a empresa inteira) e
+      // continua vigiando — a próxima etapa do ETL pode destravar.
+      if (travaSemEscopo){ console.warn('[trava] escopo ainda não resolvido após rebusca de /full'); continue; }
+      const errBox2 = document.getElementById('api-error');
+      if (errBox2) errBox2.style.display = 'none';
+      if (activeFilterCount() > 0) await ensureCliScope();
+      populateFilters();
+      renderAll();
+      console.log('[ETL] payload recarregado; ainda faltando:', (data._etl && data._etl.faltando) || []);
+    } catch (e) { console.warn('[ETL] rebusca de /full falhou:', e.message); }
+
+    if (DIAG.etl && DIAG.etl.completo){ renderDiagBox(); return; }
+  }
 }
 
 loadAndInit();

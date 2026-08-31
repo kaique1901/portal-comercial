@@ -1,4 +1,6 @@
 const db = require('../config/db');
+const path = require('path');
+const fsp = require('fs').promises;
 
 // Períodos que o ETL materializa a cada ciclo. Ajuste aqui p/ novos semestres.
 const TODOS_PERIODOS = [
@@ -317,6 +319,7 @@ class DashboardETLService {
       const mesIni = parseInt(periodo.ini.slice(5, 7), 10);
       const mesFim = parseInt(periodo.fim.slice(5, 7), 10);
       const meta = await this._buildMeta(client, ano, mesIni, mesFim);
+      const bonif = await this._buildBonificacao(client, periodo.ini, periodo.fim);
 
       await client.query('COMMIT');
 
@@ -331,7 +334,7 @@ class DashboardETLService {
         pag, janRange, janProd, abcdCli,
         hierTopCli, hierTopProd, hierCat, hierPag, hierAbcdRows, hierDiaGer, hierDiaCatGer, meta,
         cascCat, cascGrp, cascForn, cascProd,
-        porCanal, porInadimplente, porStatus
+        porCanal, porInadimplente, porStatus, bonif
       });
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
@@ -339,6 +342,70 @@ class DashboardETLService {
     } finally {
       client.release();
     }
+  }
+
+  // ── BONIFICAÇÃO (coluna "Bonificação" / "% Bonif. x Venda") ────────────────
+  // Não sai do BASE_CTE: ele filtra CodTpo IN (2,4,5) — PRE VENDA, VENDA DE
+  // MERCADORIA DE TERCEIROS e VENDAS NA PORTA — e bonificação são OUTROS tipos de
+  // operação (cifalcomercial.tipooperacao):
+  //   19 = BONIFICACAO P.E.                          (3.907 pedidos em 90 dias)
+  //    6 = REMESSA EM BONIFICACAO, DOACAO OU BRINDE  (volume baixo, mesmo conceito)
+  // Manter fora da receita está CERTO (bonificação não é venda); o que faltava era
+  // contabilizá-la à parte. Medido em jul+ago/2026: R$ 683.296 no total.
+  //
+  // Recortado por mês × categoria × nível hierárquico para a tabela funcionar com
+  // o filtro de Gerente/Supervisor/Vendedor ligado — os mesmos eixos que a coluna
+  // Realizado ao lado usa. Hierarquia derivada de eqvend → supervisor → gerente
+  // (supervisor.codgerente, NÃO eqvend.codgerente — mesma correção já aplicada em
+  // _buildMeta: 310 dos 1.171 vendedores divergem entre os dois campos).
+  async _buildBonificacao(client, ini, fim) {
+    const rows = (await client.query(`
+      SELECT extract(month from pe.datafechamento)::int mes,
+             c.descategoriaprod categoria,
+             g.nomegerente gerente, s.nomesupervisor supervisor, e.nomven vendedor,
+             SUM(ip.qtde * ip.valuni)     r,
+             SUM(ip.qtde * ip.customedio) c,
+             SUM(ip.qtde)                 q
+      FROM cifalcomercial.pedidos pe
+      JOIN cifalcomercial.itenspedido ip ON ip.nropedido = pe.nropedido
+      JOIN cifalcomercial.produtos pr    ON pr.codproduto = ip.codproduto
+      LEFT JOIN cifalcomercial.subgrupos sg          ON sg.codsubgrupo = pr.codsubgrupo
+      LEFT JOIN cifalcomercial.categoriasproduto c   ON c.codcategoriaprod = sg.codcategoriaprod
+      LEFT JOIN cifalcomercial.eqvend e              ON e.codven = pe.codvendedor
+      LEFT JOIN cifalcomercial.supervisor s          ON s.codsupervisor = e.codsupervisor
+      LEFT JOIN cifalcomercial.gerente g             ON g.codgerente = s.codgerente
+      WHERE pe.cancelado IS NULL
+        AND pe.codtpo IN (6, 19)
+        AND pe.datafechamento::date >= $1
+        AND pe.datafechamento::date <= $2
+        AND c.descategoriaprod IS NOT NULL
+      GROUP BY 1, 2, 3, 4, 5
+    `, [ini, fim])).rows;
+
+    const empresa = {};                                  // mes -> cat -> {r,c,q}
+    const hier = { gerente: {}, supervisor: {}, vendedor: {} };
+    const acumular = (alvo, mes, cat, r, c, q) => {
+      const m = alvo[mes] || (alvo[mes] = {});
+      const o = m[cat] || (m[cat] = { r: 0, c: 0, q: 0 });
+      o.r += r; o.c += c; o.q += q;
+    };
+    for (const row of rows) {
+      const r = num(row.r), c = num(row.c), q = num(row.q);
+      const mes = String(row.mes), cat = row.categoria;
+      acumular(empresa, mes, cat, r, c, q);
+      for (const [nivel, ent] of [['gerente', row.gerente], ['supervisor', row.supervisor], ['vendedor', row.vendedor]]) {
+        if (!ent) continue;
+        acumular(hier[nivel][ent] || (hier[nivel][ent] = {}), mes, cat, r, c, q);
+      }
+    }
+    const arredondar = alvo => {
+      for (const mes in alvo) for (const cat in alvo[mes]) {
+        const o = alvo[mes][cat]; o.r = round2(o.r); o.c = round2(o.c); o.q = round2(o.q);
+      }
+    };
+    arredondar(empresa);
+    for (const nivel in hier) for (const ent in hier[nivel]) arredondar(hier[nivel][ent]);
+    return { por_mes_categoria: empresa, hier };
   }
 
   // Meta a partir de metacategoria (R$ por categoria/vendedor/mês) + metasanualporvendedor (kg fumo).
@@ -741,6 +808,7 @@ class DashboardETLService {
       por_canal: (() => { const o = {}; for (const r of d.porCanal || []) o[r.canal_vendas] = { r: round2(num(r.r)), c: round2(num(r.c)), q: round2(num(r.qq)), m: margem(num(r.r), num(r.c)), n_clientes: parseInt(r.n_clientes, 10) }; return o; })(),
       por_inadimplente: (() => { const o = {}; for (const r of d.porInadimplente || []) o[r.inadimplente] = { r: round2(num(r.r)), c: round2(num(r.c)), q: round2(num(r.qq)), m: margem(num(r.r), num(r.c)), n_clientes: parseInt(r.n_clientes, 10) }; return o; })(),
       por_status: (() => { const o = {}; for (const r of d.porStatus || []) o[r.status_cliente] = { r: round2(num(r.r)), c: round2(num(r.c)), q: round2(num(r.qq)), m: margem(num(r.r), num(r.c)), n_clientes: parseInt(r.n_clientes, 10) }; return o; })(),
+      bonificacao: d.bonif || { por_mes_categoria: {}, hier: { gerente: {}, supervisor: {}, vendedor: {} } },
     };
   }
 
@@ -753,118 +821,272 @@ class DashboardETLService {
   // não por produto isolado: cada Gerente/Supervisor/Vendedor usa o RITMO DE
   // VENDA DELE MESMO, não uma média da empresa inteira (senão o "dias de
   // estoque" de um vendedor lento apareceria bom só por causa da empresa).
-  async _buildEstoque() {
-    const hoje = new Date();
-    const iniJanela = new Date(hoje); iniJanela.setDate(iniJanela.getDate() - 89);
-    const fmt = dt => dt.toISOString().slice(0, 10);
-    const [iniStr, fimStr] = [fmt(iniJanela), fmt(hoje)];
+  async _buildEstoque(client, janela) {
+    const [iniStr, fimStr] = [janela.inicio, janela.fim];
 
-    // Saldo/valor da carga do vendedor: cifalcomercial.qgestoqueremessadevolucao
-    // é um kardex (REMESSA/VENDIDO/DEVOLUCAO/ESTOQUE) por (codven,codproduto,
-    // controle=cada remessa individual); não existe "saldo atual" pronto.
-    // ESTOQUE nessa tabela é só o BARRACAO (codven=999, o CD, valor sempre 0) —
-    // não representa o vendedor. DEVOLUCAO nunca tem valor preenchido (sempre
-    // 0), mas entra na conta por completude caso passe a ser usado.
-    // Saldo em carga = REMESSA acumulada − VENDIDO acumulado − DEVOLUCAO
-    // acumulada, por par (codven,codproduto) — confirmado com o usuário
-    // (bateu na mesma ordem de grandeza do valor de referência dele, ainda
-    // que não exatamente ao centavo — a tabela não guarda um "saldo pronto").
-    // "Grupo" é subgrupos.dessubgrupo — a MESMA fonte usada pelo BASE_CTE
-    // (SubGrupos.DesSubGrupo AS Grupo) para a base de vendas, pra Categoria e
-    // Grupo baterem com o resto do sistema.
-    const rows = (await db.query(`
-      WITH saldo_atual AS (
-        SELECT codven, codproduto,
-          SUM(CASE WHEN tipo='REMESSA' THEN qtde WHEN tipo IN ('VENDIDO','DEVOLUCAO') THEN -qtde ELSE 0 END) saldo,
-          SUM(CASE WHEN tipo='REMESSA' THEN valor WHEN tipo IN ('VENDIDO','DEVOLUCAO') THEN -valor ELSE 0 END) valor_carga
-        FROM cifalcomercial.qgestoqueremessadevolucao
-        WHERE tipo IN ('REMESSA','VENDIDO','DEVOLUCAO')
-        GROUP BY codven, codproduto
-        HAVING SUM(CASE WHEN tipo='REMESSA' THEN qtde WHEN tipo IN ('VENDIDO','DEVOLUCAO') THEN -qtde ELSE 0 END) <> 0
-            OR SUM(CASE WHEN tipo='REMESSA' THEN valor WHEN tipo IN ('VENDIDO','DEVOLUCAO') THEN -valor ELSE 0 END) <> 0
-      )
-      SELECT sa.codven, sa.codproduto, sa.saldo, ROUND(sa.valor_carga,2) valor_carga,
-             p.desceq descricao, c.descategoriaprod categoria, sg.dessubgrupo grupo,
-             e.nomven vendedor, s.nomesupervisor supervisor, g.nomegerente gerente
-      FROM saldo_atual sa
-      JOIN cifalcomercial.produtos p ON p.codproduto=sa.codproduto
-      LEFT JOIN cifalcomercial.subgrupos sg ON sg.codsubgrupo=p.codsubgrupo
-      LEFT JOIN cifalcomercial.categoriasproduto c ON c.codcategoriaprod=sg.codcategoriaprod
-      JOIN cifalcomercial.eqvend e ON e.codven=sa.codven
+    // ── FONTE DO SALDO DE CARGA ────────────────────────────────────────────────
+    // Espelha EXATAMENTE a planilha "Remessa Estoque Vendedor.xlsx". A SQL dela está
+    // embutida na conexão ODBC do arquivo; usamos a variante "Consulta de Cifal
+    // Externo1111", que é a mesma consulta SEM o filtro `g."token" = 'R88C'` (a
+    // outra conexão do arquivo traz só um gerente).
+    //
+    // Antes a fonte era cifalcomercial.qgestoqueremessadevolucao (kardex agregado),
+    // e divergia da planilha em R$ 72,6 mi. Medido par a par (codven,codproduto):
+    // 42.204 dos 43.096 pares eram IDÊNTICOS — a diferença inteira vinha dos centros
+    // de distribuição, sobretudo codven 801 (CD CIFAL GOIAS), sozinho responsável por
+    // 448.003 unidades. O kardex fecha o CD em saldo NEGATIVO (-19.586 un,
+    // fisicamente impossível) e ele sumia do painel; a planilha o mostra cheio.
+    // Excluindo os CDs, as duas fontes batem: 478.276 un contra 480.146 un (0,4%).
+    //
+    // Método adotado, todo ele vindo da planilha:
+    //   • saldo reconstruído das remessas ABERTAS (CapaDanfe.DataFec IS NULL), e não
+    //     do acumulado histórico do kardex;
+    //   • quantidade convertida para a UNIDADE PADRÃO (UnidadeAlt.UnidPadrao='S');
+    //   • valor a itenstabelapreco.precovista (codtabela=1) — preço de venda à vista
+    //     — no lugar do preço de remessa. precovista cobre 100% dos produtos, contra
+    //     909 pares sem preço no kardex;
+    //   • saldo negativo NÃO é zerado, igual à planilha (391 pares, -R$ 3,77 mi).
+    //     Total sem clamp R$ 117,07 mi; com clamp seria R$ 120,84 mi.
+    //
+    // "Grupo" continua sendo subgrupos.dessubgrupo — mesma fonte do BASE_CTE, para
+    // Categoria e Grupo baterem com o resto do painel.
+    const rows = (await this._queryCronometradaCli(client, 'estoque/saldo-remessa', `
+      SELECT MIN(q.categoria) categoria,
+             MIN(g.nomegerente) gerente, MIN(s.nomesupervisor) supervisor,
+             q.codven, MIN(e.nomven) vendedor,
+             MIN(q.grupo) grupo, MIN(q.codfor) codfor, MIN(f.razfor) fornecedor,
+             q.codproduto, MIN(q.descricao) descricao,
+             SUM(q.qtderem) remessa, SUM(q.qtvenda) vendido, SUM(q.qtdevol) devolvido,
+             SUM(q.qtderem) - SUM(q.qtvenda) - SUM(q.qtdevol) saldo,
+             (SELECT i.precovista FROM cifalcomercial.itenstabelapreco i
+               WHERE i.codtabela=1 AND i.codproduto=q.codproduto AND i.unidade=MIN(q.unid)) precovista,
+             ROUND(((SUM(q.qtderem) - SUM(q.qtvenda) - SUM(q.qtdevol)) *
+                    COALESCE((SELECT i.precovista FROM cifalcomercial.itenstabelapreco i
+                               WHERE i.codtabela=1 AND i.codproduto=q.codproduto AND i.unidade=MIN(q.unid)),0))::numeric, 2) valor_carga
+      FROM (
+        -- (1) REMESSA: itens faturados em DANFE de remessa (CodTpo=3) cuja carga
+        -- ainda está ABERTA (CapaDanfe.DataFec IS NULL).
+        SELECT ItensPedido.CodProduto codproduto,
+               (SELECT u.Unidade FROM cifalcomercial.UnidadeAlt u WHERE u.CodProduto=ItensPedido.CodProduto AND u.UnidPadrao='S') unid,
+               SUM(ItensPedido.Qtde*UnidadeAlt.QdeEmb) /
+                 (SELECT u.QdeEmb FROM cifalcomercial.UnidadeAlt u WHERE u.CodProduto=ItensPedido.CodProduto AND u.UnidPadrao='S') qtderem,
+               0 qtvenda, 0 qtdevol, Pedidos.CodVendedor codven,
+               MIN(categoriasproduto.descategoriaprod) categoria,
+               MIN(SubGrupos.DesSubGrupo) grupo, MIN(Produtos.Desceq) descricao, MIN(Produtos.CodFor) codfor
+        FROM cifalcomercial.ItensDanfe
+        INNER JOIN cifalcomercial.ItensPedido ON ItensDanfe.NroNota=ItensPedido.NroPedido
+        INNER JOIN cifalcomercial.UnidadeAlt ON ItensPedido.CodProduto=UnidadeAlt.CodProduto AND ItensPedido.Unidade=UnidadeAlt.Unidade
+        INNER JOIN cifalcomercial.Pedidos ON ItensPedido.NroPedido=Pedidos.NroPedido
+        INNER JOIN cifalcomercial.Produtos ON ItensPedido.CodProduto=Produtos.CodProduto
+        INNER JOIN cifalcomercial.CapaDanfe ON ItensDanfe.ContrDanf=CapaDanfe.ContrDanf
+        INNER JOIN cifalcomercial.SubGrupos ON Produtos.CodSubGrupo=SubGrupos.CodSubGrupo
+        LEFT JOIN cifalcomercial.categoriasproduto ON categoriasproduto.codcategoriaprod=SubGrupos.codcategoriaprod
+        WHERE Pedidos.Cancelado IS NULL AND Pedidos.CodEmpresa=501
+          AND CapaDanfe.DataFec IS NULL AND Pedidos.CodTpo=3
+        GROUP BY ItensPedido.CodProduto, Pedidos.CodVendedor
+        UNION ALL
+        -- (2) VENDIDO: operações que dão baixa na remessa (TipoOperacao.BxaRemessa).
+        SELECT ItensPedido.CodProduto,
+               (SELECT u.Unidade FROM cifalcomercial.UnidadeAlt u WHERE u.CodProduto=ItensPedido.CodProduto AND u.UnidPadrao='S'),
+               0,
+               SUM(ItensPedido.Qtde*UnidadeAlt.QdeEmb) /
+                 (SELECT u.QdeEmb FROM cifalcomercial.UnidadeAlt u WHERE u.CodProduto=ItensPedido.CodProduto AND u.UnidPadrao='S'),
+               0, Pedidos.CodVendedor,
+               MIN(categoriasproduto.descategoriaprod), MIN(SubGrupos.DesSubGrupo), MIN(Produtos.Desceq), MIN(Produtos.CodFor)
+        FROM cifalcomercial.ItensPedido
+        INNER JOIN cifalcomercial.Pedidos ON ItensPedido.NroPedido=Pedidos.NroPedido
+        INNER JOIN cifalcomercial.TipoOperacao ON Pedidos.CodTpo=TipoOperacao.CodOperacao
+        INNER JOIN cifalcomercial.UnidadeAlt ON ItensPedido.CodProduto=UnidadeAlt.CodProduto AND ItensPedido.Unidade=UnidadeAlt.Unidade
+        INNER JOIN cifalcomercial.CapaDanfe ON Pedidos.ContrDanfe=CapaDanfe.ContrDanf
+        INNER JOIN cifalcomercial.Produtos ON ItensPedido.CodProduto=Produtos.CodProduto
+        INNER JOIN cifalcomercial.SubGrupos ON Produtos.CodSubGrupo=SubGrupos.CodSubGrupo
+        LEFT JOIN cifalcomercial.categoriasproduto ON categoriasproduto.codcategoriaprod=SubGrupos.codcategoriaprod
+        WHERE Pedidos.Cancelado IS NULL AND TipoOperacao.BxaRemessa=true AND CapaDanfe.DataFec IS NULL
+        GROUP BY ItensPedido.CodProduto, Pedidos.CodVendedor
+        UNION ALL
+        -- (3) DEVOLUÇÃO: retorno de carga (E entra, S sai).
+        SELECT MovRetorno.CodProduto,
+               (SELECT u.Unidade FROM cifalcomercial.UnidadeAlt u WHERE u.CodProduto=MovRetorno.CodProduto AND u.UnidPadrao='S'),
+               0, 0,
+               SUM(CASE WHEN MovRetorno.Tipo='E' THEN MovRetorno.Qtde ELSE -MovRetorno.Qtde END) /
+                 (SELECT u.QdeEmb FROM cifalcomercial.UnidadeAlt u WHERE u.CodProduto=MovRetorno.CodProduto AND u.UnidPadrao='S'),
+               CapaDanfe.CodVen,
+               MIN(categoriasproduto.descategoriaprod), MIN(SubGrupos.DesSubGrupo), MIN(Produtos.Desceq), MIN(Produtos.CodFor)
+        FROM cifalcomercial.MovRetorno
+        INNER JOIN cifalcomercial.Produtos ON MovRetorno.CodProduto=Produtos.CodProduto
+        INNER JOIN cifalcomercial.CapaDanfe ON MovRetorno.ContrDanfe=CapaDanfe.ContrDanf
+        INNER JOIN cifalcomercial.SubGrupos ON Produtos.CodSubGrupo=SubGrupos.CodSubGrupo
+        LEFT JOIN cifalcomercial.categoriasproduto ON categoriasproduto.codcategoriaprod=SubGrupos.codcategoriaprod
+        WHERE CapaDanfe.DataFec IS NULL
+        GROUP BY MovRetorno.CodProduto, CapaDanfe.CodVen
+      ) q
+      LEFT JOIN cifalcomercial.eqford f     ON f.codfor=q.codfor
+      LEFT JOIN cifalcomercial.eqvend e     ON e.codven=q.codven
       LEFT JOIN cifalcomercial.supervisor s ON s.codsupervisor=e.codsupervisor
-      LEFT JOIN cifalcomercial.gerente g ON g.codgerente=e.codgerente`)).rows;
+      LEFT JOIN cifalcomercial.gerente g    ON g.codgerente=s.codgerente
+      GROUP BY q.codproduto, q.codven`)).rows;
 
     const diasUteis90 = parseInt((await db.query(`
       SELECT COUNT(*) n FROM cifalcomercial.tcperiodo
       WHERE final_de_semana=0 AND feriado_nacional=0 AND dia_completo BETWEEN $1 AND $2
     `, [iniStr, fimStr])).rows[0].n, 10);
 
-    const venda90Rows = (await db.query(`
+    const venda90Rows = (await this._queryCronometradaCli(client, 'estoque/venda90', `
       SELECT codven, codigo codproduto, SUM(total) r, SUM(qtde) qq
-      FROM (${BASE_CTE}) s
+      FROM tmp_base_90
       GROUP BY codven, codigo
-    `, [iniStr, fimStr])).rows;
+    `)).rows;
     const venda90 = {}; // "codven|codproduto" -> {r, q}
     for (const row of venda90Rows) venda90[`${row.codven}|${row.codproduto}`] = { r: num(row.r), q: num(row.qq) };
 
-    const detalhe = [], vendedor_info = {}, por_vendedor = {}, por_supervisor = {}, por_gerente = {}, por_categoria = {}, por_produto = {};
+    const detalhe = [], vendedor_info = {}, por_vendedor = {}, por_supervisor = {}, por_gerente = {}, por_categoria = {}, por_fornecedor = {}, por_produto = {};
     const prodVend = {}; let comSaldo = 0;
+    // Totais de movimento da carga. O gerente compara a linha "total da remessa"
+    // da planilha; antes o painel só publicava o saldo, então não havia como
+    // conferir. Remessa/Vendido/Devolvido são as três pernas do UNION.
+    const totalMov = { remessa: 0, vendido: 0, devolvido: 0 };
+    const SEM_FORN = '(sem fornecedor)';
     for (const r of rows) {
       const saldo = num(r.saldo), valor = num(r.valor_carga);
+      const remessa = num(r.remessa), vendido = num(r.vendido), devolvido = num(r.devolvido);
+      const fornecedor = r.fornecedor || SEM_FORN;
       const v90 = venda90[`${r.codven}|${r.codproduto}`] || { r: 0, q: 0 };
-      detalhe.push([String(r.codven), String(r.codproduto), saldo, valor, round2(v90.r), round2(v90.q)]);
+      // índice 6 = remessa (o front soma essa coluna nas cascatas)
+      detalhe.push([String(r.codven), String(r.codproduto), saldo, valor, round2(v90.r), round2(v90.q), round2(remessa)]);
       if (saldo > 0) comSaldo++;
+      totalMov.remessa += remessa; totalMov.vendido += vendido; totalMov.devolvido += devolvido;
       vendedor_info[String(r.codven)] = { vendedor: r.vendedor, supervisor: r.supervisor, gerente: r.gerente };
-      const acc = (o, k, extra) => { if (!o[k]) o[k] = Object.assign({ saldo: 0, valor_carga: 0, venda90: 0 }, extra || {}); o[k].saldo += saldo; o[k].valor_carga += valor; o[k].venda90 += v90.r; };
+      const acc = (o, k, extra) => {
+        if (!o[k]) o[k] = Object.assign({ saldo: 0, valor_carga: 0, venda90: 0, remessa: 0, vendido: 0, devolvido: 0 }, extra || {});
+        o[k].saldo += saldo; o[k].valor_carga += valor; o[k].venda90 += v90.r;
+        o[k].remessa += remessa; o[k].vendido += vendido; o[k].devolvido += devolvido;
+      };
       if (r.vendedor) acc(por_vendedor, r.vendedor, { supervisor: r.supervisor, gerente: r.gerente });
       if (r.supervisor) acc(por_supervisor, r.supervisor, { gerente: r.gerente });
       if (r.gerente) acc(por_gerente, r.gerente);
       if (r.categoria) acc(por_categoria, r.categoria);
+      acc(por_fornecedor, fornecedor, { codfor: r.codfor != null ? String(r.codfor) : null });
       const pk = String(r.codproduto);
-      if (!por_produto[pk]) { por_produto[pk] = { saldo: 0, valor_carga: 0, venda90: 0, descricao: r.descricao, categoria: r.categoria, grupo: r.grupo, n_vendedores: 0 }; prodVend[pk] = new Set(); }
-      por_produto[pk].saldo += saldo; por_produto[pk].valor_carga += valor; por_produto[pk].venda90 += v90.r;
+      if (!por_produto[pk]) { por_produto[pk] = { saldo: 0, valor_carga: 0, venda90: 0, remessa: 0, descricao: r.descricao, categoria: r.categoria, grupo: r.grupo, fornecedor, n_vendedores: 0 }; prodVend[pk] = new Set(); }
+      por_produto[pk].saldo += saldo; por_produto[pk].valor_carga += valor; por_produto[pk].venda90 += v90.r; por_produto[pk].remessa += remessa;
       if (saldo > 0) prodVend[pk].add(r.codven);
     }
-    const rnd = o => { for (const k in o) { o[k].saldo = round2(o[k].saldo); o[k].valor_carga = round2(o[k].valor_carga); o[k].venda90 = round2(o[k].venda90); } };
-    rnd(por_vendedor); rnd(por_supervisor); rnd(por_gerente); rnd(por_categoria);
-    for (const k in por_produto) { por_produto[k].saldo = round2(por_produto[k].saldo); por_produto[k].valor_carga = round2(por_produto[k].valor_carga); por_produto[k].venda90 = round2(por_produto[k].venda90); por_produto[k].n_vendedores = prodVend[k].size; }
+    const rnd = o => { for (const k in o) { for (const c of ['saldo', 'valor_carga', 'venda90', 'remessa', 'vendido', 'devolvido']) if (o[k][c] != null) o[k][c] = round2(o[k][c]); } };
+    rnd(por_vendedor); rnd(por_supervisor); rnd(por_gerente); rnd(por_categoria); rnd(por_fornecedor);
+    for (const k in por_produto) { por_produto[k].saldo = round2(por_produto[k].saldo); por_produto[k].valor_carga = round2(por_produto[k].valor_carga); por_produto[k].venda90 = round2(por_produto[k].venda90); por_produto[k].remessa = round2(por_produto[k].remessa); por_produto[k].n_vendedores = prodVend[k].size; }
+    for (const k in totalMov) totalMov[k] = round2(totalMov[k]);
     return {
-      linhas: rows.length, linhas_com_saldo: comSaldo, vendedor_info, por_vendedor, por_supervisor, por_gerente, por_categoria, por_produto, detalhe,
+      linhas: rows.length, linhas_com_saldo: comSaldo, vendedor_info, por_vendedor, por_supervisor, por_gerente, por_categoria, por_fornecedor, por_produto, detalhe,
+      total_movimento: totalMov,
       dias_uteis_90: diasUteis90, janela_venda_90: { inicio: iniStr, fim: fimStr },
     };
+  }
+
+  // ── JANELA DE 90 DIAS MATERIALIZADA UMA VEZ ────────────────────────────────
+  // _buildEstoque, _buildAbcd90 e _buildDowCascata olham exatamente a MESMA janela
+  // (hoje-89 → hoje). Cada uma embutia `FROM (BASE_CTE) s` por conta própria: 5
+  // varreduras do join de itenspedido (20 GB / 42,7M linhas) com pedidos (14 GB /
+  // 6,4M linhas) para responder o que é uma consulta só.
+  //
+  // Medido no ciclo anterior: 48,7s a varredura mais barata e 503,5s a mais cara —
+  // contra 2 a 3 segundos, e ZERO leitura de disco, das agregações que rodam sobre
+  // a temp table nos períodos. É a mesma estratégia que _buildPeriodo já usava; as
+  // etapas de 90 dias tinham ficado de fora.
+  //
+  // A temp table é POR CONEXÃO, então as três etapas precisam compartilhar o mesmo
+  // client — daí o wrapper em vez de cada uma abrir o seu.
+  async _comJanela90(fn) {
+    const hoje = new Date();
+    const iniJanela = new Date(hoje); iniJanela.setDate(iniJanela.getDate() - 89);
+    const fmt = dt => dt.toISOString().slice(0, 10);
+    const janela = { inicio: fmt(iniJanela), fim: fmt(hoje) };
+
+    const client = await db.getClient();
+    try {
+      await client.query('BEGIN');
+      const t0 = Date.now();
+      await client.query(`CREATE TEMP TABLE tmp_base_90 ON COMMIT DROP AS ${BASE_CTE}`, [janela.inicio, janela.fim]);
+      // Estatísticas: sem ANALYZE o planner assume o padrão para a temp table e
+      // escolhe plano ruim nas agregações seguintes.
+      await client.query('ANALYZE tmp_base_90');
+      console.log(`[ETL]   tmp_base_90 (${janela.inicio} a ${janela.fim}) materializada em ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+      const r = await fn(client, janela);
+      await client.query('COMMIT');
+      return r;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  // Igual a _queryCronometrada, mas num client específico (o dono da temp table).
+  async _queryCronometradaCli(client, nome, sql, params) {
+    const t0 = Date.now();
+    const r = await client.query(sql, params);
+    console.log(`[ETL]   ${nome}: ${((Date.now() - t0) / 1000).toFixed(1)}s (${r.rows.length} linhas)`);
+    return r;
+  }
+
+  // Query cronometrada. Usada nas consultas que embutem o BASE_CTE inteiro
+  // (`FROM (${BASE_CTE}) s`): cada uma dessas re-executa o join de itenspedido
+  // (20 GB / 42,7M linhas) com pedidos (14 GB / 6,4M linhas) do zero, ao contrário
+  // das que leem de tmp_base_vendas. É onde o tempo do ciclo se concentra, então
+  // vale saber quanto cada uma custa individualmente.
+  async _queryCronometrada(nome, sql, params) {
+    const t0 = Date.now();
+    const r = await db.query(sql, params);
+    console.log(`[ETL]   ${nome}: ${((Date.now() - t0) / 1000).toFixed(1)}s (${r.rows.length} linhas)`);
+    return r;
   }
 
   // ── ABA "Clientes de A a F" — classificação por Faturamento x Margem, SEMPRE
   // sobre os últimos 90 dias corridos até hoje (não muda com o filtro de
   // Período, igual à Estoque x Venda acima) — pedido explícito do usuário.
   // Independe de período: computado 1x aqui, não dentro de _buildPeriodo().
-  async _buildAbcd90() {
-    const hoje = new Date();
-    const iniJanela = new Date(hoje); iniJanela.setDate(iniJanela.getDate() - 89);
-    const fmt = dt => dt.toISOString().slice(0, 10);
-    const [iniStr, fimStr] = [fmt(iniJanela), fmt(hoje)];
+  async _buildAbcd90(client, janela) {
+    const [iniStr, fimStr] = [janela.inicio, janela.fim];
 
     // Total de Faturamento/Custo por cliente na janela.
-    const porCliente = (await db.query(`
-      SELECT CodCli codigo, Cliente nome, SUM(Total) r, SUM(customedio) c
-      FROM (${BASE_CTE}) s
+    //
+    // GROUP BY só por CodCli (int), com o nome vindo por MIN(). Agrupar por
+    // (CodCli, Cliente) punha um varchar largo na chave: o planner trocava
+    // HashAggregate por Sort + GroupAggregate e derramava em disco. Medido: esta
+    // consulta levava 503,5s enquanto a de estoque, na MESMA janela e na mesma base,
+    // levava 48,7s agrupando por dois int. Cliente é funcionalmente dependente de
+    // CodCli, então MIN() devolve o mesmo nome sem alargar a chave.
+    const porCliente = (await this._queryCronometradaCli(client, 'abcd90/por-cliente', `
+      SELECT CodCli codigo, MIN(Cliente) nome, SUM(Total) r, SUM(customedio) c
+      FROM tmp_base_90
       WHERE Cliente IS NOT NULL
-      GROUP BY CodCli, Cliente
-    `, [iniStr, fimStr])).rows;
+      GROUP BY CodCli
+    `)).rows;
 
     // Vendedor/Supervisor/Gerente DOMINANTE do cliente na janela (maior receita) —
     // mesmo critério já usado nas outras cascatas de cliente deste painel.
-    const porClienteVend = (await db.query(`
-      SELECT CodCli codigo, CodVen vcodigo, Vendedor vnome, supervisor, gerente, SUM(Total) r
-      FROM (${BASE_CTE}) s
+    // Mesma razão da anterior: chave (CodCli, CodVen) só com int, nomes por MIN().
+    // O ORDER BY também saiu — quem escolhe o dominante é o laço JS abaixo, então
+    // ordenar 200 mil linhas no banco era trabalho jogado fora.
+    const porClienteVend = (await this._queryCronometradaCli(client, 'abcd90/vendedor-dominante', `
+      SELECT CodCli codigo, CodVen vcodigo, MIN(Vendedor) vnome,
+             MIN(supervisor) supervisor, MIN(gerente) gerente, SUM(Total) r
+      FROM tmp_base_90
       WHERE Vendedor IS NOT NULL
-      GROUP BY CodCli, CodVen, Vendedor, supervisor, gerente
-      ORDER BY CodCli, SUM(Total) DESC
-    `, [iniStr, fimStr])).rows;
-    const vendDominante = {}; // codigo -> {codigo,nome,supervisor,gerente} (1ª linha = dominante)
+      GROUP BY CodCli, CodVen
+    `)).rows;
+    // codigo -> {codigo,nome,supervisor,gerente} do vendedor de MAIOR receita.
+    // A query não vem mais ordenada (ver acima), então a comparação é feita aqui —
+    // antes dependia de "1ª linha = dominante", que só valia com o ORDER BY.
+    const vendDominante = {};
+    const melhorR = {};
     for (const row of porClienteVend) {
       const k = String(row.codigo);
-      if (!vendDominante[k]) vendDominante[k] = { codigo: String(row.vcodigo), nome: row.vnome, supervisor: row.supervisor, gerente: row.gerente };
+      const r = num(row.r);
+      if (melhorR[k] === undefined || r > melhorR[k]) {
+        melhorR[k] = r;
+        vendDominante[k] = { codigo: String(row.vcodigo), nome: row.vnome, supervisor: row.supervisor, gerente: row.gerente };
+      }
     }
 
     const clientes = porCliente.map(x => {
@@ -886,12 +1108,12 @@ class DashboardETLService {
         .forEach(cl => top100Codes.add(parseInt(cl.codigo, 10)));
     }
     const topCodes = [...top100Codes].filter(Number.isFinite);
-    const catRows = topCodes.length ? (await db.query(`
+    const catRows = topCodes.length ? (await this._queryCronometradaCli(client, 'abcd90/categoria-top', `
       SELECT CodCli codigo, categoria, SUM(Total) r, SUM(customedio) c
-      FROM (${BASE_CTE}) s
-      WHERE CodCli = ANY($3::int[]) AND categoria IS NOT NULL
+      FROM tmp_base_90
+      WHERE CodCli = ANY($1::int[]) AND categoria IS NOT NULL
       GROUP BY CodCli, categoria
-    `, [iniStr, fimStr, topCodes])).rows : [];
+    `, [topCodes])).rows : [];
     const clientes_categoria = {};
     for (const row of catRows) {
       const k = String(row.codigo);
@@ -910,19 +1132,20 @@ class DashboardETLService {
   // Gerente/Supervisor/Vendedor aqui — GROUP BY adicional por vendedor
   // multiplicaria o volume de linhas sem um pedido explícito por esse recorte;
   // front avisa isso na tela).
-  async _buildDowCascata() {
-    const hoje = new Date();
-    const iniJanela = new Date(hoje); iniJanela.setDate(iniJanela.getDate() - 89);
-    const fmt = dt => dt.toISOString().slice(0, 10);
-    const [iniStr, fimStr] = [fmt(iniJanela), fmt(hoje)];
+  async _buildDowCascata(client, janela) {
+    const [iniStr, fimStr] = [janela.inicio, janela.fim];
 
-    const rows = (await db.query(`
-      SELECT EXTRACT(ISODOW FROM DataPed)::int dow, categoria, Codigo codigo, Descricao produto,
+    // Chave de agrupamento só com int (dow, Codigo); categoria e Descricao vêm por
+    // MIN() — ambas são funcionalmente dependentes do produto. Mesma razão da
+    // otimização em _buildAbcd90: texto na chave joga o plano para Sort em disco.
+    const rows = (await this._queryCronometradaCli(client, 'dowCascata', `
+      SELECT EXTRACT(ISODOW FROM DataPed)::int dow, Codigo codigo,
+             MIN(categoria) categoria, MIN(Descricao) produto,
              SUM(Total) r, SUM(customedio) c, SUM(Qtde) q
-      FROM (${BASE_CTE}) s
+      FROM tmp_base_90
       WHERE categoria IS NOT NULL AND Descricao IS NOT NULL AND EXTRACT(ISODOW FROM DataPed) BETWEEN 1 AND 5
-      GROUP BY dow, categoria, Codigo, Descricao
-    `, [iniStr, fimStr])).rows;
+      GROUP BY 1, 2
+    `)).rows;
 
     const porDow = { 1: {}, 2: {}, 3: {}, 4: {}, 5: {} };
     for (const row of rows) {
@@ -934,6 +1157,108 @@ class DashboardETLService {
       porDow[dow][cat] = porDow[dow][cat].slice(0, 10);
     }
     return { janela: { inicio: iniStr, fim: fimStr }, porDow };
+  }
+
+  // ── INADIMPLÊNCIA (aba própria, cascata Gerente → Supervisor → Vendedor → Cliente)
+  // Antes isso só existia como o filtro "Inadimplente (S/N)", que respondia se o
+  // cliente devia — mas não QUANTO, HÁ QUANTO TEMPO nem DE QUEM é a carteira.
+  //
+  // Duas fontes, as mesmas que o BASE_CTE usa para marcar o flag:
+  //   creceber -> duplicata em aberto (datqui NULL) e já vencida;
+  //   chqrec   -> cheque devolvido, não pago, devolvido há mais de 30 dias.
+  // Saldo da duplicata é valdup - valpag (pagamento parcial é comum); títulos com
+  // saldo <= 0 saem fora. Medido nesta base: 10.881 títulos, 4.681 clientes,
+  // R$ 19,84 mi — sendo R$ 8,99 mi com mais de um ano de atraso.
+  //
+  // Hierarquia pelo codven DO TÍTULO (quem vendeu), subindo por
+  // eqvend -> supervisor -> gerente via supervisor.codgerente (mesma regra do resto
+  // do painel; eqvend.codgerente diverge em 310 dos 1.171 vendedores).
+  async _buildInadimplencia() {
+    const rows = (await this._queryCronometrada('inadimplencia/titulos', `
+      WITH titulos AS (
+        SELECT cr.codcli, cr.codven, 'DUPLICATA'::text origem,
+               (cr.valdup - COALESCE(cr.valpag,0))::numeric saldo,
+               (now()::date - cr.datven::date) atraso,
+               cr.datven::date vencimento
+        FROM cifalcomercial.creceber cr
+        WHERE cr.datqui IS NULL AND cr.datven::date < now()::date
+          AND (cr.valdup - COALESCE(cr.valpag,0)) > 0
+        UNION ALL
+        SELECT ch.codcli, ch.codven, 'CHEQUE'::text,
+               ch.valchq::numeric,
+               (now()::date - ch.datadevolucao::date),
+               ch.datadevolucao::date
+        FROM cifalcomercial.chqrec ch
+        WHERE ch.datadevolucao IS NOT NULL AND ch.datpag IS NULL
+          AND ch.datadevolucao::date <= now()::date - 30 AND ch.valchq > 0
+      )
+      SELECT t.codcli, cl.nomcli cliente,
+             e.nomven vendedor, s.nomesupervisor supervisor, g.nomegerente gerente,
+             COUNT(*) titulos,
+             COUNT(*) FILTER (WHERE t.origem='CHEQUE') cheques,
+             SUM(t.saldo) saldo,
+             MAX(t.atraso) atraso_max,
+             MIN(t.vencimento) venc_mais_antigo,
+             SUM(t.saldo) FILTER (WHERE t.atraso <= 30)                    f0_30,
+             SUM(t.saldo) FILTER (WHERE t.atraso BETWEEN 31 AND 90)        f31_90,
+             SUM(t.saldo) FILTER (WHERE t.atraso BETWEEN 91 AND 365)       f91_365,
+             SUM(t.saldo) FILTER (WHERE t.atraso > 365)                    f365_mais
+      FROM titulos t
+      LEFT JOIN cifalcomercial.eqclid cl     ON cl.codcli = t.codcli
+      LEFT JOIN cifalcomercial.eqvend e      ON e.codven = t.codven
+      LEFT JOIN cifalcomercial.supervisor s  ON s.codsupervisor = e.codsupervisor
+      LEFT JOIN cifalcomercial.gerente g     ON g.codgerente = s.codgerente
+      GROUP BY t.codcli, cl.nomcli, e.nomven, s.nomesupervisor, g.nomegerente
+      ORDER BY SUM(t.saldo) DESC
+    `)).rows;
+
+    const FAIXAS = ['f0_30', 'f31_90', 'f91_365', 'f365_mais'];
+    const zero = () => ({ clientes: 0, titulos: 0, saldo: 0, f0_30: 0, f31_90: 0, f91_365: 0, f365_mais: 0 });
+    const somar = (alvo, cl) => {
+      alvo.clientes++; alvo.titulos += cl.titulos; alvo.saldo += cl.saldo;
+      FAIXAS.forEach(f => { alvo[f] += cl[f]; });
+    };
+    const arredondar = o => { o.saldo = round2(o.saldo); FAIXAS.forEach(f => { o[f] = round2(o[f]); }); return o; };
+
+    // SEM VENDEDOR é um bucket explícito: 144 títulos não têm codven casável no
+    // cadastro. Jogar em "null" some da tela; nomear deixa o buraco visível.
+    const SEM = '(sem vendedor no cadastro)';
+    const clientes = rows.map(r => ({
+      codigo: String(r.codcli),
+      nome: r.cliente || `(cliente ${r.codcli})`,
+      vendedor:   r.vendedor   || SEM,
+      supervisor: r.supervisor || SEM,
+      gerente:    r.gerente    || SEM,
+      titulos: parseInt(r.titulos, 10) || 0,
+      cheques: parseInt(r.cheques, 10) || 0,
+      saldo: round2(num(r.saldo)),
+      atraso_max: parseInt(r.atraso_max, 10) || 0,
+      venc_mais_antigo: r.venc_mais_antigo ? isoDay(r.venc_mais_antigo) : null,
+      f0_30: round2(num(r.f0_30)), f31_90: round2(num(r.f31_90)),
+      f91_365: round2(num(r.f91_365)), f365_mais: round2(num(r.f365_mais)),
+    }));
+
+    const por_gerente = {}, por_supervisor = {}, por_vendedor = {};
+    const total = zero();
+    for (const cl of clientes) {
+      somar(total, cl);
+      somar(por_gerente[cl.gerente]      || (por_gerente[cl.gerente] = zero()), cl);
+      somar(por_supervisor[cl.supervisor]|| (por_supervisor[cl.supervisor] = zero()), cl);
+      somar(por_vendedor[cl.vendedor]    || (por_vendedor[cl.vendedor] = zero()), cl);
+    }
+    [total, ...Object.values(por_gerente), ...Object.values(por_supervisor), ...Object.values(por_vendedor)].forEach(arredondar);
+
+    // Ligação vendedor→supervisor→gerente para a cascata montar a árvore sem
+    // depender de _hierarquia (o título pode ser de vendedor hoje inativo).
+    const arvore = {};
+    for (const cl of clientes) {
+      const g = arvore[cl.gerente] || (arvore[cl.gerente] = {});
+      (g[cl.supervisor] || (g[cl.supervisor] = new Set())).add(cl.vendedor);
+    }
+    const arvoreJson = {};
+    for (const g in arvore) { arvoreJson[g] = {}; for (const s in arvore[g]) arvoreJson[g][s] = [...arvore[g][s]].sort(); }
+
+    return { gerado_em: isoDay(new Date()), total, clientes, por_gerente, por_supervisor, por_vendedor, arvore: arvoreJson };
   }
 
   // Árvore REAL da força de vendas (cadastro: supervisor + eqvend, só ativos).
@@ -969,22 +1294,144 @@ class DashboardETLService {
   // O front tolera dado parcial: periodoInicial() cai no período mais recente que
   // existir e as visões de _estoque/_abcd90/_hierarquia têm guarda própria
   // ("Dados não disponíveis") até chegarem.
-  async run(onParcial) {
+  // ── REUSO DE PERÍODOS FECHADOS ──────────────────────────────────────────────
+  // Dos 4 semestres do cubo, só o CORRENTE muda. 2026_1 fechou em 30/06; 2025_1 e
+  // 2025_2 são história. Ainda assim, todo ciclo remontava os quatro.
+  //
+  // Custo medido de um CREATE TEMP TABLE tmp_base_vendas: ~7,4 GB lidos do disco do
+  // banco e ~2,8 GB de temp escrito, POR PERÍODO. Quatro por ciclo, de 6 em 6 horas,
+  // é ~30 GB de leitura para reproduzir três resultados idênticos aos da véspera.
+  //
+  // Aqui o período fechado é reaproveitado do ciclo anterior (memória) ou de um
+  // snapshot em disco LOCAL da API — nada é gravado no banco. Sobra 1 período por
+  // ciclo em regime permanente, e um restart da API também não paga os 30 GB.
+  //
+  // Revalidação: o ERP pode editar o passado (meta revisada, pedido cancelado
+  // retroativamente), então um período fechado é remontado assim que o snapshot
+  // passa de ETL_REVALIDAR_HORAS (padrão 24h). ETL_FORCAR_TUDO=1 ignora o cache.
+  _dirSnapshots() { return path.join(__dirname, '..', '..', '.cache-etl'); }
+  _arquivoSnapshot(key) { return path.join(this._dirSnapshots(), `periodo-${key}.json`); }
+
+  _periodoFechado(periodo) {
+    const hoje = new Date().toISOString().slice(0, 10);
+    return periodo.fim < hoje;
+  }
+
+  async _lerSnapshot(key, maxIdadeMs) {
+    try {
+      const txt = await fsp.readFile(this._arquivoSnapshot(key), 'utf8');
+      const snap = JSON.parse(txt);
+      if (!snap || !snap.dados || !snap.gravadoEm) return null;
+      if (Date.now() - new Date(snap.gravadoEm).getTime() > maxIdadeMs) return null;
+      return snap;
+    } catch (e) { return null; }        // não existe / corrompido: remonta
+  }
+
+  async _gravarSnapshot(key, dados) {
+    try {
+      await fsp.mkdir(this._dirSnapshots(), { recursive: true });
+      await fsp.writeFile(this._arquivoSnapshot(key),
+        JSON.stringify({ gravadoEm: new Date().toISOString(), dados }));
+    } catch (e) { console.warn(`[ETL] snapshot de ${key} não gravado:`, e.message); }
+  }
+
+  async run(onParcial, cachePrevio) {
     const resultado = {};
     const publicar = () => {
       if (typeof onParcial !== 'function') return;
       try { onParcial(resultado); } catch (e) { console.error('[ETL] publicação parcial falhou:', e.message); }
     };
 
+    // Cronometragem por etapa. Sem isto, "o ETL está lento" não era acionável: o
+    // log só dizia quais períodos ficaram prontos, e as etapas finais
+    // (estoque/abcd90/dowCascata) não reportavam nada até o ciclo inteiro acabar.
+    const tempos = {};
+    const cronometrar = async (nome, fn) => {
+      const t0 = Date.now();
+      try {
+        const r = await fn();
+        tempos[nome] = (Date.now() - t0) / 1000;
+        console.log(`[ETL] ${nome} pronto em ${tempos[nome].toFixed(1)}s`);
+        return r;
+      } catch (e) {
+        tempos[nome] = (Date.now() - t0) / 1000;
+        console.error(`[ETL] ${nome} falhou após ${tempos[nome].toFixed(1)}s:`, e.message);
+        throw e;
+      }
+    };
+
+    // _hierarquia PRIMEIRO, antes dos períodos. Motivo: é a única etapa que o front
+    // precisa JÁ na primeira resposta 200 de /full. O front resolve o escopo do
+    // usuário logado (nome vindo da API de auth -> chave canônica do cubo) por
+    // buildCanonIndex(), que lê exclusivamente REAL_DATA._hierarquia. Enquanto ela
+    // for a última etapa, /full devolve 200 logo após o 1º período (~1 min) e o
+    // front — que busca /full uma única vez no boot — congela sem _hierarquia pelo
+    // resto da sessão: o índice canônico fica vazio, a barreira de acesso de
+    // vendedoresReais() não casa nome nenhum e o filtro Vendedor aparece VAZIO.
+    // É uma consulta só de cadastro (supervisor + eqvend), não varre vendas: custa
+    // milissegundos, então não atrasa o primeiro período de forma perceptível.
+    try { resultado._hierarquia = await cronometrar('hierarquia', () => this._hierarquiaReal()); } catch (e) {}
+
+    const REVALIDAR_MS = Math.max(1, parseFloat(process.env.ETL_REVALIDAR_HORAS) || 24) * 3600 * 1000;
+    const forcarTudo = process.env.ETL_FORCAR_TUDO === '1';
+    let reaproveitados = 0;
+
     for (const periodo of PERIODOS) {
-      resultado[periodo.key] = await this._buildPeriodo(periodo);
-      console.log(`[ETL] período ${periodo.key} pronto (${Object.keys(resultado).filter(k => !k.startsWith('_')).length}/${PERIODOS.length}).`);
+      const fechado = this._periodoFechado(periodo);
+
+      if (fechado && !forcarTudo) {
+        // 1) ciclo anterior ainda em memória
+        const daMemoria = cachePrevio && cachePrevio[periodo.key];
+        if (daMemoria) {
+          resultado[periodo.key] = daMemoria;
+          reaproveitados++;
+          console.log(`[ETL] período ${periodo.key} reaproveitado do ciclo anterior (fechado em ${periodo.fim}) — 0 leitura no banco`);
+          publicar();
+          continue;
+        }
+        // 2) snapshot em disco local (sobrevive a restart da API)
+        const snap = await this._lerSnapshot(periodo.key, REVALIDAR_MS);
+        if (snap) {
+          resultado[periodo.key] = snap.dados;
+          reaproveitados++;
+          console.log(`[ETL] período ${periodo.key} lido do snapshot local de ${snap.gravadoEm} — 0 leitura no banco`);
+          publicar();
+          continue;
+        }
+      }
+
+      resultado[periodo.key] = await cronometrar(`período ${periodo.key}`, () => this._buildPeriodo(periodo));
+      if (fechado) await this._gravarSnapshot(periodo.key, resultado[periodo.key]);
       publicar(); // já dá pra abrir o painel neste período
     }
-    try { resultado._estoque = await this._buildEstoque(); publicar(); } catch (e) { console.error('[ETL] estoque falhou:', e.message); }
-    try { resultado._abcd90 = await this._buildAbcd90(); publicar(); } catch (e) { console.error('[ETL] abcd90 falhou:', e.message); }
-    try { resultado._dowCascata = await this._buildDowCascata(); publicar(); } catch (e) { console.error('[ETL] dowCascata falhou:', e.message); }
-    try { resultado._hierarquia = await this._hierarquiaReal(); publicar(); } catch (e) { console.error('[ETL] hierarquia falhou:', e.message); }
+    if (reaproveitados) {
+      console.log(`[ETL] ${reaproveitados} de ${PERIODOS.length} períodos reaproveitados — ~${(reaproveitados * 7.4).toFixed(0)} GB de leitura no banco evitados neste ciclo.`);
+    }
+    // Inadimplência ANTES das etapas de 90 dias: lê creceber/chqrec direto, não
+    // toca o BASE_CTE, custa ~0,3s. Deixá-la no fim da fila fazia a aba esperar os
+    // ~15 min do abcd90 por nada.
+    try { resultado._inadimplencia = await cronometrar('inadimplencia', () => this._buildInadimplencia()); publicar(); } catch (e) {}
+
+    // As três etapas de 90 dias compartilham UMA materialização da janela.
+    // Publicamos entre elas para o painel ir liberando aba por aba; se uma falhar,
+    // as outras já publicadas permanecem (o catch não derruba as anteriores).
+    try {
+      await this._comJanela90(async (client, janela) => {
+        try { resultado._estoque    = await cronometrar('estoque',    () => this._buildEstoque(client, janela));    publicar(); } catch (e) {}
+        try { resultado._abcd90     = await cronometrar('abcd90',     () => this._buildAbcd90(client, janela));     publicar(); } catch (e) {}
+        try { resultado._dowCascata = await cronometrar('dowCascata', () => this._buildDowCascata(client, janela)); publicar(); } catch (e) {}
+      });
+    } catch (e) { console.error('[ETL] janela de 90 dias falhou:', e.message); }
+    // Recarrega o cadastro no fim do ciclo: se a tentativa do começo falhou, esta é
+    // a segunda chance; se deu certo, apenas atualiza (o cadastro pode ter mudado
+    // durante os ~25 min do ciclo).
+    try { resultado._hierarquia = await cronometrar('hierarquia (refresh)', () => this._hierarquiaReal()); publicar(); } catch (e) {}
+
+    const total = Object.values(tempos).reduce((a, b) => a + b, 0);
+    const ranking = Object.entries(tempos).sort((a, b) => b[1] - a[1])
+      .map(([k, v]) => `${k} ${v.toFixed(0)}s (${(100 * v / total).toFixed(0)}%)`);
+    console.log(`[ETL] ciclo ${total.toFixed(0)}s — por etapa: ${ranking.join(' | ')}`);
+    resultado._tempos = { total_s: +total.toFixed(1), etapas: tempos };
     return resultado;
   }
 }
