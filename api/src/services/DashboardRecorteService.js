@@ -44,6 +44,13 @@ const CAMPOS_INTERNOS = [
   // Mês: o painel trabalha por mês, então o recorte já vem filtrado — evita depender
   // de grão diário no cubo e deixa todas as abas coerentes com o mês selecionado.
   { key: 'mes',    expr: 'extract(month from Pedidos.DataFechamento)', tipo: 'int[]' },
+  // ANOMES ("2026-07") permite selecionar meses de ANOS DIFERENTES na mesma
+  // consulta — Jul/2026 + Jul/2025, por exemplo. `mes` sozinho é ambíguo entre
+  // anos, e o cubo é materializado por semestre, então comparar anos por ali
+  // exigiria várias consultas. Aqui o intervalo de datas do BASE_CTE passa a ser
+  // derivado do menor e do maior mês escolhidos (ver _limitesDeAnomes), e este
+  // filtro recorta exatamente os meses pedidos dentro dele.
+  { key: 'anomes', expr: `to_char(Pedidos.DataFechamento,'YYYY-MM')`, tipo: 'text[]' },
 ];
 const CAMPOS_EXTERNOS = [
   { key: 'cat',    expr: 'b.categoria',     tipo: 'text[]' },
@@ -64,7 +71,20 @@ class DashboardRecorteService {
     return p;
   }
 
-  // filtros: { cli:[cods], ger:[], sup:[], vend:[], cat:[], grp:[], canal:[], inad:[], status:[] }
+  // Menor e maior data cobertas por uma lista de "YYYY-MM". Vira o intervalo
+  // $1/$2 do BASE_CTE, no lugar das datas do semestre: com Jul/2025 + Jul/2026 a
+  // varredura precisa abranger os dois anos. O filtro `anomes` recorta os meses
+  // exatos dentro desse intervalo, então meses no meio (Ago/2025 … Jun/2026) são
+  // lidos pela varredura mas não entram no resultado.
+  _limitesDeAnomes(lista) {
+    const ordenados = lista.slice().sort();
+    const primeiro = ordenados[0], ultimo = ordenados[ordenados.length - 1];
+    const [aF, mF] = ultimo.split('-').map(Number);
+    const fimMes = new Date(Date.UTC(aF, mF, 0)).toISOString().slice(0, 10); // dia 0 do mês seguinte = último dia
+    return { ini: `${primeiro}-01`, fim: fimMes };
+  }
+
+  // filtros: { cli:[cods], ger:[], sup:[], vend:[], cat:[], grp:[], canal:[], inad:[], status:[], anomes:['2026-07'] }
   async getScope(periodoKey, filtros) {
     const periodo = this._periodo(periodoKey);
 
@@ -90,9 +110,26 @@ class DashboardRecorteService {
     if (hit) return hit;
 
     // $1/$2 são as datas do BASE_CTE; os filtros seguem a partir de $3.
-    const params = [periodo.ini, periodo.fim];
+    // Com `anomes`, o intervalo vem da própria seleção (pode cruzar anos) em vez
+    // das datas do semestre.
+    const selAnomes = ativos.find(a => a.key === 'anomes');
+    const janela = selAnomes ? this._limitesDeAnomes(selAnomes.vals) : { ini: periodo.ini, fim: periodo.fim };
+    const params = [janela.ini, janela.fim];
     const cond = a => { params.push(a.vals); return `${a.expr} = ANY($${params.length}::${a.tipo})`; };
-    const internos = ativos.filter(a => CAMPOS_INTERNOS.some(c => c.key === a.key)).map(cond);
+    // `anomes` NÃO entra por `= ANY(to_char(...))`: essa expressão não é indexável,
+    // então o banco varreria a janela inteira (Jul/2025 a Set/2026 = 15 meses) só
+    // para descartar o meio — medido em 41s. Como faixa de datas por mês, o
+    // índice idx_pedidos_data_fechamento_date é usado e só os meses pedidos são
+    // lidos.
+    const condAnomes = a => '(' + a.vals.slice().sort().map(am => {
+      const [ano, mes] = am.split('-').map(Number);
+      const ini = `${am}-01`;
+      const fim = new Date(Date.UTC(ano, mes, 0)).toISOString().slice(0, 10);
+      params.push(ini, fim);
+      return `(pedidos.datafechamento::date >= $${params.length - 1} and pedidos.datafechamento::date <= $${params.length})`;
+    }).join(' or ') + ')';
+    const internos = ativos.filter(a => CAMPOS_INTERNOS.some(c => c.key === a.key))
+      .map(a => a.key === 'anomes' ? condAnomes(a) : cond(a));
     const externos = ativos.filter(a => CAMPOS_EXTERNOS.some(c => c.key === a.key)).map(cond);
 
     if (!ETL.BASE_CTE.includes(ANCHOR)) throw new Error('âncora do filtro não encontrada no BASE_CTE');
@@ -107,8 +144,9 @@ class DashboardRecorteService {
     // inteiro: 7 varreduras do período e 7 conexões — o pool esgotava
     // ("timeout exceeded when trying to connect") com dois usuários simultâneos.
     const client = await db.getClient();
-    let tot, porMes, porCat, porGrp, porCli, topProd, porVend;
+    let tot, porMes, porAnomes, porCat, porGrp, porCli, topProd, porVend;
     let porDia, porDiaCat, porGer, porSup, fullVend, porMesCli, porMesCatCliCod, pag, janProd, janRange, abcdCli, qual, casc, fumo;
+    let cliDetCat, cliDetVend, prodDetVend;
     try {
       await client.query('BEGIN');
       await client.query(`CREATE TEMP TABLE tmp_recorte ON COMMIT DROP AS ${base}`, params);
@@ -121,6 +159,13 @@ class DashboardRecorteService {
       porMes = await q(`SELECT Mes mes, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq,
                                COUNT(DISTINCT NroPed) pedidos
                         FROM tmp_recorte GROUP BY Mes ORDER BY Mes`);
+      // Quebra por ANO-MÊS. por_mes agrupa só pelo número do mês, então uma
+      // seleção como Jul/2026 + Jul/2025 colapsaria os dois anos na chave "7" e o
+      // gráfico mensal mostraria uma barra só, com a soma. Aqui cada ano-mês fica
+      // separado.
+      porAnomes = await q(`SELECT to_char(DataPed,'YYYY-MM') anomes, SUM(Total) r, SUM(customedio) c,
+                                  SUM(Qtde) qq, COUNT(DISTINCT NroPed) pedidos
+                           FROM tmp_recorte GROUP BY 1 ORDER BY 1`);
       porCat = await q(`SELECT categoria, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq, SUM(Peso) p
                         FROM tmp_recorte WHERE categoria IS NOT NULL GROUP BY categoria`);
       porGrp = await q(`SELECT Grupo grupo, categoria, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq
@@ -131,6 +176,26 @@ class DashboardRecorteService {
       topProd = await q(`SELECT Codigo codigo, Descricao nome, categoria, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq
                          FROM tmp_recorte WHERE Descricao IS NOT NULL GROUP BY Codigo, Descricao, categoria
                          ORDER BY r DESC LIMIT 50`);
+      // CASCATA ("+") das abas Top 50. Sem isto, com filtro de hierarquia ativo a
+      // lista de clientes/produtos vem do recorte mas o detalhe continuava vindo
+      // do cubo — que tem OUTROS clientes — e o "+" sumia na maioria das linhas.
+      // Restrito aos códigos já rankeados, não à base inteira.
+      const codsCli = porCli.map(r => r.codigo).filter(v => v != null);
+      cliDetCat = codsCli.length ? await q(`
+        SELECT CodCli codigo, categoria, SUM(Total) r, SUM(customedio) c
+        FROM tmp_recorte WHERE CodCli = ANY(ARRAY[${codsCli.map(Number).filter(Number.isFinite).join(',') || 'NULL'}]::int[])
+          AND categoria IS NOT NULL GROUP BY CodCli, categoria`) : [];
+      cliDetVend = codsCli.length ? await q(`
+        SELECT CodCli codigo, MIN(CodVen) vcodigo, Vendedor vnome, MIN(supervisor) supervisor, SUM(Total) r
+        FROM tmp_recorte WHERE CodCli = ANY(ARRAY[${codsCli.map(Number).filter(Number.isFinite).join(',') || 'NULL'}]::int[])
+          AND Vendedor IS NOT NULL GROUP BY CodCli, Vendedor`) : [];
+      const codsProd = topProd.map(r => r.codigo).filter(v => v != null);
+      // Produto nunca teve cascata em aba nenhuma. Detalhe = quem vendeu.
+      prodDetVend = codsProd.length ? await q(`
+        SELECT Codigo codigo, Vendedor vnome, MIN(supervisor) supervisor,
+               SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq
+        FROM tmp_recorte WHERE Codigo = ANY(ARRAY[${codsProd.map(Number).filter(Number.isFinite).join(',') || 'NULL'}]::int[])
+          AND Vendedor IS NOT NULL GROUP BY Codigo, Vendedor`) : [];
       porVend = await q(`SELECT Vendedor nome, supervisor, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq
                          FROM tmp_recorte WHERE Vendedor IS NOT NULL GROUP BY Vendedor, supervisor
                          ORDER BY r DESC LIMIT 50`);
@@ -235,6 +300,39 @@ class DashboardRecorteService {
     };
 
     for (const row of porMes) dados.por_mes[String(row.mes)] = Object.assign(linha(row), { pedidos: parseInt(row.pedidos, 10) || 0 });
+    dados.por_anomes = {};
+    for (const row of porAnomes) dados.por_anomes[row.anomes] = Object.assign(linha(row), { pedidos: parseInt(row.pedidos, 10) || 0 });
+
+    // Detalhe da cascata "+" — mesma forma que o cubo usa em
+    // top_clientes_cash_detalhe: { codcli: { categorias:{cat:{r,c}}, vendedor:{...} } }
+    dados.clientes_detalhe = {};
+    for (const row of cliDetCat || []) {
+      const k = String(row.codigo);
+      const e = dados.clientes_detalhe[k] || (dados.clientes_detalhe[k] = { categorias: {}, vendedor: null });
+      e.categorias[row.categoria] = { r: round2(num(row.r)), c: round2(num(row.c)) };
+    }
+    // Vendedor DOMINANTE do cliente no recorte (maior receita) — mesmo critério do cubo.
+    const melhorVend = {};
+    for (const row of cliDetVend || []) {
+      const k = String(row.codigo), r = num(row.r);
+      if (melhorVend[k] !== undefined && r <= melhorVend[k]) continue;
+      melhorVend[k] = r;
+      const e = dados.clientes_detalhe[k] || (dados.clientes_detalhe[k] = { categorias: {}, vendedor: null });
+      e.vendedor = { codigo: String(row.vcodigo), nome: row.vnome, supervisor: row.supervisor };
+    }
+
+    // Produto nunca teve cascata. Detalhe = vendedores que venderam o produto,
+    // do maior para o menor faturamento.
+    dados.produtos_detalhe = {};
+    for (const row of prodDetVend || []) {
+      const k = String(row.codigo);
+      const e = dados.produtos_detalhe[k] || (dados.produtos_detalhe[k] = { vendedores: [] });
+      const rr = num(row.r), cc = num(row.c);
+      e.vendedores.push({ nome: row.vnome, supervisor: row.supervisor, r: round2(rr), c: round2(cc), q: round2(num(row.qq)), m: margem(rr, cc) });
+    }
+    for (const k in dados.produtos_detalhe) {
+      dados.produtos_detalhe[k].vendedores.sort((a, b) => b.r - a.r);
+    }
     for (const row of porCat) dados.por_categoria[row.categoria] = Object.assign(linha(row), { p: round2(num(row.p)) });
     for (const row of porGrp) dados.por_grupo[row.grupo] = Object.assign(linha(row), { categoria: row.categoria });
 

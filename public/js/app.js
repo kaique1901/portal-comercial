@@ -736,7 +736,55 @@ function periodoInicial(){
   return disponivel || alvo;
 }
 
-let ST = { per:periodoDoMesAtual(), mes:null, ger:[], sup:[], vend:[], cat:[], grp:[], cli:[], canal:[], status:[] };
+// ST.meses guarda "YYYY-MM" ("2026-07"), nunca o número do mês solto: o número é
+// ambíguo entre anos, e a comparação Jul/2026 x Jul/2025 é justamente o caso de uso.
+const anomesMes = am => +String(am).slice(5, 7);
+const anomesAno = am => +String(am).slice(0, 4);
+const anomesLabel = am => `${MESES_NOME[anomesMes(am)]}/${anomesAno(am)}`;
+const anomesPeriodo = am => `${anomesAno(am)}_${anomesMes(am) <= 6 ? 1 : 2}`;
+
+// ST.meses é a FONTE DA VERDADE do filtro de Mês (array, seleção múltipla).
+// ST.mes continua existindo como valor DERIVADO porque ~50 pontos do painel o
+// leem como escalar. A equivalência é exata:
+//   1 mês selecionado  -> ST.mes = aquele mês   (caminho de sempre, lê d.por_mes)
+//   0 ou 2+ meses      -> ST.mes = null         (= "o período inteiro")
+// O null com vários meses só é correto porque a seleção múltipla passa a contar
+// como filtro ativo (ver activeFilterCount), o que força o recorte — e o recorte
+// vem do banco já filtrado por esses meses. Ou seja: "o período inteiro" do
+// objeto que o painel enxerga É a soma exata dos meses escolhidos.
+let ST = { per:periodoDoMesAtual(), mes:null, meses:[], ger:[], sup:[], vend:[], cat:[], grp:[], cli:[], canal:[], status:[] };
+
+// Recalcula o escalar derivado. Chamar SEMPRE que ST.meses mudar.
+function sincronizarMes(){
+  const ord = ST.meses.slice().sort();
+  ST.mes = (ord.length === 1) ? anomesMes(ord[0]) : null;
+  // ST.per é o semestre do mês MAIS RECENTE selecionado. Serve de base para o que
+  // ainda vem do cubo e não do recorte (meta, hier_*, bonificação). Quando a
+  // seleção cruza semestres, esses campos cobrem só este — ver selecaoCruzaSemestres.
+  if (ord.length) ST.per = anomesPeriodo(ord[ord.length - 1]);
+}
+// true quando os meses escolhidos não cabem num único semestre do cubo.
+function selecaoCruzaSemestres(){
+  return new Set(ST.meses.map(anomesPeriodo)).size > 1;
+}
+// Aviso para as visões que dependem de META ou BONIFICAÇÃO. Realizado, rankings,
+// cascatas e positivação vêm do /recorte e cobrem TODOS os meses selecionados,
+// inclusive de anos diferentes. Meta e bonificação vêm do cubo, que é montado por
+// semestre — então cobrem só o semestre de ST.per. Sem este aviso a tela
+// compararia realizado de 4 meses contra meta de 2.
+function avisoSelecaoCruzada(){
+  if (!selecaoCruzaSemestres()) return '';
+  const doPer = ST.meses.filter(am => anomesPeriodo(am) === ST.per).map(anomesLabel);
+  const fora  = ST.meses.filter(am => anomesPeriodo(am) !== ST.per).map(anomesLabel);
+  return `<div class="alert">⚠ A seleção de meses cruza semestres. <strong>Realizado, rankings e positivação</strong> cobrem todos os meses escolhidos (${rotuloMeses()}). Já <strong>Meta e Bonificação</strong> existem por semestre no cubo e cobrem apenas ${doPer.join(' + ') || '—'}; ${fora.join(' + ')} ficam de fora dessas duas colunas.</div>`;
+}
+// Rótulo do recorte temporal, usado nas notas de comparação.
+function rotuloMeses(){
+  if (!ST.meses.length) return 'semestre inteiro';
+  const ord = ST.meses.slice().sort();
+  if (ord.length <= 3) return ord.map(anomesLabel).join(' + ');
+  return `${ord.length} meses`;
+}
 
 function curPeriodRaw(){ return REAL_DATA[ST.per]; }
 // TODAS as abas leem o período por aqui. Quando existe recorte carregado (consulta
@@ -772,7 +820,7 @@ function recorteVazio(){
     n_clientes:0, n_vendedores:0, ticket_pedido:0,
     por_mes:{}, por_categoria:{}, por_grupo:{}, por_gerente:{}, por_supervisor:{},
     full_vendedores:{}, por_dia:{}, por_dia_categoria:{}, por_mes_clientes:{},
-    por_mes_categoria_clientes_cod:{}, por_mes_categoria_clientes:{},
+    por_mes_categoria_clientes_cod:{}, por_mes_categoria_clientes:{}, por_anomes:{},
     por_mes_fumokg:{}, realizado_fumokg:{ por_gerente:{}, por_supervisor:{}, por_vendedor:{} },
     clientes:[], top_produtos:[], vendedores:[],
     top_clientes_cash:[], top_produtos_cash:[], top_vendedores_cash:[],
@@ -793,6 +841,8 @@ function mesclarRecorte(p, rec){
     n_cli: rec.n_clientes, n_vend: rec.n_vendedores,
     margem_geral: rec.m,
     por_mes: rec.por_mes,
+    // Quebra por ano-mês, para o gráfico separar Jul/2025 de Jul/2026.
+    por_anomes: rec.por_anomes || {},
     por_categoria: rec.por_categoria,
     por_grupo: rec.por_grupo,
     por_gerente: rec.por_gerente,
@@ -812,6 +862,12 @@ function mesclarRecorte(p, rec){
     realizado_fumokg: rec.realizado_fumokg,
     top_clientes: rec.clientes,
     top_produtos: rec.top_produtos,
+    // Detalhe da cascata "+" precisa vir do RECORTE junto com a lista. Antes só o
+    // cubo tinha detalhe, e com filtro de hierarquia a lista exibida era a do
+    // recorte (outros clientes) — o "+" sumia na maioria das linhas.
+    top_clientes_cash_detalhe: rec.clientes_detalhe || {},
+    top_clientes_margem_detalhe: rec.clientes_detalhe || {},
+    produtos_detalhe: rec.produtos_detalhe || {},
     top_vendedores: rec.vendedores,
     top_clientes_cash: rec.top_clientes_cash,
     top_produtos_cash: rec.top_produtos_cash,
@@ -833,7 +889,13 @@ function mesclarRecorte(p, rec){
   return o;
 }
 function labelJoin(arr){ return arr.length<=2 ? arr.join(" + ") : arr.length+" selecionados"; }
-function activeFilterCount(){ return ["ger","sup","vend","cat","grp","cli","canal","status"].filter(k=>ST[k].length>0).length; }
+function activeFilterCount(){
+  const n = ["ger","sup","vend","cat","grp","cli","canal","status"].filter(k=>ST[k].length>0).length;
+  // Seleção de 2+ meses conta como filtro: sem isso o recorte não seria buscado e
+  // o painel cairia no cubo do semestre inteiro, ignorando os meses escolhidos
+  // (com 1 mês o cubo resolve sozinho por d.por_mes, então não precisa).
+  return n + (ST.meses.length > 1 ? 1 : 0);
+}
 
 // ── ESCOPO ATIVO (soma real dentro de UMA dimensão) ─────────────
 function sumDict(dict, keys){
@@ -895,7 +957,10 @@ function recorteQuery(){
   add('canal', ST.canal); add('status', ST.status);
   // O painel é mensal: o recorte já vem filtrado pelo mês, então TODAS as abas
   // (inclusive as que não tinham grão mensal no cubo) passam a refletir o mês.
-  if (ST.mes != null) p.set('mes', String(ST.mes));
+  // `anomes` em vez de `mes`: carrega o ANO junto, então a seleção pode cruzar
+  // semestres e anos (Jul/2026 + Jul/2025) numa consulta só. A API deriva o
+  // intervalo de datas do menor e do maior mês escolhidos.
+  if (ST.meses.length) p.set('anomes', ST.meses.slice().sort().join('|'));
   return p.toString();
 }
 function cliScopeKey(){ return recorteQuery(); }
@@ -1174,13 +1239,19 @@ function effectiveFor(period, mes){
 // ── WIDGET DE SELEÇÃO MÚLTIPLA ───────────────────────────────────
 let msOpenId = null, msOpenSearch = "", msScrollTop = 0;
 function closeAllMs(exceptId){
+  let fechouMes = false;
   document.querySelectorAll(".ms-wrap").forEach(w=>{
     if (w.id===exceptId) return;
     const dd=w.querySelector(".ms-dropdown"), btn=w.querySelector(".ms-btn");
+    if (w.id === 'ms-mes' && dd && dd.classList.contains('open')) fechouMes = true;
     if (dd) dd.classList.remove("open");
     if (btn) btn.classList.remove("open");
   });
   if (exceptId===undefined) msOpenId = null;
+  // Fechar a lista de Mês = terminou de escolher: aplica na hora, sem esperar o
+  // debounce. É o que evita consulta de estado intermediário quando a pessoa
+  // marca 4 meses em ritmo humano (mais lento que qualquer debounce razoável).
+  if (fechouMes) aplicarMesesAgora();
 }
 document.addEventListener("click", e => { if (!e.target.closest(".ms-wrap")) { closeAllMs(); } });
 
@@ -1196,7 +1267,13 @@ function buildMultiSelect(elId, options, selectedArr, placeholderAll, onChange, 
   const wrap = document.getElementById(elId);
   if (!wrap) return;
   const opts = (options||[]).map(o => typeof o === 'string' ? { val:o, label:o } : o);
-  const label = selectedArr.length===0 ? placeholderAll : labelJoin(selectedArr);
+  // O rótulo do botão mostra o LABEL, não o valor. Nos filtros em que valor e
+  // rótulo coincidem dá no mesmo; no filtro de Mês o valor é "periodo|mes"
+  // ("2026_2|7"), e sem esta tradução o botão exibia isso cru.
+  const rotuloDe = new Map(opts.map(o => [o.val, o.label]));
+  const label = selectedArr.length===0
+    ? placeholderAll
+    : labelJoin(selectedArr.map(v => rotuloDe.get(v) || v));
   let disabledStr = "";
   if (authSession) {
     if (elId === 'ms-ger' && (authSession.role === 'gerente' || authSession.role === 'supervisor')) disabledStr = "disabled";
@@ -1460,26 +1537,62 @@ function mesesDisponiveis(){
   });
   return out;   // mais recente primeiro (PERIOD_ORDER já vem assim)
 }
-function populateMesGlobalFilter(){
-  const sel = document.getElementById("fMesGlobal");
-  if (!sel) return;
-  const opts = mesesDisponiveis();
-  sel.innerHTML = opts.map(o=>`<option value="${o.per}|${o.mes}">${o.label}</option>`).join("");
-  const atual = `${ST.per}|${ST.mes}`;
-  if (opts.some(o=>`${o.per}|${o.mes}`===atual)) sel.value = atual;
-  else if (opts.length){ ST.per = opts[0].per; ST.mes = opts[0].mes; sel.value = `${ST.per}|${ST.mes}`; }
-  const note = document.getElementById("mesGlobalNote");
-  if (note) note.textContent = opts.length ? `Mês de referência de todo o painel (${opts.length} meses com venda)` : "Sem meses com venda";
+// Debounce do filtro de Mês. Só ele: as consultas dos outros filtros são baratas,
+// enquanto uma seleção de meses cruzando anos custa ~30s de varredura no banco.
+// 700ms é curto o bastante para não parecer travado e longo o bastante para
+// agrupar cliques seguidos numa consulta só.
+let _timerMeses = null;
+let _mesesPendentes = false;
+// Aplica a seleção de meses: recarrega as listas dependentes e redesenha (o que
+// dispara o /recorte). Idempotente — chamar duas vezes seguidas não custa nada,
+// porque ensureCliScope reaproveita a chave já carregada.
+function aplicarMesesAgora(){
+  clearTimeout(_timerMeses);
+  if (!_mesesPendentes) return;
+  _mesesPendentes = false;
+  populateFilters();
+  renderAll();
 }
-function onMesGlobalChange(){
-  const v = document.getElementById("fMesGlobal").value;   // "2026_2|7"
-  if (!v) return;
-  const [per, mes] = v.split("|");
-  const trocouPeriodo = per !== ST.per;
-  ST.per = per;
-  ST.mes = +mes;
-  // Trocar de semestre invalida as listas dependentes (vendedores/clientes do cubo).
-  if (trocouPeriodo) resetFiltros(); else renderAll();
+// Rede de segurança: se a pessoa deixar o dropdown aberto e for fazer outra coisa,
+// aplica sozinho. O disparo normal é o fechamento da lista (ver closeAllMs) —
+// tempo puro não serve, porque escolher 4 meses em ritmo humano leva mais que
+// qualquer debounce aceitável e geraria consulta a cada clique.
+function agendarRenderAposMeses(){
+  _mesesPendentes = true;
+  clearTimeout(_timerMeses);
+  _timerMeses = setTimeout(aplicarMesesAgora, 2500);
+}
+
+// Filtro de Mês com seleção MÚLTIPLA, no mesmo widget dos demais filtros.
+// Aceita meses de semestres e ANOS diferentes (Jul/2026 + Jul/2025): o valor de
+// cada opção é "YYYY-MM" e o recorte recebe tudo em `anomes`, resolvido no banco
+// numa consulta só.
+function populateMesGlobalFilter(){
+  const todos = mesesDisponiveis();
+  const note = document.getElementById("mesGlobalNote");
+  const opts = todos.map(o => ({ val: `${o.per.slice(0,4)}-${String(o.mes).padStart(2,'0')}`, label: o.label }));
+
+  buildMultiSelect('ms-mes', opts, ST.meses.slice(), 'Mês — todos do semestre', (novaSel) => {
+    ST.meses = [...new Set(novaSel)].sort();
+    sincronizarMes();
+    // Só o PRÓPRIO widget de mês é redesenhado na hora (barato). populateFilters()
+    // reconstrói os 8 filtros — com 312 vendedores na lista, isso passava dos
+    // 700ms do debounce e o fazia disparar entre um clique e outro, gerando
+    // consulta de estado intermediário. Vai junto com o renderAll() adiado.
+    populateMesGlobalFilter();
+    // renderAll() adiado: ele dispara o /recorte, e montar uma comparação de 4
+    // meses clicando um a um geraria 4 consultas pesadas no banco (~30s cada
+    // quando cruza anos), jogando fora todas menos a última.
+    agendarRenderAposMeses();
+  }, { emptyMsg: 'Nenhum mês com venda no cubo carregado' });
+
+  if (note){
+    if (!todos.length) note.textContent = 'Sem meses com venda';
+    else if (ST.meses.length > 1)
+      note.textContent = `${ST.meses.length} meses somados: ${rotuloMeses()}`
+        + (selecaoCruzaSemestres() ? ' — seleção cruza semestres, ver aviso nas abas de Meta' : '');
+    else note.textContent = `Mês de referência de todo o painel (${todos.length} meses com venda)`;
+  }
 }
 
 function resetFiltros(){
@@ -1501,10 +1614,17 @@ function init(){
   if (!REAL_DATA[ST.per]) ST.per = periodoInicial();
   // Abre no mês corrente; se ele ainda não tem venda, no mês mais recente que tem.
   const mesesPer = Object.keys((REAL_DATA[ST.per]||{}).por_mes || {}).map(Number);
-  if (ST.mes == null || !mesesPer.includes(ST.mes)) {
+  // Mantém só os meses que existem em algum semestre carregado do cubo.
+  const disponiveis = new Set(mesesDisponiveis().map(o => `${o.per.slice(0,4)}-${String(o.mes).padStart(2,'0')}`));
+  ST.meses = ST.meses.filter(am => disponiveis.has(am));
+  if (!ST.meses.length) {
+    const anoPer = ST.per.slice(0, 4);
     const hojeMes = new Date().getMonth() + 1;
-    ST.mes = mesesPer.includes(hojeMes) ? hojeMes : (mesesPer.sort((a,b)=>b-a)[0] ?? null);
+    const doPer = mesesPer.slice().sort((a,b)=>b-a);
+    const padrao = mesesPer.includes(hojeMes) ? hojeMes : doPer[0];
+    if (padrao != null) ST.meses = [`${anoPer}-${String(padrao).padStart(2,'0')}`];
   }
+  sincronizarMes();
   selPer.innerHTML = PERIOD_ORDER.filter(k=>REAL_DATA[k]).map(k=>`<option value="${k}">${REAL_DATA[k].label}</option>`).join("");
   selPer.value = ST.per;
   selPer.onchange = () => { ST.per = selPer.value; resetFiltros(); };
@@ -1534,6 +1654,10 @@ function showMod(id, el){
 // ST.per/ST.mes, e mexer no mês dentro de um callback assíncrono trocaria o período
 // debaixo do usuário.
 function atualizarFiltrosEDiag(){
+  // Sem período utilizável não há o que popular. Acontece quando /full devolve
+  // erro/503 (API reiniciando, ETL remontando): antes desta guarda, getOptions
+  // lia d.por_gerente de undefined e derrubava o render inteiro com TypeError.
+  if (!curPeriodRaw()){ renderDiagBox(); return; }
   DIAG.reset();
   Object.keys(FILTERS).forEach(renderFilterWidget);
   renderDiagBox();
@@ -1609,7 +1733,9 @@ function renderVisao(){
 
   const cashMargem = eff.r - eff.c;
   const prevCashMargem = prevEff ? (prevEff.r - prevEff.c) : null;
-  const vsTxt = ST.mes!=null ? 'vs. mesmo mês ano anterior' : 'vs. mesmo semestre ano anterior';
+  const vsTxt = ST.meses.length===1 ? 'vs. mesmo mês ano anterior'
+    : ST.meses.length>1 ? `vs. mesmos meses do ano anterior (${rotuloMeses()})`
+    : 'vs. mesmo semestre ano anterior';
   const kpis = [
     {lbl:"Receita", val:fM(eff.r), delta: prevEff?fDelta(eff.r,prevEff.r):null, cls:"k0"},
     {lbl:"Margem %", val:fPct(effMargem), delta: prevEff?fDelta(effMargem,prevMargem):null, cls:"k1"},
@@ -1635,10 +1761,19 @@ function renderVisao(){
       <div class="kpi-note">${k.note || (prevEff?vsTxt:'sem base comparável')}</div>
     </div>`).join("");
 
-  const rpm = receitaPorMesDoRecorte(d);
+  // Com meses de ANOS diferentes, por_mes agruparia Jul/2025 e Jul/2026 na mesma
+  // chave "7" e o gráfico mostraria uma barra só com a soma dos dois — justamente
+  // o contrário do que a comparação entre anos precisa. Nesse caso usamos
+  // por_anomes, que o recorte devolve separado por ano-mês.
+  const usarAnomes = selecaoCruzaSemestres() && d.por_anomes && Object.keys(d.por_anomes).length;
+  const rpm = usarAnomes
+    ? { meses: Object.keys(d.por_anomes).sort(), vals: Object.keys(d.por_anomes).sort().map(k=>d.por_anomes[k].r),
+        note: `Comparando ${Object.keys(d.por_anomes).length} meses de anos diferentes` }
+    : receitaPorMesDoRecorte(d);
+  const rotuloBarra = m => usarAnomes ? anomesLabel(m) : MESES_NOME[m];
   const noteMes = document.getElementById("vgMesNote");
   if (noteMes) noteMes.textContent = rpm.note || (eff.label ? `Recorte: ${eff.label}` : 'Período selecionado');
-  mkChart("cVgMes",{type:"bar",data:{labels:rpm.meses.map(m=>MESES_NOME[m]),datasets:[{data:rpm.vals,backgroundColor:C.acc+"cc",borderRadius:4}]},
+  mkChart("cVgMes",{type:"bar",data:{labels:rpm.meses.map(rotuloBarra),datasets:[{data:rpm.vals,backgroundColor:C.acc+"cc",borderRadius:4}]},
     options:{responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>" "+fF(c.raw)}}},scales:{y:{ticks:{callback:v=>fM(v)}}}}});
 
   // Mix por Categoria respeita o recorte de Gerente/Supervisor/Vendedor (cubo
@@ -1895,6 +2030,11 @@ function renderMcHierRows(prev, nodesObj, pathNames, nivel, mes, levelNames){
 // uma por ranking). Sob filtro de hierarquia (Gerente/Supervisor/Vendedor) o
 // cliente pode vir de outra fonte (hier_top_clientes) e ainda não ter detalhe.
 function cliCascadeDetalhe(d, codigo, mes, semestralDict){
+  // Com recorte carregado, o detalhe JÁ vem filtrado pelo escopo e pelos meses
+  // escolhidos (DashboardRecorteService.clientes_detalhe), então ele manda. O
+  // caminho por top_clientes_detalhe_por_mes é do cubo e só vale sem recorte —
+  // usá-lo aqui devolveria detalhe de cliente que nem está na lista exibida.
+  if (d._recorte) return semestralDict && semestralDict[String(codigo)];
   if (mes!=null){
     const porMes = d.top_clientes_detalhe_por_mes && d.top_clientes_detalhe_por_mes[String(mes)];
     return porMes ? porMes[String(codigo)] : null;
@@ -1996,14 +2136,46 @@ function tblCashVend(rows, d, prev){
 }
 // Top 50 Produtos por Cash Margem: quantidade vendida (unidades) com
 // comparativo vs. mesmo período ano anterior.
-function tblCashProd(rows, prev){
+
+// ── CASCATA DOS PRODUTOS (Top 50 Cash Margem e Top 50 Margem %) ─────────────
+// Produto nunca teve o "+". O detalhe é quem VENDEU o produto no recorte
+// (vendedor, supervisor, faturamento, cash margem, margem % e quantidade), na
+// mesma lógica do "+" dos clientes. Fonte: produtos_detalhe, devolvido pelo
+// /recorte — por isso só existe com recorte carregado.
+let prodCascExpanded = new Set();
+function toggleProdCasc(codigo){
+  const k = String(codigo);
+  if (prodCascExpanded.has(k)) prodCascExpanded.delete(k); else prodCascExpanded.add(k);
+  renderMargemCash();
+}
+function prodCascadeDetalhe(d, codigo){
+  const det = d.produtos_detalhe && d.produtos_detalhe[String(codigo)];
+  return (det && det.vendedores && det.vendedores.length) ? det : null;
+}
+// Devolve { toggle, linhas } — linhas já é o HTML das sublinhas quando aberto.
+function prodCascadeParts(d, r, nColunas){
+  const det = prodCascadeDetalhe(d, r.codigo);
+  if (!det) return { toggle: '<span class="casc-toggle-spacer"></span>', linhas: '' };
+  const aberto = prodCascExpanded.has(String(r.codigo));
+  const toggle = `<span class="casc-toggle" onclick="toggleProdCasc('${String(r.codigo).replace(/'/g,"\'")}')">${aberto?'−':'+'}</span>`;
+  if (!aberto) return { toggle, linhas: '' };
+  const linhas = det.vendedores.map(v =>
+    `<tr class="casc-info"><td></td><td colspan="${nColunas}" style="padding-left:24px">${escAttr(v.nome)}` +
+    `<span style="color:var(--t3)"> · ${escAttr(v.supervisor||'—')}</span> — ` +
+    `Faturamento <strong>${fF(v.r)}</strong> · Cash <strong>${fF(v.r - v.c)}</strong> · Margem <strong>${fPct(v.m)}</strong> · Qtde <strong>${fN(v.q)}</strong></td></tr>`
+  ).join('');
+  return { toggle, linhas };
+}
+
+function tblCashProd(rows, prev, d){
   return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Cash Margem</th><th class="tv">Δ vs ano ant.</th><th class="tv">Faturamento</th><th class="tv">Margem %</th><th class="tv">Qtde Vendida</th><th class="tv">Δ Qtde (ano ant.)</th></tr></thead><tbody>${
     rows.map((r,i)=>{
       const cm = r.cash_margin!=null ? r.cash_margin : (r.r-r.c);
       const prevEntry = prevLookupListFull(prev,"top_produtos_cash","nome",r.nome);
       const pv = prevEntry ? (prevEntry.cash_margin!=null?prevEntry.cash_margin:(prevEntry.r-prevEntry.c)) : null;
       const pq = prevEntry ? prevEntry.q : null;
-      return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${escAttr(r.nome)}</td><td class="tv tn">${fF(cm)}</td><td class="tv">${deltaPillSmall(cm,pv)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${margemBadge(r.m)}</td><td class="tv">${fN(r.q)}</td><td class="tv">${deltaPillSmall(r.q,pq)}</td></tr>`;
+      const casc = prodCascadeParts(d, r, 7);
+      return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${casc.toggle}${escAttr(r.nome)}</td><td class="tv tn">${fF(cm)}</td><td class="tv">${deltaPillSmall(cm,pv)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${margemBadge(r.m)}</td><td class="tv">${fN(r.q)}</td><td class="tv">${deltaPillSmall(r.q,pq)}</td></tr>` + casc.linhas;
     }).join("")}</tbody>`;
 }
 
@@ -2047,12 +2219,13 @@ function tblMargemCli(rows, d, prev, mes){
       return html;
     }).join("")}</tbody>`;
 }
-function tblMargemProd(rows, prev){
+function tblMargemProd(rows, prev, d){
   return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Margem %</th><th class="tv">Δ Margem (p.p.)</th><th class="tv">Faturamento</th><th class="tv">Cash Margem</th><th class="tv">Qtde Vendida</th><th class="tv">Δ Qtde (ano ant.)</th></tr></thead><tbody>${
     rows.map((r,i)=>{
       const prevFull = prevLookupListFull(prev,"top_produtos_margem","nome",r.nome);
       const cm = r.cash_margin!=null ? r.cash_margin : (r.r-r.c);
-      return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${escAttr(r.nome)}</td><td class="tv tn">${margemBadge(r.m)}</td><td class="tv">${deltaPP(r.m,prevFull?prevFull.m:null,false)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${fF(cm)}</td><td class="tv">${fN(r.q)}</td><td class="tv">${deltaPillSmall(r.q,prevFull?prevFull.q:null)}</td></tr>`;
+      const casc = prodCascadeParts(d, r, 7);
+      return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${casc.toggle}${escAttr(r.nome)}</td><td class="tv tn">${margemBadge(r.m)}</td><td class="tv">${deltaPP(r.m,prevFull?prevFull.m:null,false)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${fF(cm)}</td><td class="tv">${fN(r.q)}</td><td class="tv">${deltaPillSmall(r.q,prevFull?prevFull.q:null)}</td></tr>` + casc.linhas;
     }).join("")}</tbody>`;
 }
 let margemVendExpanded = new Set();
@@ -2128,7 +2301,7 @@ function renderMargemCash(){
     {lbl:"Cash Margem Total", val:fM(cash), cur:cash, prevv:prevCash},
     {lbl:"Tendência de Fechamento — Cash Margem", val:fM(trendCash),
      note: parcial ? `Projeção pelo ritmo diário atual (dia ${parcial.dia} de ${parcial.diasNoMes} — ${(parcial.pct*100).toFixed(0)}% do mês); mesmo cálculo de Acompanhamento Objetivos/Planos de Ação.`
-       : (ST.mes!=null ? "Mês selecionado já fechado — tendência = realizado." : "Sem mês específico selecionado — tendência = realizado do semestre inteiro.")},
+       : (ST.meses.length===1 ? "Mês selecionado já fechado — tendência = realizado." : ST.meses.length>1 ? `Vários meses selecionados (${rotuloMeses()}) — tendência = realizado.` : "Sem mês específico selecionado — tendência = realizado do semestre inteiro.")},
     {lbl:"Meta Cash Margem", val:metaValRent>0?fM(metaValRent):"—",
      note:metaValRent>0?`meta de receita × margem alvo (${fPct(metaMargemPct)})`:"sem meta cadastrada no ERP p/ este período"},
     {lbl:"% Atingimento Cash Margem", val:metaValRent>0?fPct(cash/metaValRent*100):"—",
@@ -2140,7 +2313,7 @@ function renderMargemCash(){
   document.getElementById("mc-kpis").innerHTML = (mcBanner?`<div class="alert" style="grid-column:1/-1">${mcBanner}</div>`:"") + kpiDefs.map((k,i)=>`
     <div class="kpi k${i%7}"><div class="kpi-stripe"></div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div>
       ${k.cur!=null?deltaPillSmall(k.cur,k.prevv):''}
-      <div class="kpi-note">${k.note || (k.cur!=null?(ST.mes!=null?'vs. mesmo mês ano anterior':'vs. mesmo semestre ano anterior'):'')}</div>
+      <div class="kpi-note">${k.note || (k.cur!=null?(ST.meses.length===1?'vs. mesmo mês ano anterior':ST.meses.length>1?`vs. mesmos meses do ano anterior (${rotuloMeses()})`:'vs. mesmo semestre ano anterior'):'')}</div>
     </div>`).join("");
 
   const mcTree = buildMargemHierTree(d, ST.mes);
@@ -2240,16 +2413,16 @@ function renderMargemCash(){
   } else {
     vendRowsCash = baseVendRows.slice().sort((a,b)=>b.cash_margin-a.cash_margin).slice(0,50);
     vendRowsMargem = baseVendRows.slice().sort((a,b)=>b.m-a.m).slice(0,50);
-    vendSubTxt = ST.mes!=null ? "Top 50 (empresa, mês filtrado)" : "Top 50 (empresa)";
+    vendSubTxt = ST.meses.length ? "Top 50 (empresa, mês filtrado)" : "Top 50 (empresa)";
   }
   document.getElementById("cashVendSub").textContent = vendSubTxt;
   document.getElementById("margemVendSub").textContent = vendSubTxt;
 
   document.getElementById("tCashCli").innerHTML = tblCashCli(cliList.slice(0,50), d, prev, ST.mes);
-  document.getElementById("tCashProd").innerHTML = tblCashProd(prodList.slice(0,50), prev);
+  document.getElementById("tCashProd").innerHTML = tblCashProd(prodList.slice(0,50), prev, d);
   document.getElementById("tCashVend").innerHTML = tblCashVend(vendRowsCash, d, prev);
   document.getElementById("tMargemCli").innerHTML = tblMargemCli(cliListM.slice(0,50), d, prev, ST.mes);
-  document.getElementById("tMargemProd").innerHTML = tblMargemProd(prodListM.slice(0,50), prev);
+  document.getElementById("tMargemProd").innerHTML = tblMargemProd(prodListM.slice(0,50), prev, d);
   document.getElementById("tMargemVend").innerHTML = tblMargemVend(vendRowsMargem, d, prev);
 }
 
@@ -2365,7 +2538,14 @@ function objBimestres(){ const m=objSemesterMonths(); const out=[]; for(let i=0;
 function objBimestreOffset(){ return ST.per && ST.per.endsWith('_2') ? 3 : 0; }
 function objLabelMeses(meses){ return meses.map(m=>MESES_NOME[m].slice(0,3)).join("/"); }
 function objMesesSelecionados(){
-  if (OBJ.modo==='mes') return ST.mes!=null ? [ST.mes] : [];
+  // Modo "mês" respeita a seleção múltipla do filtro global. Devolve NÚMEROS de
+  // mês, porque meta/bonificação são indexadas assim no cubo — e só os meses que
+  // pertencem a ST.per: essas duas fontes são por semestre, então um Jul/2025
+  // selecionado junto com Jul/2026 não tem meta neste cubo. O aviso disso aparece
+  // em avisoSelecaoCruzada(), usado nas abas que dependem de meta.
+  if (OBJ.modo==='mes'){
+    return [...new Set(ST.meses.filter(am => anomesPeriodo(am) === ST.per).map(anomesMes))].sort((a,b)=>a-b);
+  }
   if (OBJ.modo==='bim') return OBJ.bim || [];
   if (OBJ.modo==='sem') return objSemesterMonths();
   if (OBJ.modo==='custom') return (OBJ.custom||[]).slice().sort((a,b)=>a-b);
@@ -2788,9 +2968,10 @@ function renderObjetivos(){
   {
     const p = curPeriod();
     const temCods = !!p.por_mes_categoria_clientes_cod && Object.keys(p.por_mes_categoria_clientes_cod).length > 0;
-    document.getElementById('objCashNote').innerHTML = temCods
+    const avisoPos = temCods
       ? ''
       : `<div class="alert">⚠ Positivação por categoria indisponível: ${p._carregando ? 'recorte do seu escopo ainda carregando' : 'a API não devolveu os códigos de cliente por mês/categoria (cache antigo — recarregue após o próximo ciclo do ETL)'}. Mostrando "—".</div>`;
+    document.getElementById('objCashNote').innerHTML = avisoSelecaoCruzada() + avisoPos;
   }
 
   document.getElementById('tObjCat').innerHTML = built.html;

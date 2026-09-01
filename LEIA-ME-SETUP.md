@@ -82,3 +82,19 @@ arquivos para dentro da imagem, então toda alteração no front exige
    ainda existe internamente porque o cubo é montado por semestre, mas é derivado
    do mês escolhido. Ao abrir num mês em curso, o realizado é parcial e o painel
    avisa ("mês em curso — X de Y dias").
+
+## Cache do navegador no front (`public/serve.json`)
+
+O `serve` mandava só `ETag`, sem `Cache-Control`. Sem essa diretiva o Chrome aplica
+cache heurístico e pode continuar executando o `app.js` antigo depois de um deploy
+**sem sequer revalidar** — o sintoma é alguém depurando um bug que já não existe no
+código, ou uma funcionalidade nova que "não aparece".
+
+`public/serve.json` passa a mandar `Cache-Control: no-cache` em html/js/css. Isso
+não desliga o cache: obriga a revalidar a cada carga. Como o ETag continua valendo,
+quando nada mudou a resposta é um `304` vazio; quando mudou, vem o arquivo novo.
+
+Atenção: isso vale para o `npx serve`. **Servindo por Docker/nginx a configuração é
+outra** — o `public/Dockerfile` copia os arquivos para dentro da imagem, então além
+do cache do navegador é preciso reconstruir a imagem
+(`docker compose up -d --build frontend`).

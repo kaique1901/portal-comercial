@@ -4,7 +4,7 @@ const DashboardRecorteService = require('../services/DashboardRecorteService');
 const DashboardCacheManager = require('../jobs/DashboardCacheManager');
 
 // filtros aceitos em /recorte → chave da query string
-const RECORTE_KEYS = ['cli', 'ger', 'sup', 'vend', 'cat', 'grp', 'canal', 'inad', 'status', 'mes'];
+const RECORTE_KEYS = ['cli', 'ger', 'sup', 'vend', 'cat', 'grp', 'canal', 'inad', 'status', 'mes', 'anomes'];
 
 class DashboardController {
 
