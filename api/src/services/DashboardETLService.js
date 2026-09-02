@@ -220,6 +220,23 @@ class DashboardETLService {
         FROM tmp_base_vendas WHERE CodCli = ANY($1::int[]) AND Vendedor IS NOT NULL
         GROUP BY CodCli, CodVen, Vendedor, supervisor ORDER BY CodCli, SUM(Total) DESC`, [topCliMargemCodes]) : [];
       const topVendMargem = await q(`SELECT CodVen codigo, Vendedor nome, supervisor, SUM(Total) r, SUM(customedio) c FROM tmp_base_vendas WHERE Vendedor IS NOT NULL AND Total>0 GROUP BY CodVen, Vendedor, supervisor ORDER BY (1-SUM(customedio)/SUM(Total)) DESC LIMIT 50`);
+      // Cascata dos Top 50 Produtos ("+" = vendedores que venderam aquele produto,
+      // maior faturamento primeiro) — mesmo racional de topCliCashVend/
+      // topCliMargemVend acima, mas produto nunca teve cascata antes. Uma consulta
+      // para os codigo do Top 50 por Cash Margem e outra para o Top 50 por Margem %
+      // (listas de produtos diferentes, rankings não se sobrepõem).
+      const topProdCashCodes = topProdCash.map(r => r.codigo);
+      const topProdCashVend = topProdCashCodes.length ? await q(`
+        SELECT Codigo codigo, Vendedor vnome, MIN(supervisor) supervisor,
+               SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq
+        FROM tmp_base_vendas WHERE Codigo = ANY($1::int[]) AND Vendedor IS NOT NULL
+        GROUP BY Codigo, Vendedor`, [topProdCashCodes]) : [];
+      const topProdMargemCodes = topProdMargem.map(r => r.codigo);
+      const topProdMargemVend = topProdMargemCodes.length ? await q(`
+        SELECT Codigo codigo, Vendedor vnome, MIN(supervisor) supervisor,
+               SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq
+        FROM tmp_base_vendas WHERE Codigo = ANY($1::int[]) AND Vendedor IS NOT NULL
+        GROUP BY Codigo, Vendedor`, [topProdMargemCodes]) : [];
 
       // ── Top 50 Cliente/Produto POR MÊS (Cash Margem e Margem %) ────────────
       // O filtro de Mês do painel (ST.mes) precisa de um Top 50 PRÓPRIO por mês —
@@ -265,6 +282,21 @@ class DashboardETLService {
         SELECT CodCli codigo, Mes mes, CodVen vcodigo, Vendedor vnome, supervisor, SUM(Total) r
         FROM tmp_base_vendas WHERE CodCli = ANY($1::int[]) AND Vendedor IS NOT NULL
         GROUP BY CodCli, Mes, CodVen, Vendedor, supervisor ORDER BY CodCli, Mes, SUM(Total) DESC`, [allCliCodes]) : [];
+
+      // Mesmo raciocínio de allCliCodes/cliVendPorMes, para Produto: com filtro de
+      // Mês ativo (o padrão do painel), as tabelas usam top_produtos_*_por_mes —
+      // um Top 50 PRÓPRIO daquele mês, com produtos que não estão no Top 50 do
+      // semestre inteiro. Sem isto a cascata "+" só cobria quem também estivesse
+      // no ranking semestral (topProdCashVend/topProdMargemVend acima).
+      const allProdCodes = [...new Set([
+        ...topProdCash.map(r=>r.codigo), ...topProdMargem.map(r=>r.codigo),
+        ...prodCashPorMes.map(r=>r.codigo), ...prodMargemPorMes.map(r=>r.codigo),
+      ])];
+      const prodVendPorMes = allProdCodes.length ? await q(`
+        SELECT Codigo codigo, Mes mes, Vendedor vnome, MIN(supervisor) supervisor,
+               SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq
+        FROM tmp_base_vendas WHERE Codigo = ANY($1::int[]) AND Vendedor IS NOT NULL
+        GROUP BY Codigo, Mes, Vendedor ORDER BY Codigo, Mes, SUM(Total) DESC`, [allProdCodes]) : [];
 
       // Ano anterior (mesmo range de datas, ano-1) para esses MESMOS codcli — sem
       // isso, o comparativo do cliente no efeito cascata só existiria se ele TAMBÉM
@@ -327,10 +359,10 @@ class DashboardETLService {
         resumo, porMes, porGer, porSup, porCat, porGrp, topVend, topCli, topProd, porDia, porDiaCat,
         porGerMes, porSupMes, porVendMes,
         porMesCli, porMesCatCli, porMesCatCliCod, porMesFumo, porMesFumoTotal, realFumoGer, realFumoSup, realFumoVend, fullVend, qual,
-        topCliCash, topCliCashCat, topCliCashVend, topProdCash, topVendCash,
-        topCliMargem, topCliMargemCat, topCliMargemVend, topProdMargem, topVendMargem,
+        topCliCash, topCliCashCat, topCliCashVend, topProdCash, topProdCashVend, topVendCash,
+        topCliMargem, topCliMargemCat, topCliMargemVend, topProdMargem, topProdMargemVend, topVendMargem,
         cliCashPorMes, cliMargemPorMes, prodCashPorMes, prodMargemPorMes,
-        cliCatPorMes, cliVendPorMes, cliCatPorMesAnoAnterior,
+        cliCatPorMes, cliVendPorMes, cliCatPorMesAnoAnterior, prodVendPorMes,
         pag, janRange, janProd, abcdCli,
         hierTopCli, hierTopProd, hierCat, hierPag, hierAbcdRows, hierDiaGer, hierDiaCatGer, meta,
         cascCat, cascGrp, cascForn, cascProd,
@@ -716,6 +748,23 @@ class DashboardETLService {
       entry.vendedor = { codigo: String(row.vcodigo), nome: row.vnome, supervisor: row.supervisor };
     }
 
+    // Cascata dos Top 50 Produtos ("+" = vendedores que venderam o produto, do
+    // maior para o menor faturamento) — uma por ranking (Cash Margem/Margem %),
+    // mesma separação de top_clientes_cash_detalhe/top_clientes_margem_detalhe.
+    const buildProdutosDetalhe = rows => {
+      const out = {};
+      for (const row of rows || []) {
+        const k = String(row.codigo);
+        const entry = out[k] || (out[k] = { vendedores: [] });
+        const rr = num(row.r), cc = num(row.c);
+        entry.vendedores.push({ nome: row.vnome, supervisor: row.supervisor, r: round2(rr), c: round2(cc), q: round2(num(row.qq)), m: margem(rr, cc) });
+      }
+      for (const k in out) out[k].vendedores.sort((a, b) => b.r - a.r);
+      return out;
+    };
+    const top_produtos_cash_detalhe = buildProdutosDetalhe(d.topProdCashVend);
+    const top_produtos_margem_detalhe = buildProdutosDetalhe(d.topProdMargemVend);
+
     // ── Top 50 Cliente/Produto POR MÊS + cascata mensal + ano anterior ─────
     // groupByMes: agrupa linhas (que já têm campo mes) num dict {mes: [linhas]}.
     const groupByMes = (rows, mapFn) => {
@@ -749,6 +798,22 @@ class DashboardETLService {
       const porMes = top_clientes_detalhe_por_mes[m] || (top_clientes_detalhe_por_mes[m] = {});
       const entry = porMes[k] || (porMes[k] = { categorias: {}, vendedor: null });
       entry.vendedor = { codigo: String(row.vcodigo), nome: row.vnome, supervisor: row.supervisor };
+    }
+
+    // top_produtos_detalhe_por_mes[mes][codigo] = { vendedores:[...] } — mesmo
+    // racional de top_clientes_detalhe_por_mes: cobre todo produto que apareceu em
+    // QUALQUER Top 50 (semestre ou mês, Cash ou Margem), pra cascata nunca faltar
+    // por causa do filtro de Mês.
+    const top_produtos_detalhe_por_mes = {};
+    for (const row of d.prodVendPorMes || []) {
+      const m = String(row.mes), k = String(row.codigo);
+      const porMes = top_produtos_detalhe_por_mes[m] || (top_produtos_detalhe_por_mes[m] = {});
+      const entry = porMes[k] || (porMes[k] = { vendedores: [] });
+      const rr = num(row.r), cc = num(row.c);
+      entry.vendedores.push({ nome: row.vnome, supervisor: row.supervisor, r: round2(rr), c: round2(cc), q: round2(num(row.qq)), m: margem(rr, cc) });
+    }
+    for (const m in top_produtos_detalhe_por_mes) {
+      for (const k in top_produtos_detalhe_por_mes[m]) top_produtos_detalhe_por_mes[m][k].vendedores.sort((a, b) => b.r - a.r);
     }
 
     // top_clientes_categoria_ano_anterior[codcli][mes][categoria] = {r,c} — MESMO
@@ -796,10 +861,10 @@ class DashboardETLService {
       por_mes, por_gerente, por_supervisor, por_categoria, por_grupo,
       top_vendedores, top_clientes, top_produtos, por_dia, por_dia_categoria,
       por_mes_clientes, por_mes_categoria_clientes, por_mes_categoria_clientes_cod, por_mes_fumokg, por_mes_fumokg_total, realizado_fumokg, full_vendedores, realizado_por_mes, qualidade,
-      top_clientes_cash, top_clientes_cash_detalhe, top_produtos_cash, top_vendedores_cash,
-      top_clientes_margem, top_clientes_margem_detalhe, top_produtos_margem, top_vendedores_margem,
+      top_clientes_cash, top_clientes_cash_detalhe, top_produtos_cash, top_produtos_cash_detalhe, top_vendedores_cash,
+      top_clientes_margem, top_clientes_margem_detalhe, top_produtos_margem, top_produtos_margem_detalhe, top_vendedores_margem,
       top_clientes_cash_por_mes, top_clientes_margem_por_mes, top_produtos_cash_por_mes, top_produtos_margem_por_mes,
-      top_clientes_detalhe_por_mes, top_clientes_categoria_ano_anterior,
+      top_clientes_detalhe_por_mes, top_produtos_detalhe_por_mes, top_clientes_categoria_ano_anterior,
       pagamento_por_categoria, hier_pagamento_por_categoria,
       janela90, por_produto_janela90, abcd,
       hier_top_clientes, hier_top_produtos, hier_por_categoria, hier_abcd, hier_por_dia, hier_por_dia_categoria,

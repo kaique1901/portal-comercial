@@ -419,6 +419,18 @@ class DashboardRecorteService {
     dados.top_produtos_cash = porCash(topProd, row => ({ categoria: row.categoria }));
     dados.top_vendedores_cash = porCash(porVend, row => ({ supervisor: row.supervisor }));
 
+    // Top 50 por Margem % (razão), reordenando o MESMO Top 50 por receita já
+    // consultado acima (porCli/topProd) em vez de rodar outra query — mesma
+    // aproximação já assumida no filtro de hierarquia ("o recorte pode não conter
+    // o cliente/produto de maior margem da empresa como um todo"). Importante:
+    // por reaproveitar o mesmo pool de códigos, clientes_detalhe/produtos_detalhe
+    // (cascata "+") abaixo cobrem esta lista também, sem precisar de query extra.
+    const porMargemPct = (arr, extra) => arr.slice()
+      .map(row => { const rr = num(row.r), cc = num(row.c); return Object.assign({ codigo: String(row.codigo != null ? row.codigo : row.nome), nome: row.nome, r: round2(rr), c: round2(cc), cash_margin: round2(rr - cc), m: margem(rr, cc) }, extra ? extra(row) : {}); })
+      .sort((a, b) => b.m - a.m).slice(0, 50);
+    dados.top_clientes_margem = porMargemPct(porCli);
+    dados.top_produtos_margem = porMargemPct(topProd, row => ({ categoria: row.categoria }));
+
     cacheSet(key, dados);
     return dados;
   }

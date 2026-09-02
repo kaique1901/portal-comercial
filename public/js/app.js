@@ -824,6 +824,7 @@ function recorteVazio(){
     por_mes_fumokg:{}, realizado_fumokg:{ por_gerente:{}, por_supervisor:{}, por_vendedor:{} },
     clientes:[], top_produtos:[], vendedores:[],
     top_clientes_cash:[], top_produtos_cash:[], top_vendedores_cash:[],
+    top_clientes_margem:[], top_produtos_margem:[],
     pagamento_por_categoria:{}, janela90:{ inicio:null, fim:null }, por_produto_janela90:{},
     qualidade:{ linhas_sem_cliente:0, linhas_sem_produto:0, linhas_sem_vendedor:0,
                 linhas_receita_zero_ou_negativa:0, linhas_qtde_zero_ou_negativa:0,
@@ -867,11 +868,18 @@ function mesclarRecorte(p, rec){
     // recorte (outros clientes) — o "+" sumia na maioria das linhas.
     top_clientes_cash_detalhe: rec.clientes_detalhe || {},
     top_clientes_margem_detalhe: rec.clientes_detalhe || {},
-    produtos_detalhe: rec.produtos_detalhe || {},
+    top_produtos_cash_detalhe: rec.produtos_detalhe || {},
+    top_produtos_margem_detalhe: rec.produtos_detalhe || {},
     top_vendedores: rec.vendedores,
     top_clientes_cash: rec.top_clientes_cash,
     top_produtos_cash: rec.top_produtos_cash,
     top_vendedores_cash: rec.top_vendedores_cash,
+    // Top 50 por Margem % também precisa vir do recorte quando ele está ativo —
+    // sem isto, com filtro de Canal/Status/Cliente/2+meses de anos diferentes
+    // (sem hierarquia) a lista continuava vindo do cubo (empresa inteira),
+    // enquanto só o detalhe da cascata já tinha sido corrigido para o recorte.
+    top_clientes_margem: rec.top_clientes_margem || [],
+    top_produtos_margem: rec.top_produtos_margem || [],
     pagamento_por_categoria: rec.pagamento_por_categoria,
     janela90: rec.janela90,
     por_produto_janela90: rec.por_produto_janela90,
@@ -2138,23 +2146,34 @@ function tblCashVend(rows, d, prev){
 // comparativo vs. mesmo período ano anterior.
 
 // ── CASCATA DOS PRODUTOS (Top 50 Cash Margem e Top 50 Margem %) ─────────────
-// Produto nunca teve o "+". O detalhe é quem VENDEU o produto no recorte
-// (vendedor, supervisor, faturamento, cash margem, margem % e quantidade), na
-// mesma lógica do "+" dos clientes. Fonte: produtos_detalhe, devolvido pelo
-// /recorte — por isso só existe com recorte carregado.
+// Produto nunca teve o "+". O detalhe é quem VENDEU o produto (vendedor,
+// supervisor, faturamento, cash margem, margem % e quantidade), na mesma
+// lógica do "+" dos clientes — inclusive o mesmo grão por Mês: com filtro de
+// Mês ativo (o padrão do painel), a tabela mostra o Top 50 DAQUELE mês
+// (top_produtos_*_por_mes), que tem produtos fora do Top 50 do semestre
+// inteiro — por isso o detalhe também precisa vir de top_produtos_detalhe_por_mes
+// nesse caso, senão a cascata falta na maioria das linhas (mesmo bug já
+// corrigido do lado Cliente via top_clientes_detalhe_por_mes/cliCascadeDetalhe).
 let prodCascExpanded = new Set();
 function toggleProdCasc(codigo){
   const k = String(codigo);
   if (prodCascExpanded.has(k)) prodCascExpanded.delete(k); else prodCascExpanded.add(k);
   renderMargemCash();
 }
-function prodCascadeDetalhe(d, codigo){
-  const det = d.produtos_detalhe && d.produtos_detalhe[String(codigo)];
+function prodCascadeDetalhe(d, codigo, mes, semestralDict){
+  let det;
+  if (d._recorte) det = semestralDict && semestralDict[String(codigo)];
+  else if (mes!=null){
+    const porMes = d.top_produtos_detalhe_por_mes && d.top_produtos_detalhe_por_mes[String(mes)];
+    det = porMes ? porMes[String(codigo)] : null;
+  } else {
+    det = semestralDict && semestralDict[String(codigo)];
+  }
   return (det && det.vendedores && det.vendedores.length) ? det : null;
 }
 // Devolve { toggle, linhas } — linhas já é o HTML das sublinhas quando aberto.
-function prodCascadeParts(d, r, nColunas){
-  const det = prodCascadeDetalhe(d, r.codigo);
+function prodCascadeParts(d, r, nColunas, mes, semestralDict){
+  const det = prodCascadeDetalhe(d, r.codigo, mes, semestralDict);
   if (!det) return { toggle: '<span class="casc-toggle-spacer"></span>', linhas: '' };
   const aberto = prodCascExpanded.has(String(r.codigo));
   const toggle = `<span class="casc-toggle" onclick="toggleProdCasc('${String(r.codigo).replace(/'/g,"\'")}')">${aberto?'−':'+'}</span>`;
@@ -2167,14 +2186,14 @@ function prodCascadeParts(d, r, nColunas){
   return { toggle, linhas };
 }
 
-function tblCashProd(rows, prev, d){
+function tblCashProd(rows, prev, d, mes){
   return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Cash Margem</th><th class="tv">Δ vs ano ant.</th><th class="tv">Faturamento</th><th class="tv">Margem %</th><th class="tv">Qtde Vendida</th><th class="tv">Δ Qtde (ano ant.)</th></tr></thead><tbody>${
     rows.map((r,i)=>{
       const cm = r.cash_margin!=null ? r.cash_margin : (r.r-r.c);
       const prevEntry = prevLookupListFull(prev,"top_produtos_cash","nome",r.nome);
       const pv = prevEntry ? (prevEntry.cash_margin!=null?prevEntry.cash_margin:(prevEntry.r-prevEntry.c)) : null;
       const pq = prevEntry ? prevEntry.q : null;
-      const casc = prodCascadeParts(d, r, 7);
+      const casc = prodCascadeParts(d, r, 7, mes, d.top_produtos_cash_detalhe);
       return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${casc.toggle}${escAttr(r.nome)}</td><td class="tv tn">${fF(cm)}</td><td class="tv">${deltaPillSmall(cm,pv)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${margemBadge(r.m)}</td><td class="tv">${fN(r.q)}</td><td class="tv">${deltaPillSmall(r.q,pq)}</td></tr>` + casc.linhas;
     }).join("")}</tbody>`;
 }
@@ -2219,12 +2238,12 @@ function tblMargemCli(rows, d, prev, mes){
       return html;
     }).join("")}</tbody>`;
 }
-function tblMargemProd(rows, prev, d){
+function tblMargemProd(rows, prev, d, mes){
   return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Margem %</th><th class="tv">Δ Margem (p.p.)</th><th class="tv">Faturamento</th><th class="tv">Cash Margem</th><th class="tv">Qtde Vendida</th><th class="tv">Δ Qtde (ano ant.)</th></tr></thead><tbody>${
     rows.map((r,i)=>{
       const prevFull = prevLookupListFull(prev,"top_produtos_margem","nome",r.nome);
       const cm = r.cash_margin!=null ? r.cash_margin : (r.r-r.c);
-      const casc = prodCascadeParts(d, r, 7);
+      const casc = prodCascadeParts(d, r, 7, mes, d.top_produtos_margem_detalhe);
       return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${casc.toggle}${escAttr(r.nome)}</td><td class="tv tn">${margemBadge(r.m)}</td><td class="tv">${deltaPP(r.m,prevFull?prevFull.m:null,false)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${fF(cm)}</td><td class="tv">${fN(r.q)}</td><td class="tv">${deltaPillSmall(r.q,prevFull?prevFull.q:null)}</td></tr>` + casc.linhas;
     }).join("")}</tbody>`;
 }
@@ -2419,10 +2438,10 @@ function renderMargemCash(){
   document.getElementById("margemVendSub").textContent = vendSubTxt;
 
   document.getElementById("tCashCli").innerHTML = tblCashCli(cliList.slice(0,50), d, prev, ST.mes);
-  document.getElementById("tCashProd").innerHTML = tblCashProd(prodList.slice(0,50), prev, d);
+  document.getElementById("tCashProd").innerHTML = tblCashProd(prodList.slice(0,50), prev, d, ST.mes);
   document.getElementById("tCashVend").innerHTML = tblCashVend(vendRowsCash, d, prev);
   document.getElementById("tMargemCli").innerHTML = tblMargemCli(cliListM.slice(0,50), d, prev, ST.mes);
-  document.getElementById("tMargemProd").innerHTML = tblMargemProd(prodListM.slice(0,50), prev, d);
+  document.getElementById("tMargemProd").innerHTML = tblMargemProd(prodListM.slice(0,50), prev, d, ST.mes);
   document.getElementById("tMargemVend").innerHTML = tblMargemVend(vendRowsMargem, d, prev);
 }
 
