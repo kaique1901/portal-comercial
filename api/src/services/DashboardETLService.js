@@ -8,6 +8,10 @@ const TODOS_PERIODOS = [
   { key: '2026_2', label: '2026 - 2º Semestre', ini: '2026-07-01', fim: '2026-12-31' },
   { key: '2025_1', label: '2025 - 1º Semestre', ini: '2025-01-01', fim: '2025-06-30' },
   { key: '2025_2', label: '2025 - 2º Semestre', ini: '2025-07-01', fim: '2025-12-31' },
+  // 2024: permite que o seletor de Ano em Comparativos ofereça 2025 (que precisa
+  // de 2024 como "ano anterior") — aumenta o ciclo do ETL para 6 períodos.
+  { key: '2024_1', label: '2024 - 1º Semestre', ini: '2024-01-01', fim: '2024-06-30' },
+  { key: '2024_2', label: '2024 - 2º Semestre', ini: '2024-07-01', fim: '2024-12-31' },
 ];
 
 // Cada período custa um CREATE TEMP TABLE varrendo a base inteira + ~60 agregações,
@@ -336,6 +340,20 @@ class DashboardETLService {
         hierPag[lvl] = await q(`SELECT "${col}" ent, categoria, tipo, tipocob, SUM(Total) v FROM tmp_base_vendas WHERE categoria IS NOT NULL GROUP BY "${col}", categoria, tipo, tipocob`);
         hierAbcdRows[lvl] = await q(`SELECT "${col}" ent, SUM(Total) r, SUM(customedio) c FROM tmp_base_vendas WHERE Cliente IS NOT NULL GROUP BY "${col}", CodCli`);
       }
+      // ── Mix & Positivação em cascata: Supervisor → Vendedor → Cliente → Mês →
+      // Categoria → Produtos. Candidatos = códigos de cliente já no Top 50 de
+      // CADA vendedor (hierTopCli.vendedor, acima) — não uma nova varredura de
+      // "todos os clientes", só o detalhe (mês/categoria/produto) pra quem já é
+      // relevante o bastante pra estar no Top 50 de algum vendedor. Reaproveita
+      // tmp_base_vendas (já materializada) — sem novo scan da base inteira.
+      const mixCliCodes = [...new Set((hierTopCli.vendedor || []).map(r => r.codigo))];
+      const mixDetalhe = mixCliCodes.length ? await q(`
+        SELECT CodCli codigo, Mes mes, categoria, Codigo produto_codigo, Descricao produto_nome,
+               SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq
+        FROM tmp_base_vendas
+        WHERE CodCli = ANY($1::int[]) AND categoria IS NOT NULL AND Descricao IS NOT NULL
+        GROUP BY CodCli, Mes, categoria, Codigo, Descricao
+      `, [mixCliCodes]) : [];
       const hierDiaGer = await q(`SELECT gerente ent, DataPed::date dia, SUM(Total) r, SUM(customedio) c FROM tmp_base_vendas GROUP BY gerente, DataPed::date`);
       const hierDiaCatGer = await q(`SELECT gerente ent, DataPed::date dia, categoria, SUM(Total) r, SUM(customedio) c FROM tmp_base_vendas WHERE categoria IS NOT NULL GROUP BY gerente, DataPed::date, categoria`);
 
@@ -364,7 +382,7 @@ class DashboardETLService {
         cliCashPorMes, cliMargemPorMes, prodCashPorMes, prodMargemPorMes,
         cliCatPorMes, cliVendPorMes, cliCatPorMesAnoAnterior, prodVendPorMes,
         pag, janRange, janProd, abcdCli,
-        hierTopCli, hierTopProd, hierCat, hierPag, hierAbcdRows, hierDiaGer, hierDiaCatGer, meta,
+        hierTopCli, hierTopProd, hierCat, hierPag, hierAbcdRows, hierDiaGer, hierDiaCatGer, meta, mixDetalhe,
         cascCat, cascGrp, cascForn, cascProd,
         porCanal, porInadimplente, porStatus, bonif
       });
@@ -828,6 +846,20 @@ class DashboardETLService {
       porMes[row.categoria] = { r: round2(num(row.r)), c: round2(num(row.c)) };
     }
 
+    // mix_cascata_detalhe[codcli][mes][categoria] = [{codigo,nome,r,c,q}] — Mix &
+    // Positivação em cascata (Supervisor→Vendedor→Cliente→Mês→Categoria→Produtos).
+    const mix_cascata_detalhe = {};
+    for (const row of d.mixDetalhe || []) {
+      const kc = String(row.codigo), km = String(row.mes);
+      const porCli = mix_cascata_detalhe[kc] || (mix_cascata_detalhe[kc] = {});
+      const porMes = porCli[km] || (porCli[km] = {});
+      const lista = porMes[row.categoria] || (porMes[row.categoria] = []);
+      const rr = num(row.r), cc = num(row.c);
+      lista.push({ codigo: String(row.produto_codigo), nome: row.produto_nome, r: round2(rr), c: round2(cc), q: round2(num(row.qq)) });
+    }
+    for (const kc in mix_cascata_detalhe) for (const km in mix_cascata_detalhe[kc]) for (const cat in mix_cascata_detalhe[kc][km])
+      mix_cascata_detalhe[kc][km][cat].sort((a, b) => b.r - a.r);
+
     const pagamento_por_categoria = buildPag(d.pag);
     const hier_pagamento_por_categoria = {}; for (const lvl of Object.keys(d.hierPag)) hier_pagamento_por_categoria[lvl] = buildPagHier(d.hierPag[lvl]);
 
@@ -867,7 +899,7 @@ class DashboardETLService {
       top_clientes_detalhe_por_mes, top_produtos_detalhe_por_mes, top_clientes_categoria_ano_anterior,
       pagamento_por_categoria, hier_pagamento_por_categoria,
       janela90, por_produto_janela90, abcd,
-      hier_top_clientes, hier_top_produtos, hier_por_categoria, hier_abcd, hier_por_dia, hier_por_dia_categoria,
+      hier_top_clientes, hier_top_produtos, hier_por_categoria, hier_abcd, hier_por_dia, hier_por_dia_categoria, mix_cascata_detalhe,
       cascata: buildCascata(d.cascCat, d.cascGrp, d.cascForn, d.cascProd),
       meta: d.meta,
       por_canal: (() => { const o = {}; for (const r of d.porCanal || []) o[r.canal_vendas] = { r: round2(num(r.r)), c: round2(num(r.c)), q: round2(num(r.qq)), m: margem(num(r.r), num(r.c)), n_clientes: parseInt(r.n_clientes, 10) }; return o; })(),
@@ -1326,6 +1358,117 @@ class DashboardETLService {
     return { gerado_em: isoDay(new Date()), total, clientes, por_gerente, por_supervisor, por_vendedor, arvore: arvoreJson };
   }
 
+  // ── ABA "Clientes Ativos sem Compra (60+ dias)" ─────────────────────────
+  // "Ativos" = cadastro (eqclid.sitcli não marcado); "não inadimplentes" = fora
+  // da MESMA lista de títulos vencidos/cheques devolvidos usada em
+  // _buildInadimplencia (creceber/chqrec); "60+ dias sem compra" = último
+  // pedido (Cancelado is null, CodTpo in 2,4,5 — mesmo filtro do BASE_CTE) há
+  // mais de 60 dias. Sempre "até hoje", independente de período — mesmo
+  // racional de _buildEstoque/_buildAbcd90/_buildDowCascata. Gerente/
+  // Supervisor/Vendedor = time responsável pelo pedido MAIS RECENTE do
+  // cliente (o cliente pode ter mudado de vendedor ao longo do tempo).
+  // Vendedor do pedido mais recente precisa estar ATIVO (eqvend.ativo — mesmo
+  // campo/valores que _hierarquiaReal() usa pra "só ativos"): não existe
+  // redistribuição de carteira no sistema quando um vendedor é desligado, então
+  // um cliente cujo último pedido foi com vendedor hoje inativo simplesmente
+  // sai desta análise (pedido explícito: "vendedores desligados não devem
+  // aparecer... nem influenciar totais").
+  async _buildClientesSemCompra60() {
+    const rows = (await this._queryCronometrada('clientesSemCompra60/lista', `
+      WITH ultima AS (
+        SELECT p.CodCliente codcli, MAX(p.DataFechamento) ultima_compra
+        FROM cifalcomercial.Pedidos p
+        WHERE p.Cancelado IS NULL AND p.CodTpo IN (2,4,5)
+        GROUP BY p.CodCliente
+      ),
+      vend_recente AS (
+        SELECT DISTINCT ON (p.CodCliente) p.CodCliente codcli, p.CodVendedor codven
+        FROM cifalcomercial.Pedidos p
+        WHERE p.Cancelado IS NULL AND p.CodTpo IN (2,4,5)
+        ORDER BY p.CodCliente, p.DataFechamento DESC
+      ),
+      inad AS (
+        SELECT codcli FROM cifalcomercial.creceber WHERE datqui IS NULL AND datven::date < now()::date AND codcli IS NOT NULL
+        UNION
+        SELECT codcli FROM cifalcomercial.chqrec
+        WHERE dataDevolucao IS NOT NULL AND DatPag IS NULL AND Datadevolucao::date <= now()::date - 30 AND codcli IS NOT NULL
+      )
+      SELECT cl.codcli, cl.nomcli cliente, u.ultima_compra,
+             (now()::date - u.ultima_compra::date)::int dias_sem_compra,
+             e.nomven vendedor, s.nomesupervisor supervisor, g.nomegerente gerente
+      FROM cifalcomercial.EQCLID cl
+      JOIN ultima u ON u.codcli = cl.codcli
+      JOIN vend_recente vr ON vr.codcli = cl.codcli
+      -- Vendedor ATIVO obrigatório (mesmo campo/valores que _hierarquiaReal() usa
+      -- pra montar a árvore "só ativos"): sem regra de redistribuição de carteira
+      -- no sistema quando um vendedor é desligado, o cliente cujo pedido mais
+      -- recente foi com um vendedor hoje inativo sai desta análise (não dá pra
+      -- apontar "vendedor responsável" nenhum pra agir em cima dele aqui).
+      JOIN cifalcomercial.Eqvend e ON e.codven = vr.codven
+        AND (e.ativo='S' OR e.ativo='Sim' OR e.ativo='1' OR e.ativo='true')
+      LEFT JOIN cifalcomercial.Supervisor s ON s.codsupervisor = e.codsupervisor
+      LEFT JOIN cifalcomercial.Gerente g ON g.codgerente = s.codgerente
+      WHERE (cl.sitcli IS NULL OR cl.sitcli = false)
+        AND NOT EXISTS (SELECT 1 FROM inad WHERE inad.codcli = cl.codcli)
+        AND (now()::date - u.ultima_compra::date) > 60
+      ORDER BY dias_sem_compra DESC
+    `)).rows;
+
+    const SEM = '(sem vendedor no cadastro)';
+    const clientes = rows.map(r => ({
+      codigo: String(r.codcli),
+      nome: r.cliente || `(cliente ${r.codcli})`,
+      vendedor: r.vendedor || SEM,
+      supervisor: r.supervisor || SEM,
+      gerente: r.gerente || SEM,
+      ultima_compra: r.ultima_compra ? isoDay(r.ultima_compra) : null,
+      dias_sem_compra: parseInt(r.dias_sem_compra, 10) || 0,
+    }));
+    if (!clientes.length) return { gerado_em: isoDay(new Date()), total: 0, clientes: [], categorias_por_cliente: {} };
+
+    // Categorias que cada cliente costuma comprar + média mensal de faturamento
+    // por categoria — últimos 365 dias (janela ampla o bastante para captar o
+    // hábito de compra de alguém que já está há 60+ dias sem comprar; 90 dias
+    // frequentemente não pegaria NENHUMA linha desses clientes). Restrito aos
+    // códigos já filtrados acima — não varre a base inteira de novo.
+    const codigos = clientes.map(c => parseInt(c.codigo, 10)).filter(Number.isFinite);
+    const catRows = (await this._queryCronometrada('clientesSemCompra60/categorias', `
+      SELECT pe.CodCliente codcli, cp.descategoriaprod categoria,
+             SUM(CASE WHEN COALESCE(pe.TotDescontoNota,0) > 0
+                      THEN (ip.Qtde*ip.ValUni) * (1 - (pe.TotDescontoNota/pe.TotProdutos))
+                      ELSE (ip.Qtde*ip.ValUni) END) total,
+             COUNT(DISTINCT pe.NroPedido) pedidos,
+             COUNT(DISTINCT date_trunc('month', pe.DataFechamento)) meses
+      FROM cifalcomercial.Pedidos pe
+      JOIN cifalcomercial.ItensPedido ip ON ip.NroPedido = pe.NroPedido
+      JOIN cifalcomercial.Produtos prod ON prod.CodProduto = ip.CodProduto
+      JOIN cifalcomercial.SubGrupos sg ON prod.CodSubGrupo = sg.CodSubGrupo
+      LEFT JOIN cifalcomercial.categoriasproduto cp ON cp.codcategoriaprod = sg.codcategoriaprod
+      WHERE pe.Cancelado IS NULL AND pe.CodTpo IN (2,4,5)
+        AND pe.CodCliente = ANY($1::int[])
+        AND pe.DataFechamento::date >= now()::date - 365
+        AND cp.descategoriaprod IS NOT NULL
+      GROUP BY pe.CodCliente, cp.descategoriaprod
+    `, [codigos])).rows;
+
+    const categorias_por_cliente = {};
+    for (const r of catRows) {
+      const k = String(r.codcli);
+      const lista = categorias_por_cliente[k] || (categorias_por_cliente[k] = []);
+      const totalCat = num(r.total);
+      const meses = parseInt(r.meses, 10) || 1;
+      lista.push({
+        categoria: r.categoria,
+        total: round2(totalCat),
+        pedidos: parseInt(r.pedidos, 10) || 0,
+        media_mensal: round2(totalCat / meses),
+      });
+    }
+    for (const k in categorias_por_cliente) categorias_por_cliente[k].sort((a, b) => b.total - a.total);
+
+    return { gerado_em: isoDay(new Date()), total: clientes.length, clientes, categorias_por_cliente };
+  }
+
   // Árvore REAL da força de vendas (cadastro: supervisor + eqvend, só ativos).
   async _hierarquiaReal() {
     const sql = `
@@ -1476,6 +1619,7 @@ class DashboardETLService {
     // toca o BASE_CTE, custa ~0,3s. Deixá-la no fim da fila fazia a aba esperar os
     // ~15 min do abcd90 por nada.
     try { resultado._inadimplencia = await cronometrar('inadimplencia', () => this._buildInadimplencia()); publicar(); } catch (e) {}
+    try { resultado._clientesSemCompra60 = await cronometrar('clientesSemCompra60', () => this._buildClientesSemCompra60()); publicar(); } catch (e) {}
 
     // As três etapas de 90 dias compartilham UMA materialização da janela.
     // Publicamos entre elas para o painel ir liberando aba por aba; se uma falhar,

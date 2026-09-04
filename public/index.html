@@ -121,11 +121,13 @@
       <div class="nav-item"     data-mod="m-mix"     onclick="showMod('m-mix',this)"><span class="nav-ico">◈</span><span class="nav-txt">Mix &amp; Positivação</span></div>
       <div class="nav-item"     data-mod="m-abcd"    onclick="showMod('m-abcd',this)"><span class="nav-ico">◐</span><span class="nav-txt">Clientes de A a I</span></div>
       <div class="nav-item"     data-mod="m-planos"  onclick="showMod('m-planos',this)"><span class="nav-ico">✚</span><span class="nav-txt">Planos de Ação</span></div>
+      <div class="nav-item"     data-mod="m-planos-vend" onclick="showMod('m-planos-vend',this)"><span class="nav-ico">✚</span><span class="nav-txt">Vendedores Abaixo da Meta</span></div>
       <div class="nav-item"     data-mod="m-estoque" onclick="showMod('m-estoque',this)"><span class="nav-ico">▣</span><span class="nav-txt">Estoque x Venda (90 dias)</span></div>
       <div class="nav-item"     data-mod="m-produtos-parados-vend" onclick="showMod('m-produtos-parados-vend',this)"><span class="nav-ico">▣</span><span class="nav-txt">Produtos Parados por Vendedor</span></div>
       <div class="nav-item"     data-mod="m-produtos-letra-p" onclick="showMod('m-produtos-letra-p',this)"><span class="nav-ico">▣</span><span class="nav-txt">Produtos Letra P</span></div>
       <div class="nav-item"     data-mod="m-pagamento" onclick="showMod('m-pagamento',this)"><span class="nav-ico">◫</span><span class="nav-txt">Vendas por Tipo de Pagamento</span></div>
       <div class="nav-item"     data-mod="m-inad"    onclick="showMod('m-inad',this)"><span class="nav-ico">◔</span><span class="nav-txt">Inadimplência por Carteira</span></div>
+      <div class="nav-item"     data-mod="m-sem-compra" onclick="showMod('m-sem-compra',this)"><span class="nav-ico">◔</span><span class="nav-txt">Clientes sem Compra (60+ dias)</span></div>
       <div class="nav-item"     data-mod="m-risco"   onclick="showMod('m-risco',this)"><span class="nav-ico">⚡</span><span class="nav-txt">Riscos &amp; Oportunidades</span></div>
       <div class="nav-item"     data-mod="m-risco-cat" onclick="showMod('m-risco-cat',this)"><span class="nav-ico">⬡</span><span class="nav-txt">Riscos &amp; Oport. por Categoria</span></div>
       <div class="nav-item"     data-mod="m-qual"    onclick="showMod('m-qual',this)"><span class="nav-ico">⚠</span><span class="nav-txt">Qualidade dos Dados</span></div>
@@ -182,7 +184,13 @@
 
 <!-- 2. COMPARATIVOS -->
 <div class="mod" id="m-comp">
-  <div class="mod-header"><div><div class="mod-title">Comparativos</div><div class="mod-sub">Semestre atual vs. mesmo semestre do ano anterior</div></div></div>
+  <div class="mod-header">
+    <div><div class="mod-title">Comparativos</div><div class="mod-sub" id="comp-sub">Ano atual (completo) vs. ano anterior</div></div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <label style="font-size:12px;color:var(--t2)">Ano <select class="fsel-main" id="fCompAno"></select></label>
+      <label style="font-size:12px;color:var(--t2)">Mês <select class="fsel-main" id="fCompMes"></select></label>
+    </div>
+  </div>
   <div class="comp-grid" id="comp-cards"></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Receita mensal — atual vs. ano anterior (mesmo mês)</div></div></div><canvas id="cCompMes" height="130"></canvas></div></div>
   <div class="row2">
@@ -234,12 +242,13 @@
         <option value="mes">Mês</option>
         <option value="bim">Bimestre</option>
         <option value="sem">Semestre</option>
-        <option value="custom">Personalizado</option>
+        <option value="custom">Personalizado (meses)</option>
+        <option value="datas">Personalizado (datas exatas)</option>
       </select></div>
       <div id="objSubFiltroWrap"></div>
     </div>
   </div>
-  <div class="alert">⚠ Todas as tabelas desta aba (Geral, por Gerente/Supervisor/Vendedor, por Categoria) somam exatamente os meses escolhidos no filtro de <strong>Período</strong> acima. <strong>Bimestre segue a numeração real do calendário</strong> (1º Bim = Jan/Fev ... 6º Bim = Nov/Dez) — no 2º semestre os bimestres disponíveis são 4º, 5º e 6º. <strong>Semestre</strong> = os 6 meses do semestre selecionado no topo da tela. Não há opção de Quadrimestre: o 2º Quadrimestre do calendário (Mai-Ago) cruzaria os dois semestres, que são cubos de dados separados — use <strong>Personalizado</strong> para esse caso. <strong>Tendência</strong> = projeção do(s) mês(es) ainda em curso pelo ritmo diário observado (meses já fechados usam o valor real) — só existe no nível empresa, não com filtro de Gerente/Supervisor/Vendedor. A <strong>Tendência de Cash Margem</strong> (na tabela por Categoria e no resumo geral) aplica essa mesma projeção separadamente a Faturamento e Custo. <strong>Meta Margem %</strong> = Meta Cash Margem ÷ Meta Faturamento. A meta não tem granularidade por Grupo/Cliente. KG Fumo, Papel e Produto Estratégico são <strong>parte</strong> da Meta Geral (não somam a ela) e têm aba própria — ver "Metas KG Fumo, Papel e Estratégico" no menu.</div>
+  <div class="alert">⚠ <strong>Personalizado (datas exatas)</strong>: compara qualquer intervalo de dias (ex.: 01/09 a 15/09) com o <strong>mesmo intervalo do ano anterior</strong> (mesmo dia/mês, ajustado p/ 29/02 em ano bissexto) — mas só Realizado (a Meta do ERP só existe por mês, não por dia) e só filtro de Gerente (Supervisor/Vendedor não têm grão diário no cubo). Para as demais opções de Período (Mês/Bimestre/Semestre/Personalizado por meses): todas as tabelas desta aba (Geral, por Gerente/Supervisor/Vendedor, por Categoria) somam exatamente os meses escolhidos no filtro de <strong>Período</strong> acima. <strong>Bimestre segue a numeração real do calendário</strong> (1º Bim = Jan/Fev ... 6º Bim = Nov/Dez) — no 2º semestre os bimestres disponíveis são 4º, 5º e 6º. <strong>Semestre</strong> = os 6 meses do semestre selecionado no topo da tela. Não há opção de Quadrimestre: o 2º Quadrimestre do calendário (Mai-Ago) cruzaria os dois semestres, que são cubos de dados separados — use <strong>Personalizado</strong> para esse caso. <strong>Tendência</strong> = projeção do(s) mês(es) ainda em curso pelo ritmo diário observado (meses já fechados usam o valor real) — só existe no nível empresa, não com filtro de Gerente/Supervisor/Vendedor. A <strong>Tendência de Cash Margem</strong> (na tabela por Categoria e no resumo geral) aplica essa mesma projeção separadamente a Faturamento e Custo. <strong>Meta Margem %</strong> = Meta Cash Margem ÷ Meta Faturamento. A meta não tem granularidade por Grupo/Cliente. KG Fumo, Papel e Produto Estratégico são <strong>parte</strong> da Meta Geral (não somam a ela) e têm aba própria — ver "Metas KG Fumo, Papel e Estratégico" no menu.</div>
   <div class="kpi-grid" id="obj-kpis"></div>
   <div id="objCashNote"></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Meta x Realizado x Margem x Positivação por Categoria</div><div class="card-sub">Estoque Box = fotografia atual (não recortável por período, mesma fonte da aba Estoque x Venda) · Bonificação ainda sem fonte de dados integrada</div></div></div><div class="tbl-wrap"><table id="tObjCat"></table></div></div></div>
@@ -253,6 +262,8 @@
   <div class="mod-header"><div><div class="mod-title">Metas KG Fumo, Papel e Produto Estratégico</div><div class="mod-sub">Fonte: tabelas de meta do banco (via API) — mesmo cubo da aba Meta x Realizado</div></div></div>
   <div class="alert">⚠ Estas 3 metas são <strong>parte</strong> da Meta Geral — o próprio ERP as cadastra como categorias de meta separadas (12=Produto Estratégico, 13=FUMO KG, 14=Papel) e o cálculo da Meta Geral já as exclui, então <strong>não devem ser somadas</strong> a ela nesta ou em nenhuma outra aba. <strong>KG Fumo</strong> é medido em kg (peso). <strong>Papel</strong> é medido em <strong>quantidade</strong> (unidade de embalagem padrão do produto), não em R$. <strong>Produto Estratégico</strong>: o realizado soma o valor vendido dos produtos da lista oficial (`produtos_estrategicos`) em <strong>todas as categorias</strong> em que aparecerem, não só em uma categoria específica. Com um mês selecionado, meta e realizado usam o valor exato daquele mês (não o semestre inteiro). Esta aba não tem granularidade por Grupo/Cliente — só por Gerente/Supervisor/Vendedor/Mês.</div>
   <div class="kpi-grid" id="metaExtra-kpis"></div>
+  <div class="mod-header" style="margin-top:6px;padding-top:0"><div><div class="mod-title" style="font-size:16px">Tendência de Fechamento</div><div class="mod-sub">Projeção pelo ritmo de dias úteis decorridos no mês (mesma metodologia de Acompanhamento Objetivos) · comparado ao mesmo período do ano anterior</div></div></div>
+  <div id="metaExtra-tendencia"></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">KG Fumo, Papel e Estratégico por Gerente</div><div class="card-sub">Clique num gerente para ver só os supervisores dele abaixo (efeito cascata)</div></div></div><div class="tbl-wrap"><table id="tMetaExtraGer"></table></div></div></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">KG Fumo, Papel e Estratégico por Supervisor</div><div class="card-sub" id="metaExtraSupSub">—</div></div></div><div class="tbl-wrap"><table id="tMetaExtraSup"></table></div></div></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">KG Fumo, Papel e Estratégico por Vendedor</div><div class="card-sub" id="metaExtraVendSub">—</div></div></div><div class="tbl-wrap"><table id="tMetaExtraVend"></table></div></div></div>
@@ -311,6 +322,10 @@
   <div class="alert">⚠ Sem uma base de clientes cadastrados (universo total), a "positivação" aqui é um proxy: nº de meses do semestre em que o cliente comprou. Cross-referência com o cadastro completo de clientes é necessária para o indicador oficial.</div>
   <div id="mixHierNote"></div>
   <div class="tbl-wrap"><table id="tMix"></table></div>
+
+  <div class="mod-header" style="margin-top:22px;padding-top:0"><div><div class="mod-title" style="font-size:16px">Mix em Cascata — Supervisor → Vendedor → Cliente → Mês → Categoria → Produtos</div><div class="mod-sub">Clique em + para expandir cada nível</div></div></div>
+  <div class="alert">⚠ Candidatos = clientes que já estão no Top 50 de receita de algum vendedor (mesma fonte da tabela acima) — não é a carteira inteira, mas garante que todo vendedor apareça com os clientes mais relevantes dele. Produtos por mês/categoria vêm do período selecionado.</div>
+  <div class="tbl-wrap"><table id="tMixCascata"></table></div>
 </div>
 
 <!-- 6. ABCD -->
@@ -347,9 +362,18 @@
   <div class="row2w" id="planosMesExtra"></div>
 
   <div class="mod-header" style="margin-top:22px;padding-top:0"><div><div class="mod-title" style="font-size:17px">Planos Estratégicos Detalhados por Categoria</div><div class="mod-sub">3 planos por categoria — Faturamento, Margem e Positivação — cada um citando o número real que motiva a recomendação</div></div></div>
-  <div class="alert">⚠ Positivação de categoria aqui = % dos clientes ativos do período que compraram pelo menos 1 item dessa categoria (dado real, não estimado). Os planos são gerados a partir de regras objetivas sobre os números do próprio período (comparação com a média da empresa e com o ano anterior) — não é IA analisando texto, é lógica determinística sobre os dados.</div>
+  <div class="alert">⚠ Positivação de categoria aqui = % dos clientes ativos do período que compraram pelo menos 1 item dessa categoria (dado real, não estimado). Os planos são gerados a partir de regras objetivas sobre os números do próprio período (comparação com a média da empresa e com o ano anterior) — não é IA analisando texto, é lógica determinística sobre os dados. Categorias abaixo de 100% de atingimento ganham uma <strong>Parte 4 — Oportunidades de Cross-Sell</strong>: até 5 clientes reais (Top 50 de receita de cada vendedor) que já compram a categoria mas não os produtos mais vendidos dela, e até 5 clientes que compram a categoria mais correlacionada (por co-ocorrência real na base) mas não esta — com Gerente/Supervisor/Vendedor/Cliente, produto sugerido, potencial de faturamento (cenário ilustrativo) e prioridade (Alta/Média/Baixa). Atualiza sozinho a cada ciclo do ETL, conforme novas vendas entram.</div>
   <div id="planosHierNote"></div>
   <div class="opp-grid" id="planos-cards"></div>
+</div>
+
+<!-- 6B-2. VENDEDORES ABAIXO DA META -->
+<div class="mod" id="m-planos-vend">
+  <div class="mod-header"><div><div class="mod-title">Vendedores Abaixo da Meta</div><div class="mod-sub" id="planosVendNote">—</div></div></div>
+  <div class="alert">⚠ Somente vendedores <strong>ativos</strong> no cadastro hoje (mesma trava usada em todo o painel) — vendedor desligado não aparece, mesmo que tenha vendido no período; não há regra de redistribuição de carteira no sistema. Base = ano civil vigente inteiro (não o semestre). Média mensal = receita total do vendedor ÷ nº de meses <strong>fechados</strong> do ano em que houve venda (exclui o mês em andamento — que ainda não teve o período todo para vender — e não pune quem entrou no meio do ano). O mês em andamento aparece à parte, comparado com essa média, para visualizar a evolução do vendedor. Cada faixa é organizada por <strong>Supervisor → Vendedor</strong>: clique no vendedor para abrir o plano de ação de 3 meses. Grupo 1 (abaixo de R$150 mil/mês) recebe um plano para superar essa barreira; Grupo 2 (entre R$150 mil e R$200 mil/mês) recebe um plano para se consolidar acima de R$200 mil. Respeita os filtros de Gerente/Supervisor/Vendedor da barra lateral.</div>
+  <div class="kpi-grid" id="planosVend-kpis"></div>
+  <div id="planosVend-grupo1"></div>
+  <div id="planosVend-grupo2"></div>
 </div>
 
 <!-- 6C. ESTOQUE X VENDA (90 DIAS) -->
@@ -384,6 +408,14 @@
   <div class="kpi-grid" id="inad-kpis"></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Cascata — Gerente → Supervisor → Vendedor → Cliente</div><div class="card-sub">Clique em ⊞ para expandir. Faixas por dias de atraso do título.</div></div></div><div class="tbl-wrap"><table id="tInadHier"></table></div></div></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Maiores devedores</div><div class="card-sub" id="inadTopSub">Top 100 por saldo em aberto</div></div></div><div class="tbl-wrap"><table id="tInadClientes"></table></div></div></div>
+</div>
+
+<!-- 6C3. CLIENTES ATIVOS SEM COMPRA (60+ DIAS) -->
+<div class="mod" id="m-sem-compra">
+  <div class="mod-header"><div><div class="mod-title">Clientes Ativos sem Compra (60+ dias)</div><div class="mod-sub" id="scSub">—</div></div></div>
+  <div class="alert">⚠ Fotografia <strong>atual</strong> (sempre até hoje — não muda com o filtro de Período/Mês): clientes com cadastro <strong>Ativo</strong>, <strong>sem</strong> título vencido/cheque devolvido em aberto (mesma regra de Inadimplência por Carteira) e cujo <strong>último pedido</strong> foi há mais de <strong>60 dias</strong>. Gerente/Supervisor/Vendedor = time responsável pelo pedido mais recente do cliente — e esse vendedor precisa estar <strong>ativo</strong> no cadastro hoje (mesma trava usada em todo o painel); cliente cujo último pedido foi com vendedor hoje desligado não entra nesta análise (não há regra de redistribuição de carteira no sistema). Categorias e média mensal de faturamento por categoria consideram os últimos 365 dias de histórico do cliente. Respeita o filtro de Gerente/Supervisor/Vendedor da barra lateral.</div>
+  <div class="kpi-grid" id="sc-kpis"></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Cascata — Gerente → Supervisor → Vendedor → Cliente</div><div class="card-sub">Clique em + para expandir; no cliente, + mostra as categorias que costuma comprar e a média mensal por categoria.</div></div></div><div class="tbl-wrap"><table id="tClientesSemCompra"></table></div></div></div>
 </div>
 
 <div class="mod" id="m-pagamento">

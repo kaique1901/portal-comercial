@@ -27,7 +27,7 @@ const RETRY_MAX_MS = INTERVALO_MS;
 // /etl-status dizer ao front O QUE ainda falta — sem isso o front não tem como
 // distinguir "não existe dado" de "o ETL ainda não chegou nessa etapa", e as abas
 // que dependem delas ficam vazias sem explicação.
-const ETAPAS_EXTRA = ['_hierarquia', '_estoque', '_abcd90', '_dowCascata', '_inadimplencia'];
+const ETAPAS_EXTRA = ['_hierarquia', '_estoque', '_abcd90', '_dowCascata', '_inadimplencia', '_clientesSemCompra60'];
 
 class DashboardCacheManager {
   constructor() {

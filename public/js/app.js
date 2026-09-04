@@ -720,8 +720,161 @@ const charts = {};
 function mkChart(id,cfg){ if(charts[id]){charts[id].destroy();delete charts[id];} const el=document.getElementById(id); if(!el) return; charts[id]=new Chart(el,cfg); }
 
 // período "anterior" para comparação (mesmo semestre, ano anterior)
-const PREV_OF = { "2026_2":"2025_2", "2026_1":"2025_1", "2025_2":"2024_2", "2025_1":null };
-const PERIOD_ORDER = ["2026_2","2026_1","2025_2","2025_1"]; // mais recente primeiro
+const PREV_OF = { "2026_2":"2025_2", "2026_1":"2025_1", "2025_2":"2024_2", "2025_1":"2024_1", "2024_2":null, "2024_1":null };
+const PERIOD_ORDER = ["2026_2","2026_1","2025_2","2025_1","2024_2","2024_1"]; // mais recente primeiro
+
+// ── VISÃO GERAL / COMPARATIVOS: ANO CIVIL (não semestre/mês) ──────────────
+// As duas abas trabalham por ANO CIVIL: somam os 2 semestres do cubo
+// (2026_1+2026_2 etc.) num período sintético. Quando o ano está em curso, o 2º
+// semestre só tem as linhas que já aconteceram — a soma já é "ano corrente
+// completo até agora" sem nenhum corte manual de data. Só reconstrói os campos
+// que estas 2 abas de fato leem: totais simples (soma) e os dicionários por
+// chave (mês/categoria/grupo/gerente/supervisor/vendedor/dia), todos com
+// chaves somáveis ou disjuntas entre os 2 semestres. Campos que o cubo não
+// permite somar com exatidão (meta, ABCD, hier_top_*, qualidade, cascata,
+// canal/status/inadimplente…) não entram aqui — nenhuma das duas abas os usa.
+const YEAR_CACHE = {};
+function limparCacheAno(){ Object.keys(YEAR_CACHE).forEach(k=>delete YEAR_CACHE[k]); }
+function anosDisponiveis(){
+  const anos = new Set();
+  Object.keys(window.REAL_DATA || {}).forEach(k => { const m = /^(\d{4})_[12]$/.exec(k); if (m) anos.add(+m[1]); });
+  return [...anos].sort((a,b)=>b-a);
+}
+// Ano vigente = ano civil corrente, caindo no mais recente disponível no cubo
+// se o ETL ainda não tiver materializado o ano atual (mesmo padrão de
+// periodoInicial() para o semestre).
+function anoVigente(){
+  const anos = anosDisponiveis();
+  const atual = new Date().getFullYear();
+  if (anos.includes(atual)) return atual;
+  return anos[0] ?? atual;
+}
+// {chave:{r,c,q}} + {chave:{r,c,q}} → soma por chave, recalcula m.
+function somaDict(a, b){
+  const out = {};
+  const add = (src) => Object.keys(src||{}).forEach(k=>{
+    const v = src[k];
+    if (!out[k]) out[k] = {r:0,c:0,q:0};
+    out[k].r += v.r||0; out[k].c += v.c||0; if (v.q!=null) out[k].q += v.q;
+  });
+  add(a); add(b);
+  Object.keys(out).forEach(k=>{ const x=out[k]; x.m = x.r>0 ? +(100*(1-x.c/x.r)).toFixed(2) : 0; });
+  return out;
+}
+// Igual a somaDict, mas preserva campos extras do 1º valor encontrado por chave
+// (ex.: por_supervisor[].gerente, full_vendedores[].supervisor, por_grupo[].categoria).
+function somaDictAninhado(a, b){
+  const out = {};
+  const add = (src) => Object.keys(src||{}).forEach(k=>{
+    const v = src[k];
+    if (!out[k]) out[k] = Object.assign({}, v, {r:0,c:0,q:0});
+    out[k].r += v.r||0; out[k].c += v.c||0; if (v.q!=null) out[k].q = (out[k].q||0) + v.q;
+  });
+  add(a); add(b);
+  Object.keys(out).forEach(k=>{ const x=out[k]; x.m = x.r>0 ? +(100*(1-x.c/x.r)).toFixed(2) : 0; });
+  return out;
+}
+// hier_top_clientes/hier_top_produtos.nivel[nome] = [{codigo,r,c,q,m,...}] (Top 50
+// por semestre) — soma por código entre os 2 semestres, reordena e recorta em 50
+// de novo. Usado por Vendedores Abaixo da Meta (nº de clientes atendidos no ano).
+function somaHierTopListas(a, b){
+  const out = {};
+  ['gerente','supervisor','vendedor'].forEach(level=>{
+    const A = (a && a[level]) || {}, B = (b && b[level]) || {};
+    const nomes = new Set([...Object.keys(A), ...Object.keys(B)]);
+    out[level] = {};
+    nomes.forEach(n=>{
+      const merged = {};
+      [...(A[n]||[]), ...(B[n]||[])].forEach(item=>{
+        const k = item.codigo;
+        if (!merged[k]) merged[k] = Object.assign({}, item, {r:0,c:0,q:0});
+        merged[k].r += item.r||0; merged[k].c += item.c||0; if (item.q!=null) merged[k].q = (merged[k].q||0)+item.q;
+      });
+      Object.values(merged).forEach(x=>{ x.m = x.r>0 ? +(100*(1-x.c/x.r)).toFixed(2) : 0; });
+      out[level][n] = Object.values(merged).sort((x,y)=>y.r-x.r).slice(0,50);
+    });
+  });
+  return out;
+}
+function somaHierPorCategoria(a, b){
+  const out = {};
+  ['gerente','supervisor','vendedor'].forEach(level=>{
+    const A = (a && a[level]) || {}, B = (b && b[level]) || {};
+    const nomes = new Set([...Object.keys(A), ...Object.keys(B)]);
+    out[level] = {};
+    nomes.forEach(n => { out[level][n] = somaDict(A[n], B[n]); });
+  });
+  return out;
+}
+// hier_por_dia_categoria.gerente[nome][dataISO][categoria] = [r,c] — datas nunca se
+// repetem entre semestres, então basta unir os dois objetos por data.
+function somaHierPorDiaCategoria(a, b){
+  const A = (a && a.gerente) || {}, B = (b && b.gerente) || {};
+  const nomes = new Set([...Object.keys(A), ...Object.keys(B)]);
+  const gerente = {};
+  nomes.forEach(n => { gerente[n] = Object.assign({}, A[n], B[n]); });
+  return { gerente };
+}
+// Constrói (e cacheia) o período sintético do ano civil `ano`, somando
+// REAL_DATA[ano_1] + REAL_DATA[ano_2] (um dos dois pode ainda não existir).
+function buildYearPeriod(ano){
+  if (YEAR_CACHE[ano]) return YEAR_CACHE[ano];
+  const h1 = window.REAL_DATA && REAL_DATA[`${ano}_1`];
+  const h2 = window.REAL_DATA && REAL_DATA[`${ano}_2`];
+  if (!h1 && !h2) return null;
+  const a = h1 || {}, b = h2 || {};
+  const receita = (a.receita||0) + (b.receita||0);
+  const custo = (a.custo||0) + (b.custo||0);
+  const qtde = (a.qtde||0) + (b.qtde||0);
+  const nPedidos = (a.n_pedidos||0) + (b.n_pedidos||0);
+  // Clientes ativos distintos no ano: união dos códigos por mês×categoria — o
+  // único grão do cubo que dá o código real do cliente (por_mes_clientes é só
+  // contagem, não serve pra unir 2 semestres sem contar duplicado).
+  const codigosCliente = new Set();
+  [a, b].forEach(p => {
+    const m = p.por_mes_categoria_clientes_cod || {};
+    Object.values(m).forEach(porCat => Object.values(porCat).forEach(cods => cods.forEach(c => codigosCliente.add(c))));
+  });
+  const nomesVend = new Set([...Object.keys(a.full_vendedores||{}), ...Object.keys(b.full_vendedores||{})]);
+  const out = {
+    label: h1 && h2 ? `${ano} - Ano completo` : `${ano} - Acumulado até ${MESES_NOME[new Date().getMonth()+1]}`,
+    receita, custo, qtde,
+    peso: (a.peso||0) + (b.peso||0),
+    linhas: (a.linhas||0) + (b.linhas||0),
+    n_pedidos: nPedidos,
+    ticket_pedido: nPedidos>0 ? round2c(receita/nPedidos) : 0,
+    n_cli: codigosCliente.size || Math.max(a.n_cli||0, b.n_cli||0),
+    n_vend: nomesVend.size || Math.max(a.n_vend||0, b.n_vend||0),
+    n_sup: new Set([...Object.keys(a.por_supervisor||{}), ...Object.keys(b.por_supervisor||{})]).size,
+    n_ger: new Set([...Object.keys(a.por_gerente||{}), ...Object.keys(b.por_gerente||{})]).size,
+    n_cat: new Set([...Object.keys(a.por_categoria||{}), ...Object.keys(b.por_categoria||{})]).size,
+    n_grp: new Set([...Object.keys(a.por_grupo||{}), ...Object.keys(b.por_grupo||{})]).size,
+    por_mes: Object.assign({}, a.por_mes, b.por_mes),
+    por_dia: Object.assign({}, a.por_dia, b.por_dia),
+    por_dia_categoria: Object.assign({}, a.por_dia_categoria, b.por_dia_categoria),
+    por_categoria: somaDict(a.por_categoria, b.por_categoria),
+    por_grupo: somaDictAninhado(a.por_grupo, b.por_grupo),
+    por_gerente: somaDict(a.por_gerente, b.por_gerente),
+    por_supervisor: somaDictAninhado(a.por_supervisor, b.por_supervisor),
+    full_vendedores: somaDictAninhado(a.full_vendedores, b.full_vendedores),
+    hier_por_categoria: somaHierPorCategoria(a.hier_por_categoria, b.hier_por_categoria),
+    hier_por_dia_categoria: somaHierPorDiaCategoria(a.hier_por_dia_categoria, b.hier_por_dia_categoria),
+    hier_top_clientes: somaHierTopListas(a.hier_top_clientes, b.hier_top_clientes),
+    // Meses nunca se repetem entre os 2 semestres ("1".."6" só existe em `a`,
+    // "7".."12" só em `b") — Object.assign simples já é a união correta.
+    realizado_por_mes: Object.assign({}, a.realizado_por_mes, b.realizado_por_mes),
+    _ano: ano, _semestres: [!!h1, !!h2],
+  };
+  out.margem_geral = receita>0 ? +(100*(1-custo/receita)).toFixed(2) : 0;
+  YEAR_CACHE[ano] = out;
+  return out;
+}
+// Receita por mês do ano inteiro, direto de d.por_mes (sem passar pelo recorte
+// global — usada só quando o recorte não é suportado no modo Ano, ver renderVisao).
+function receitaPorMesAno(d){
+  const meses = Object.keys(d.por_mes).sort((a,b)=>+a-+b);
+  return { meses, vals: meses.map(m=>d.por_mes[m].r), note: null };
+}
 
 // Abre no semestre do mês corrente (julho/2026 → "2026_2"), caindo no mais recente
 // disponível se o ETL ainda não tiver aquele período.
@@ -752,7 +905,7 @@ const anomesPeriodo = am => `${anomesAno(am)}_${anomesMes(am) <= 6 ? 1 : 2}`;
 // como filtro ativo (ver activeFilterCount), o que força o recorte — e o recorte
 // vem do banco já filtrado por esses meses. Ou seja: "o período inteiro" do
 // objeto que o painel enxerga É a soma exata dos meses escolhidos.
-let ST = { per:periodoDoMesAtual(), mes:null, meses:[], ger:[], sup:[], vend:[], cat:[], grp:[], cli:[], canal:[], status:[] };
+let ST = { per:periodoDoMesAtual(), mes:null, meses:[], ger:[], sup:[], vend:[], cat:[], grp:[], cli:[], canal:[], status:[], compAno:null, compMes:null };
 
 // Recalcula o escalar derivado. Chamar SEMPRE que ST.meses mudar.
 function sincronizarMes(){
@@ -1442,7 +1595,24 @@ function populateFilters(){
   document.getElementById("topPeriodo").textContent = d.label;
   document.getElementById("sbFootTxt").textContent = `Base: ${fN(d.linhas)} linhas reais (API) — ${d.label}`;
   populateMesGlobalFilter();
+  populateCompFiltro();
   renderDiagBox();
+}
+// Filtro de Ano/Mês da aba Comparativos — local à aba, independente do filtro
+// de Mês global (que Visão Geral/Comparativos ignoram: as duas trabalham por
+// ano civil). "Mês" tem a opção "Ano inteiro" (padrão) além de Jan-Dez.
+function populateCompFiltro(){
+  const anos = anosDisponiveis();
+  const selA = document.getElementById("fCompAno");
+  const selM = document.getElementById("fCompMes");
+  if (!selA || !selM) return;
+  if (ST.compAno==null || !anos.includes(ST.compAno)) ST.compAno = anoVigente();
+  selA.innerHTML = anos.map(a=>`<option value="${a}">${a}${a===anoVigente()?" (atual)":""}</option>`).join("");
+  selA.value = String(ST.compAno);
+  selM.innerHTML = `<option value="">Ano inteiro</option>` + Object.entries(MESES_NOME).map(([k,v])=>`<option value="${k}">${v}</option>`).join("");
+  selM.value = ST.compMes!=null ? String(ST.compMes) : "";
+  selA.onchange = () => { ST.compAno = +selA.value; renderComp(); };
+  selM.onchange = () => { ST.compMes = selM.value ? +selM.value : null; renderComp(); };
 }
 
 // ── Painel de diagnóstico ────────────────────────────────────────
@@ -1468,6 +1638,7 @@ const ETAPA_EXPLICA = {
   abcd90:     'abas Clientes A-I / Riscos (curva ABCD de 90 dias)',
   dowCascata: 'Vendas por Dia da Semana sem filtro de hierarquia',
   inadimplencia: 'aba Inadimplência por Carteira',
+  clientesSemCompra60: 'aba Clientes Ativos sem Compra (60+ dias)',
 };
 
 function renderDiagBox(){
@@ -1674,7 +1845,7 @@ function atualizarFiltrosEDiag(){
 function renderAll(){
   // Cliente selecionado → garante o recorte real vindo da API (re-renderiza ao chegar).
   ensureCliScope();
-  renderVisao(); renderComp(); renderMargemCash(); renderObjetivos(); renderMetasExtra(); renderDias(); renderDowCascata(); renderRank(); renderMix(); renderAbcd(); renderPlanos(); renderEstoque(); renderProdutosParadosVend(); renderProdutosLetraP(); renderPagamento(); renderInadimplencia(); renderRiscoOport(); renderRiscoOportCat(); renderCascata(); renderQual();
+  renderVisao(); renderComp(); renderMargemCash(); renderObjetivos(); renderMetasExtra(); renderDias(); renderDowCascata(); renderRank(); renderMix(); renderAbcd(); renderPlanos(); renderPlanosVendedores(); renderEstoque(); renderProdutosParadosVend(); renderProdutosLetraP(); renderPagamento(); renderInadimplencia(); renderClientesSemCompra(); renderRiscoOport(); renderRiscoOportCat(); renderCascata(); renderQual();
 }
 
 // O mês selecionado é o mês CORRENTE? Nesse caso o realizado é parcial (só os dias
@@ -1713,111 +1884,111 @@ function metaRentabilidade(d, mes){
 }
 
 // ── 1. VISÃO GERAL ────────────────────────────────────────────
+// Visão Geral trabalha por ANO CIVIL (não semestre/mês): sempre o ano vigente
+// completo (ano em curso = acumulado até hoje, já que o cubo só tem linhas que
+// aconteceram de verdade — ver buildYearPeriod). Sem seletor: é sempre o ano
+// corrente. O filtro de Mês da barra lateral NÃO se aplica aqui; Gerente/
+// Supervisor/Vendedor/Categoria/Grupo continuam valendo normalmente.
 function renderVisao(){
-  const d = curPeriod();
-  const prevKey = PREV_OF[ST.per];
-  const prev = prevPeriod();
-
-  const eff = effectiveFor(d, ST.mes);
-  const prevEff = prev ? effectiveFor(prev, ST.mes) : null;
-  // Só avisa quando o número REALMENTE é aproximado. É exato quando:
-  // • o recorte veio de /recorte (query no banco cruza todos os filtros); ou
-  // • hierarquia isolada; ou Categoria + hierarquia (cubo hier_por_categoria).
-  const nConflict = (() => {
-    if (activeFilterCount() <= 1) return false;
-    if (precisaRecorte()) return !cliScopeAtual();          // impreciso só enquanto carrega
-    const hierN = (ST.ger.length?1:0) + (ST.sup.length?1:0) + (ST.vend.length?1:0);
-    const outrosN = (ST.cat.length?1:0) + (ST.grp.length?1:0);
-    if (outrosN === 0) return false;                       // só hierarquia
-    if (outrosN === 1 && ST.cat.length && hierN >= 1) return false; // Categoria + hierarquia
-    return true;
-  })();
+  const ano = anoVigente();
+  const d = buildYearPeriod(ano);
+  if (!d){
+    document.getElementById("vg-sub").textContent = "Sem dados";
+    document.getElementById("vg-meta").textContent = "—";
+    document.getElementById("vg-kpis").innerHTML = `<div class="alert" style="grid-column:1/-1">⚠ O ETL ainda não concluiu nenhum semestre para o ano vigente.</div>`;
+    ["cVgMes","cVgCat","cVgGer","cVgGrp"].forEach(id=>{ if (charts[id]) { charts[id].destroy(); delete charts[id]; } });
+    return;
+  }
+  const prev = buildYearPeriod(ano - 1);
+  // Canal/Inadimplente/Status/Cliente/Grupo+Hierarquia só têm número exato via
+  // consulta ao banco (/recorte) — e essa consulta é feita por SEMESTRE (ST.per),
+  // não por ano. Reaproveitar o recorte global aqui mostraria o semestre errado
+  // com rótulo de "ano". Nesse caso ignoramos esses filtros (com aviso) em vez de
+  // arriscar um número silenciosamente errado.
+  const bloqueado = precisaRecorte();
+  const eff = bloqueado ? {r:d.receita,c:d.custo,q:d.qtde,label:null,monthNote:null} : effectiveFor(d, null);
+  const prevEff = prev ? (bloqueado ? {r:prev.receita,c:prev.custo,q:prev.qtde,label:null} : effectiveFor(prev, null)) : null;
 
   document.getElementById("vg-sub").textContent = eff.label ? `${d.label} · recortado por ${eff.label}` : d.label;
-  document.getElementById("vg-meta").textContent = eff.label ? `${fN(d.linhas)} linhas no período (recorte não desagrega linhas)` : `${fN(d.linhas)} linhas · ${fN(d.n_pedidos)} pedidos`;
+  document.getElementById("vg-meta").textContent = eff.label ? `${fN(d.linhas)} linhas no ano (recorte não desagrega linhas)` : `${fN(d.linhas)} linhas · ${fN(d.n_pedidos)} pedidos`;
 
   const effMargem = eff.r>0 ? +(100*(1-eff.c/eff.r)).toFixed(2) : 0;
   const prevMargem = prevEff ? (prevEff.r>0?100*(1-prevEff.c/prevEff.r):0) : null;
 
   const cashMargem = eff.r - eff.c;
   const prevCashMargem = prevEff ? (prevEff.r - prevEff.c) : null;
-  const vsTxt = ST.meses.length===1 ? 'vs. mesmo mês ano anterior'
-    : ST.meses.length>1 ? `vs. mesmos meses do ano anterior (${rotuloMeses()})`
-    : 'vs. mesmo semestre ano anterior';
   const kpis = [
     {lbl:"Receita", val:fM(eff.r), delta: prevEff?fDelta(eff.r,prevEff.r):null, cls:"k0"},
     {lbl:"Margem %", val:fPct(effMargem), delta: prevEff?fDelta(effMargem,prevMargem):null, cls:"k1"},
     {lbl:"Cash Margem (R$)", val:fM(cashMargem), delta: prevEff?fDelta(cashMargem,prevCashMargem):null, cls:"k6"},
     {lbl:"Qtde vendida", val: eff.q!=null?fN(eff.q):"—", delta: (prevEff&&eff.q!=null&&prevEff.q!=null)?fDelta(eff.q,prevEff.q):null, note: eff.q==null?"não recortável para este filtro neste cubo":null, cls:"k2"},
-    {lbl:"Ticket médio/pedido", val:fF(d.ticket_pedido), delta: prev?fDelta(d.ticket_pedido,prev.ticket_pedido):null, note: eff.label?"nível período (pedidos não recortados)":null, cls:"k3"},
-    {lbl:"Clientes ativos", val:fN(d.n_cli), delta: prev?fDelta(d.n_cli,prev.n_cli):null, note: eff.label?"nível período (não recortável por "+eff.label.split(" · ")[0].split(":")[0]+")":null, cls:"k4"},
-    {lbl:"Vendedores ativos", val:fN(d.n_vend), delta: prev?fDelta(d.n_vend,prev.n_vend):null, note: eff.label?"nível período (não recortável por "+eff.label.split(" · ")[0].split(":")[0]+")":null, cls:"k5"},
+    {lbl:"Ticket médio/pedido", val:fF(d.ticket_pedido), delta: prev?fDelta(d.ticket_pedido,prev.ticket_pedido):null, note: eff.label?"nível ano (pedidos não recortados)":null, cls:"k3"},
+    {lbl:"Clientes ativos", val:fN(d.n_cli), delta: prev?fDelta(d.n_cli,prev.n_cli):null, note: eff.label?"nível ano (não recortável por "+eff.label.split(" · ")[0].split(":")[0]+")":null, cls:"k4"},
+    {lbl:"Vendedores ativos", val:fN(d.n_vend), delta: prev?fDelta(d.n_vend,prev.n_vend):null, note: eff.label?"nível ano (não recortável por "+eff.label.split(" · ")[0].split(":")[0]+")":null, cls:"k5"},
   ];
   const banners = [];
-  // Recorte que exige consulta ao banco (Canal/Inadimplente/Status/Cliente/Grupo+
-  // hierarquia): mostra o aviso em vez de um número aproximado do cubo.
-  const parcial = mesParcialInfo();
-  if (parcial) banners.push(`📅 ${MESES_NOME[ST.mes]} é o <strong>${parcial.label}</strong> — o realizado cobre só os dias decorridos, então metas e comparações com meses fechados ficam proporcionalmente menores.`);
+  if (bloqueado) banners.push(`⚠ Filtro de Canal/Inadimplente/Status/Cliente ou Grupo+Hierarquia não é suportado no Ano Vigente (só existe consulta exata ao banco por semestre) — os números abaixo <strong>ignoram esse filtro</strong>. Para vê-lo aplicado, use as demais abas (recorte por semestre).`);
   if (recorteErro) banners.push(`⚠ Falha ao aplicar o recorte do seu acesso (<strong>${recorteErro}</strong>) — os valores estão zerados por segurança. Recarregue a página.`);
-  else if (d._carregando || eff.carregando) banners.push(`⏳ Consultando no banco o recorte <strong>${eff.label || recorteLabel()}</strong> — os valores aparecem em alguns segundos.`);
-  else if (eff.label && nConflict) banners.push(`⚠ Vários grupos de filtro ativos ao mesmo tempo — este cubo só recorta pelo <strong>mais específico</strong>: <strong>${eff.label}</strong>. Combinar dimensões diferentes (ex.: Gerente + Categoria) exige uma 2ª passada de ETL. Selecionar vários valores DENTRO do mesmo filtro (ex.: 2 gerentes) já soma corretamente.`);
+  else if (eff.carregando) banners.push(`⏳ Consultando no banco o recorte <strong>${eff.label || recorteLabel()}</strong> — os valores aparecem em alguns segundos.`);
   if (eff.monthNote) banners.push(`⚠ ${eff.monthNote}`);
   document.getElementById("vg-kpis").innerHTML = banners.map(b=>`<div class="alert" style="grid-column:1/-1">${b}</div>`).join("") + kpis.map(k=>`
     <div class="kpi ${k.cls}"><div class="kpi-stripe"></div>
       <div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div>
       ${k.delta?`<span class="kpi-delta ${k.delta.c}">${k.delta.s}</span>`:''}
-      <div class="kpi-note">${k.note || (prevEff?vsTxt:'sem base comparável')}</div>
+      <div class="kpi-note">${k.note || (prevEff?'vs. ano anterior completo':'sem base comparável')}</div>
     </div>`).join("");
 
-  // Com meses de ANOS diferentes, por_mes agruparia Jul/2025 e Jul/2026 na mesma
-  // chave "7" e o gráfico mostraria uma barra só com a soma dos dois — justamente
-  // o contrário do que a comparação entre anos precisa. Nesse caso usamos
-  // por_anomes, que o recorte devolve separado por ano-mês.
-  const usarAnomes = selecaoCruzaSemestres() && d.por_anomes && Object.keys(d.por_anomes).length;
-  const rpm = usarAnomes
-    ? { meses: Object.keys(d.por_anomes).sort(), vals: Object.keys(d.por_anomes).sort().map(k=>d.por_anomes[k].r),
-        note: `Comparando ${Object.keys(d.por_anomes).length} meses de anos diferentes` }
-    : receitaPorMesDoRecorte(d);
-  const rotuloBarra = m => usarAnomes ? anomesLabel(m) : MESES_NOME[m];
+  const rpm = bloqueado ? receitaPorMesAno(d) : receitaPorMesDoRecorte(d);
   const noteMes = document.getElementById("vgMesNote");
-  if (noteMes) noteMes.textContent = rpm.note || (eff.label ? `Recorte: ${eff.label}` : 'Período selecionado');
-  mkChart("cVgMes",{type:"bar",data:{labels:rpm.meses.map(rotuloBarra),datasets:[{data:rpm.vals,backgroundColor:C.acc+"cc",borderRadius:4}]},
+  if (noteMes) noteMes.textContent = rpm.note || (eff.label ? `Recorte: ${eff.label}` : `${ano} — ano completo`);
+  mkChart("cVgMes",{type:"bar",data:{labels:rpm.meses.map(m=>MESES_NOME[m]),datasets:[{data:rpm.vals,backgroundColor:C.acc+"cc",borderRadius:4}]},
     options:{responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>" "+fF(c.raw)}}},scales:{y:{ticks:{callback:v=>fM(v)}}}}});
 
   // Mix por Categoria respeita o recorte de Gerente/Supervisor/Vendedor (cubo
-  // hier_por_categoria) e o filtro de Categoria — antes vinha sempre da empresa.
-  const cats = categoriaCascadeRowsFor(d, ST.mes).rows.slice().sort((a,b)=>b[1].r-a[1].r);
+  // hier_por_categoria, somado entre os 2 semestres) e o filtro de Categoria.
+  const cats = categoriaCascadeRowsFor(d, null).rows.slice().sort((a,b)=>b[1].r-a[1].r);
   mkChart("cVgCat",{type:"doughnut",data:{labels:cats.map(c=>c[0]),datasets:[{data:cats.map(c=>c[1].r),backgroundColor:P}]},
     options:{plugins:{legend:{position:"right",labels:{boxWidth:10,font:{size:10}}},tooltip:{callbacks:{label:c=>" "+c.label+": "+fF(c.raw)}}}}});
 
   // Só os gerentes dentro do escopo ativo (trava de acesso / cascata).
-  const gers = gerenteCascadeRowsFor(d, ST.mes).rows.slice().sort((a,b)=>b[1].r-a[1].r);
+  const gers = gerenteCascadeRowsFor(d, null).rows.slice().sort((a,b)=>b[1].r-a[1].r);
   mkChart("cVgGer",{type:"bar",data:{labels:gers.map(g=>g[0]),datasets:[{data:gers.map(g=>g[1].r),backgroundColor:P.map(c=>c+"bb"),borderRadius:4}]},
     options:{indexAxis:"y",responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>" "+fF(c.raw)}}},scales:{x:{ticks:{callback:v=>fM(v)}}}}});
 
-  // Grupos: o cubo não cruza Grupo com hierarquia, então com filtro ativo usamos o
-  // por_grupo do recorte (/recorte). Sem isso, o card mostrava o total da empresa
-  // (ex.: 268,9M em CIGARROS DE PALHA) dentro de um gerente de 78,0M.
-  const grpRec = recorteDados();
-  const grpBase = grpRec ? grpRec.por_grupo : d.por_grupo;
-  const grps = Object.entries(grpBase)
+  // Grupos: o cubo não cruza Grupo com hierarquia — usa sempre d.por_grupo (já
+  // soma os 2 semestres); nunca o recorte global (que é de outro período/semestre).
+  const grps = Object.entries(d.por_grupo)
     .filter(([n,v]) => (ST.grp.length===0 || ST.grp.includes(n)) && (ST.cat.length===0 || ST.cat.includes(v.categoria)))
     .sort((a,b)=>b[1].r-a[1].r).slice(0,8);
   const grpNote = document.getElementById("vgGrpNote");
-  if (grpNote) grpNote.textContent = grpRec
-    ? `Recorte: ${recorteLabel()}`
-    : (activeFilterCount() ? 'Nível empresa — carregando o recorte…' : 'Receita no período');
+  if (grpNote) grpNote.textContent = bloqueado
+    ? 'Grupo + Hierarquia não suportado no Ano Vigente — nível empresa'
+    : (activeFilterCount() ? `Filtro ativo` : `${ano} — ano completo`);
   mkChart("cVgGrp",{type:"bar",data:{labels:grps.map(g=>g[0]),datasets:[{data:grps.map(g=>g[1].r),backgroundColor:C.acc2+"cc",borderRadius:4}]},
     options:{indexAxis:"y",responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>" "+fF(c.raw)}}},scales:{x:{ticks:{callback:v=>fM(v)}}}}});
 }
 
 // ── 2. COMPARATIVOS ───────────────────────────────────────────
+// Sempre Ano × Ano anterior. #fCompAno escolhe o ano (padrão: ano vigente);
+// #fCompMes deixa estreitar para um mês específico daquele ano (padrão: "Ano
+// inteiro"). Ao abrir o portal (ST.compAno/compMes ainda null), cai direto em
+// ano vigente completo × ano anterior completo.
+// Mesma ressalva de renderVisao: Canal/Status/Cliente/Grupo+Hierarquia não têm
+// suporte no modo Ano (exigem /recorte por semestre) — nesse caso ficam de fora
+// do comparativo, com aviso, em vez de comparar semestres errados.
 function renderComp(){
-  const d = curPeriod();
-  const prevKey = PREV_OF[ST.per];
-  const prev = prevPeriod();
-  const eff = effectiveFor(d, ST.mes);
-  const prevEff = prev ? effectiveFor(prev, ST.mes) : null;
+  const anos = anosDisponiveis();
+  if (ST.compAno==null || !anos.includes(ST.compAno)) ST.compAno = anoVigente();
+  const d = buildYearPeriod(ST.compAno);
+  if (!d){
+    document.getElementById("comp-cards").innerHTML = `<div class="alert" style="grid-column:1/-1">⚠ O ETL ainda não concluiu nenhum semestre para este ano.</div>`;
+    ["cCompMes","cCompMargem","cCompCash","cCompCat"].forEach(id=>{ if (charts[id]) { charts[id].destroy(); delete charts[id]; } });
+    return;
+  }
+  const prev = buildYearPeriod(ST.compAno - 1);
+  const bloqueado = precisaRecorte();
+  const eff = bloqueado ? {r:d.receita,c:d.custo,q:d.qtde,label:null,monthNote:null} : effectiveFor(d, ST.compMes);
+  const prevEff = prev ? (bloqueado ? {r:prev.receita,c:prev.custo,q:prev.qtde,label:null} : effectiveFor(prev, ST.compMes)) : null;
   const effR = eff.r, effC = eff.c, effM = effR>0 ? 100*(1-effC/effR) : 0, effQ = eff.q;
   const prevR = prevEff ? prevEff.r : null;
   const prevM = prevEff ? (prevEff.r>0?100*(1-prevEff.c/prevEff.r):0) : null;
@@ -1842,12 +2013,17 @@ function renderComp(){
   // enquanto o ETL publica os períodos de forma incremental. Usa o `prev` de
   // prevPeriod(), que já resolve para null quando o período não existe (mesmo padrão
   // do card logo abaixo).
-  const prevLabel = prev ? prev.label : "—";
-  const compBanner = eff.monthNote ? `⚠ ${eff.monthNote}` : (eff.label?`Recorte ativo: <strong>${eff.label}</strong> — comparado ao mesmo recorte em ${prevLabel}.`:"");
+  const periodoTxt = ST.compMes!=null ? `${MESES_NOME[ST.compMes]}/${ST.compAno}` : d.label;
+  const prevLabel = !prev ? "—" : (ST.compMes!=null ? `${MESES_NOME[ST.compMes]}/${ST.compAno-1}` : prev.label);
+  const subEl = document.getElementById("comp-sub");
+  if (subEl) subEl.textContent = `${periodoTxt} vs. ${prevLabel}`;
+  const compBanner = bloqueado
+    ? `⚠ Filtro de Canal/Inadimplente/Status/Cliente ou Grupo+Hierarquia não é suportado no comparativo por Ano (só existe consulta exata ao banco por semestre) — o comparativo abaixo <strong>ignora esse filtro</strong>.`
+    : (eff.monthNote ? `⚠ ${eff.monthNote}` : (eff.label?`Recorte ativo: <strong>${eff.label}</strong> — comparado ao mesmo recorte em ${prevLabel}.`:""));
   document.getElementById("comp-cards").innerHTML = (compBanner?`<div class="alert" style="grid-column:1/-1">${compBanner}</div>`:"") + rows.map(r=>{
     const dl = (r.b!=null) ? fDelta(r.a,r.b) : {s:"sem base", c:"neu"};
     return `<div class="comp-card"><div class="cc-lbl">${r.lbl}</div><div class="cc-val">${r.f(r.a)}</div>
-      <div class="cc-vs">${r.b!=null?("vs "+r.f(r.b)+" ("+(prev?prev.label:"")+")"):"Sem base equivalente no recorte/semestre"}</div>
+      <div class="cc-vs">${r.b!=null?("vs "+r.f(r.b)+" ("+prevLabel+")"):"Sem base equivalente no recorte/semestre"}</div>
       <span class="kpi-delta ${dl.c}">${dl.s}</span></div>`;
   }).join("");
 
@@ -2544,7 +2720,85 @@ function prevRealGeralFor(prev, level, name, mesKey){
 // 'mes' NÃO tem estado próprio — espelha o filtro global de Mês do topo da
 // tela (ST.mes), o mesmo usado por todas as outras abas. Sem isso, trocar o
 // mês no filtro principal não mudava nada aqui (aba presa no mês default).
-let OBJ = { modo:'mes', bim:null, custom:[] };
+let OBJ = { modo:'mes', bim:null, custom:[], dataIni:null, dataFim:null };
+// ── COMPARATIVO POR DATAS EXATAS ("Personalizado" — intervalo de dias) ──────
+// Único jeito de comparar um intervalo que não é um conjunto de meses inteiros
+// (ex.: 01/09 a 15/09) com o "mesmo período do ano anterior" de verdade — usa
+// por_dia/por_dia_categoria (grão diário, já existem no cubo) MESCLADOS de
+// TODOS os semestres carregados em REAL_DATA, porque um intervalo de datas
+// pode cruzar semestres/anos (datas nunca se repetem entre semestres, então a
+// união é sempre seguindo). Limitação real, não escondida: a META só existe
+// por MÊS no ERP (metacategoria não tem grão diário) — por isso este modo
+// compara só REALIZADO (receita/margem/categoria), sem Meta/Atingimento.
+let _porDiaGlobalCache = null, _porDiaGlobalSrc = null;
+function porDiaGlobal(){
+  if (_porDiaGlobalSrc === window.REAL_DATA && _porDiaGlobalCache) return _porDiaGlobalCache;
+  const dia = {}, diaCat = {}, gerDiaCat = {};
+  Object.keys(window.REAL_DATA || {}).forEach(k=>{
+    if (!/^\d{4}_[12]$/.test(k)) return;
+    const p = REAL_DATA[k];
+    if (p.por_dia) Object.assign(dia, p.por_dia);
+    if (p.por_dia_categoria) Object.assign(diaCat, p.por_dia_categoria);
+    const hg = p.hier_por_dia_categoria && p.hier_por_dia_categoria.gerente;
+    if (hg) Object.keys(hg).forEach(g=>{ gerDiaCat[g] = Object.assign(gerDiaCat[g]||{}, hg[g]); });
+  });
+  _porDiaGlobalCache = { por_dia: dia, por_dia_categoria: diaCat, hier_gerente: gerDiaCat };
+  _porDiaGlobalSrc = window.REAL_DATA;
+  return _porDiaGlobalCache;
+}
+// Desloca uma data "yyyy-MM-dd" 1 ano pra trás mantendo a MESMA posição no
+// calendário (dia/mês) — 29/02 num ano bissexto vira 28/02 no ano anterior não
+// bissexto (convenção adotada: nunca deixa estourar pra 01/03). Isso evita o
+// erro clássico de "data - 365 dias", que desalinha o dia da semana e, num
+// intervalo que atravessa 29/02, desalinha a própria contagem de dias.
+function mesmoDiaAnoAnterior(dateStr){
+  const [y,m,d] = dateStr.split('-').map(Number);
+  const prevY = y - 1;
+  const bissexto = yy => (yy%4===0 && yy%100!==0) || yy%400===0;
+  const dd = (m===2 && d===29 && !bissexto(prevY)) ? 28 : d;
+  return `${prevY}-${String(m).padStart(2,'0')}-${String(dd).padStart(2,'0')}`;
+}
+// Soma receita/custo/categoria de um intervalo [iniStr,fimStr] (inclusive),
+// usando o índice diário mesclado. gerNames: se informado (e não vazio), soma
+// só hier_por_dia_categoria.gerente desses gerentes (única hierarquia com grão
+// diário no cubo — Supervisor/Vendedor não têm, mesma limitação já existente
+// no resto do painel pro filtro de Mês).
+function somaIntervaloDatas(iniStr, fimStr, gerNames){
+  const g = porDiaGlobal();
+  let r=0, c=0;
+  const porCategoria = {};
+  const addCat = (cat, rr, cc) => { const x = porCategoria[cat] || (porCategoria[cat]={r:0,c:0}); x.r+=rr; x.c+=cc; };
+  if (gerNames && gerNames.length){
+    gerNames.forEach(nome=>{
+      const serie = g.hier_gerente[nome];
+      if (!serie) return;
+      Object.keys(serie).forEach(dt=>{
+        if (dt < iniStr || dt > fimStr) return;
+        Object.entries(serie[dt]).forEach(([cat, arr])=>{
+          const rr = arr[0]||0, cc = arr[1]||0;
+          r += rr; c += cc; addCat(cat, rr, cc);
+        });
+      });
+    });
+  } else {
+    Object.keys(g.por_dia).forEach(dt=>{
+      if (dt < iniStr || dt > fimStr) return;
+      const v = g.por_dia[dt];
+      r += v[0]||0; c += v[1]||0;
+    });
+    Object.keys(g.por_dia_categoria).forEach(dt=>{
+      if (dt < iniStr || dt > fimStr) return;
+      Object.entries(g.por_dia_categoria[dt]).forEach(([cat, arr])=>{ addCat(cat, arr[0]||0, arr[1]||0); });
+    });
+  }
+  Object.values(porCategoria).forEach(x=>{ x.m = x.r>0 ? +(100*(1-x.c/x.r)).toFixed(2) : 0; });
+  return { r, c, m: r>0?+(100*(1-c/r)).toFixed(2):0, porCategoria };
+}
+function onObjDataChange(){
+  OBJ.dataIni = document.getElementById('fObjDataIni').value || null;
+  OBJ.dataFim = document.getElementById('fObjDataFim').value || null;
+  renderObjetivos();
+}
 let _objGrupos = [];
 function objSemesterMonths(){ return ST.per && ST.per.endsWith('_1') ? [1,2,3,4,5,6] : [7,8,9,10,11,12]; }
 function objAvailableMonths(d){ return Object.keys((d&&d.por_mes)||{}).map(Number).sort((a,b)=>a-b); }
@@ -2596,6 +2850,11 @@ function populateObjSubFiltro(d){
   } else if (OBJ.modo==='sem'){
     const sem = objSemesterMonths();
     wrap.innerHTML = `<span style="font-size:11px;color:var(--t3)">Semestre inteiro: <strong style="color:var(--t1)">${objLabelMeses(sem)}</strong></span>`;
+  } else if (OBJ.modo==='datas'){
+    wrap.innerHTML = `<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <label style="font-size:11px;color:var(--t3)">De <input type="date" class="fsel-main" id="fObjDataIni" value="${OBJ.dataIni||''}" onchange="onObjDataChange()"></label>
+      <label style="font-size:11px;color:var(--t3)">até <input type="date" class="fsel-main" id="fObjDataFim" value="${OBJ.dataFim||''}" onchange="onObjDataChange()"></label>
+    </div>`;
   } else {
     const sem = objSemesterMonths();
     if (!OBJ.custom.length && months.length) OBJ.custom = [months[months.length-1]];
@@ -2855,10 +3114,68 @@ function buildCategoriaTable(d, prev, meses, level, names){
 
   return { html, totalMetaCat, totalRealCat, totalCustoCat, totalTrend, totalTrendCash, totalMetaCash, totalCash, totalMetaMargemPct, prevTotalRealCat, prevTotalCustoCat, totalMargemGeral, prevTotalMargemGeral, realCatMonthNote };
 }
+// Modo "Personalizado (datas exatas)": único caminho de comparação que NÃO
+// usa curPeriod()/prevPeriod() (que só existem por semestre) — soma direto o
+// índice diário mesclado de todos os anos (porDiaGlobal/somaIntervaloDatas) e
+// desloca o intervalo 1 ano com mesmoDiaAnoAnterior(), preservando o filtro de
+// Gerente (única hierarquia com grão diário — Supervisor/Vendedor não têm,
+// mesma limitação já documentada no resto do painel). SEM Meta/Atingimento:
+// a meta só existe por MÊS no ERP, não por dia.
+function renderObjetivosDatas(){
+  const kpisEl = document.getElementById('obj-kpis');
+  const catNote = document.getElementById('objCashNote');
+  ['tObjGer','tObjSup','tObjVend'].forEach(id=>document.getElementById(id).innerHTML='');
+  if (!OBJ.dataIni || !OBJ.dataFim || OBJ.dataIni > OBJ.dataFim){
+    document.getElementById('objSub').textContent = 'Selecione a data inicial e final (data inicial não pode ser depois da final).';
+    kpisEl.innerHTML = ''; document.getElementById('tObjCat').innerHTML = ''; if (catNote) catNote.innerHTML='';
+    return;
+  }
+  const iniPrev = mesmoDiaAnoAnterior(OBJ.dataIni), fimPrev = mesmoDiaAnoAnterior(OBJ.dataFim);
+  const level = hierLevelActive();
+  const bloqueado = level==='supervisor' || level==='vendedor';
+  const gerNames = (level==='gerente') ? hierSelectedNames('gerente') : null;
+  const atual = somaIntervaloDatas(OBJ.dataIni, OBJ.dataFim, bloqueado?null:gerNames);
+  const anterior = somaIntervaloDatas(iniPrev, fimPrev, bloqueado?null:gerNames);
+
+  const fmtDia = s => { const [y,m,dd]=s.split('-'); return `${dd}/${m}/${y}`; };
+  document.getElementById('objSub').textContent =
+    `${fmtDia(OBJ.dataIni)} a ${fmtDia(OBJ.dataFim)}` + (gerNames&&gerNames.length&&!bloqueado?` · Gerente: ${labelJoin(gerNames)}`:'') +
+    ` · comparado a ${fmtDia(iniPrev)} a ${fmtDia(fimPrev)} (mesmo intervalo, 1 ano antes)`;
+
+  const banners = [];
+  banners.push(`⚠ Comparativo por datas exatas mostra só <strong>Realizado</strong> (receita, margem, categoria) — a Meta do ERP só existe por MÊS, não por dia, então não há Meta/Atingimento/Tendência aqui.`);
+  if (bloqueado) banners.push(`⚠ Filtro de ${level==='supervisor'?'Supervisor':'Vendedor'} não é suportado neste modo (o cubo só tem grão diário por Gerente) — mostrando <strong>nível empresa</strong>.`);
+  else if (level==='gerente') banners.push(`Recortado por Gerente: <strong>${labelJoin(gerNames)}</strong>.`);
+
+  const margemAtual = atual.m, margemAnterior = anterior.m;
+  const cashAtual = atual.r-atual.c, cashAnterior = anterior.r-anterior.c;
+  const kpis = [
+    {lbl:'Receita', val:fM(atual.r), delta:fDelta(atual.r, anterior.r)},
+    {lbl:'Margem %', val:fPct(margemAtual), delta:fDelta(margemAtual, margemAnterior)},
+    {lbl:'Cash Margem', val:fM(cashAtual), delta:fDelta(cashAtual, cashAnterior)},
+  ];
+  kpisEl.innerHTML = banners.map(b=>`<div class="alert" style="grid-column:1/-1">${b}</div>`).join("") +
+    kpis.map((k,i)=>`<div class="kpi k${i}"><div class="kpi-stripe"></div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div><span class="kpi-delta ${k.delta.c}">${k.delta.s}</span><div class="kpi-note">vs. mesmo intervalo do ano anterior</div></div>`).join("");
+  if (catNote) catNote.innerHTML = '';
+
+  const cats = new Set([...Object.keys(atual.porCategoria), ...Object.keys(anterior.porCategoria)]);
+  const catRows = [...cats].map(cat=>{
+    const a = atual.porCategoria[cat] || {r:0,c:0,m:0};
+    const p = anterior.porCategoria[cat] || {r:0,c:0,m:0};
+    return {cat, a, p};
+  }).sort((a,b)=>b.a.r-a.a.r);
+  document.getElementById('tObjCat').innerHTML = `<thead><tr><th>Categoria</th><th class="tv">Receita</th><th class="tv">Receita ano ant.</th><th class="tv">Δ Fat.</th><th class="tv">Margem %</th><th class="tv">Margem % ano ant.</th><th class="tv">Δ Margem (p.p.)</th></tr></thead><tbody>${
+    catRows.map(({cat,a,p})=>`<tr><td class="tn">${escAttr(cat)}</td><td class="tv">${fF(a.r)}</td><td class="tv">${p.r?fF(p.r):'<span style="color:var(--t3)">—</span>'}</td>
+      <td class="tv">${p.r?deltaPillSmall(a.r,p.r):'<span style="color:var(--t3)">sem base</span>'}</td>
+      <td class="tv">${margemBadge(a.m)}</td><td class="tv">${p.r?fPct(p.m):'<span style="color:var(--t3)">—</span>'}</td>
+      <td class="tv">${p.r?deltaPP(a.m,p.m,false):'<span style="color:var(--t3)">—</span>'}</td></tr>`).join("")
+  }</tbody>`;
+}
 function renderObjetivos(){
   const d = curPeriod();
   const prev = prevPeriod();
   populateObjSubFiltro(d);
+  if (OBJ.modo==='datas') return renderObjetivosDatas();
   if (!d.meta){
     document.getElementById('obj-kpis').innerHTML = '<div class="alert">Sem dados de meta para este período.</div>';
     ['tObjCat','tObjGer','tObjSup','tObjVend'].forEach(id=>document.getElementById(id).innerHTML='');
@@ -3072,6 +3389,27 @@ function realExtraFor(d, level, name, mesKey, realField){
   const src = level==='gerente'?d.por_gerente:level==='supervisor'?d.por_supervisor:d.full_vendedores;
   return (src[name] && src[name][realField]) || 0;
 }
+// Soma Meta/Realizado de KG Fumo/Papel/Estratégico para o filtro ATIVO
+// (Vendedor > Supervisor > Gerente > empresa inteira), num período `d`
+// qualquer — extraído de renderMetasExtra() pra poder rodar a MESMA soma,
+// com os MESMOS filtros, contra o período de 1 ano antes (prevPeriod()) e
+// assim comparar tendência com o mesmo período do ano anterior sem duplicar
+// a lógica de escopo.
+function metaExtraSomar(d, mesKey){
+  const somar = (level, names) => {
+    let mk=0,rk=0,mp=0,rp=0,me=0,re=0;
+    names.forEach(n=>{
+      mk+=metaExtraFor(d,level,n,mesKey,'meta_kg'); rk+=realExtraFor(d,level,n,mesKey,'rkg');
+      mp+=metaExtraFor(d,level,n,mesKey,'meta_papel'); rp+=realExtraFor(d,level,n,mesKey,'rp');
+      me+=metaExtraFor(d,level,n,mesKey,'meta_estrategico'); re+=realExtraFor(d,level,n,mesKey,'rest');
+    });
+    return {metaKg:mk, realKg:rk, metaPapel:mp, realPapel:rp, metaEst:me, realEst:re};
+  };
+  if (ST.vend.length) return somar('vendedor', ST.vend);
+  if (ST.sup.length) return somar('supervisor', ST.sup);
+  if (ST.ger.length) return somar('gerente', ST.ger);
+  return somar('gerente', Object.keys(d.meta.por_gerente));
+}
 function renderMetasExtra(){
   const d = curPeriod();
   if (!d.meta){ document.getElementById('metaExtra-kpis').innerHTML='<div class="alert">Sem dados de meta para este período.</div>'; ['tMetaExtraGer','tMetaExtraSup','tMetaExtraVend'].forEach(id=>document.getElementById(id).innerHTML=''); return; }
@@ -3080,33 +3418,10 @@ function renderMetasExtra(){
   const monthActive = ST.mes!=null;
   const mesKey = monthActive ? String(ST.mes) : null;
   const gerNames = Object.keys(d.meta.por_gerente);
-
-  let scope = null;
-  if (ST.vend.length){
-    let mk=0,rk=0,mp=0,rp=0,me=0,re=0;
-    ST.vend.forEach(v=>{
-      mk+=metaExtraFor(d,'vendedor',v,mesKey,'meta_kg'); rk+=realExtraFor(d,'vendedor',v,mesKey,'rkg');
-      mp+=metaExtraFor(d,'vendedor',v,mesKey,'meta_papel'); rp+=realExtraFor(d,'vendedor',v,mesKey,'rp');
-      me+=metaExtraFor(d,'vendedor',v,mesKey,'meta_estrategico'); re+=realExtraFor(d,'vendedor',v,mesKey,'rest');
-    });
-    scope = {label:"Vendedor: "+labelJoin(ST.vend), metaKg:mk, realKg:rk, metaPapel:mp, realPapel:rp, metaEst:me, realEst:re};
-  } else if (ST.sup.length){
-    let mk=0,rk=0,mp=0,rp=0,me=0,re=0;
-    ST.sup.forEach(sName=>{
-      mk+=metaExtraFor(d,'supervisor',sName,mesKey,'meta_kg'); rk+=realExtraFor(d,'supervisor',sName,mesKey,'rkg');
-      mp+=metaExtraFor(d,'supervisor',sName,mesKey,'meta_papel'); rp+=realExtraFor(d,'supervisor',sName,mesKey,'rp');
-      me+=metaExtraFor(d,'supervisor',sName,mesKey,'meta_estrategico'); re+=realExtraFor(d,'supervisor',sName,mesKey,'rest');
-    });
-    scope = {label:"Supervisor: "+labelJoin(ST.sup), metaKg:mk, realKg:rk, metaPapel:mp, realPapel:rp, metaEst:me, realEst:re};
-  } else if (ST.ger.length){
-    let mk=0,rk=0,mp=0,rp=0,me=0,re=0;
-    ST.ger.forEach(g=>{
-      mk+=metaExtraFor(d,'gerente',g,mesKey,'meta_kg'); rk+=realExtraFor(d,'gerente',g,mesKey,'rkg');
-      mp+=metaExtraFor(d,'gerente',g,mesKey,'meta_papel'); rp+=realExtraFor(d,'gerente',g,mesKey,'rp');
-      me+=metaExtraFor(d,'gerente',g,mesKey,'meta_estrategico'); re+=realExtraFor(d,'gerente',g,mesKey,'rest');
-    });
-    scope = {label:"Gerente: "+labelJoin(ST.ger), metaKg:mk, realKg:rk, metaPapel:mp, realPapel:rp, metaEst:me, realEst:re};
-  }
+  const scopeLabel = ST.vend.length ? "Vendedor: "+labelJoin(ST.vend)
+    : ST.sup.length ? "Supervisor: "+labelJoin(ST.sup)
+    : ST.ger.length ? "Gerente: "+labelJoin(ST.ger) : null;
+  const scope = scopeLabel ? Object.assign({label:scopeLabel}, metaExtraSomar(d, mesKey)) : null;
 
   const totalMetaKg = scope ? scope.metaKg : gerNames.reduce((a,n)=>a+metaExtraFor(d,'gerente',n,mesKey,'meta_kg'),0);
   const totalRealKg = scope ? scope.realKg : gerNames.reduce((a,n)=>a+realExtraFor(d,'gerente',n,mesKey,'rkg'),0);
@@ -3133,6 +3448,49 @@ function renderMetasExtra(){
       {lbl:"Realizado Produto Estratégico", val: fF(totalRealEst)},
       {lbl:"% Atingimento Estratégico", val: atingEst!=null?atingEst.toFixed(1)+"%":"—"},
     ].map((k,i)=>`<div class="kpi k${i%7}"><div class="kpi-stripe"></div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div></div>`).join("");
+
+  // ── Tendência de Fechamento + comparativo com o mesmo período do ano anterior ──
+  // Tendência/Projeção = mesma metodologia tendencia() já usada em Acompanhamento
+  // Objetivos/Margem & Cash Margem (ritmo de dias ÚTEIS decorridos no mês
+  // projetado pros dias úteis totais) — só se aplica com UM mês específico
+  // selecionado (é a única situação com "mês em andamento" pra projetar); com o
+  // semestre inteiro ou vários meses, mostra o realizado como está, sem inventar
+  // projeção sobre um período já fechado. Comparativo ano anterior = mesmo mês
+  // (mesKey), mesmo filtro de Gerente/Supervisor/Vendedor, no prevPeriod()
+  // (mesmo semestre 1 ano antes — PREV_OF) — nunca o período imediatamente
+  // anterior.
+  const prev = prevPeriod();
+  const prevSoma = (prev && prev.meta) ? metaExtraSomar(prev, mesKey) : null;
+  const tendKg = monthActive ? tendencia(totalRealKg, d, +ST.mes) : totalRealKg;
+  const tendPapel = monthActive ? tendencia(totalRealPapel, d, +ST.mes) : totalRealPapel;
+  const tendEst = monthActive ? tendencia(totalRealEst, d, +ST.mes) : totalRealEst;
+  const prevTendKg = prevSoma ? (monthActive ? tendencia(prevSoma.realKg, prev, +ST.mes) : prevSoma.realKg) : null;
+  const prevTendPapel = prevSoma ? (monthActive ? tendencia(prevSoma.realPapel, prev, +ST.mes) : prevSoma.realPapel) : null;
+  const prevTendEst = prevSoma ? (monthActive ? tendencia(prevSoma.realEst, prev, +ST.mes) : prevSoma.realEst) : null;
+
+  const cardTendencia = (titulo, unidade, meta, real, tend, prevReal, prevTend, fmt) => {
+    const gap = meta - real;
+    const gapTend = meta - tend;
+    const atingTend = meta>0 ? tend/meta*100 : null;
+    const varTend = (prevTend!=null && prevTend>0) ? (tend-prevTend)/prevTend*100 : null;
+    return `<div class="card" style="margin-bottom:12px">
+      <div class="card-h"><div><div class="card-title">${titulo}</div><div class="card-sub">${monthActive?`Tendência de fechamento — ${MESES_NOME[ST.mes]}`:'Semestre — sem mês específico, tendência = realizado'}</div></div></div>
+      <div class="kpi-grid" style="margin-bottom:0">
+        <div class="kpi"><div class="kpi-lbl">Meta</div><div class="kpi-val">${fmt(meta)}${unidade}</div></div>
+        <div class="kpi"><div class="kpi-lbl">Realizado</div><div class="kpi-val">${fmt(real)}${unidade}</div><div class="kpi-note">${meta>0?fPct(real/meta*100):'—'} da meta</div></div>
+        <div class="kpi"><div class="kpi-lbl">Gap (Meta − Realizado)</div><div class="kpi-val">${fmt(gap)}${unidade}</div></div>
+        <div class="kpi k1"><div class="kpi-lbl">Tendência de Fechamento</div><div class="kpi-val">${fmt(tend)}${unidade}</div><div class="kpi-note">${atingTend!=null?fPct(atingTend)+' da meta projetado':'sem meta p/ projetar'}</div></div>
+        <div class="kpi"><div class="kpi-lbl">Gap Projeção × Meta</div><div class="kpi-val">${fmt(gapTend)}${unidade}</div></div>
+        <div class="kpi"><div class="kpi-lbl">${prev?prev.label:'Ano anterior'} (mesmo recorte)</div><div class="kpi-val">${prevReal!=null?fmt(prevReal)+unidade:'—'}</div><div class="kpi-note">${prevTend!=null?'tendência '+fmt(prevTend)+unidade:(prev?'sem meta cadastrada':'sem semestre equivalente no ano anterior')}</div></div>
+        <div class="kpi"><div class="kpi-lbl">Variação da Tendência vs. Ano Anterior</div><div class="kpi-val">${varTend!=null?(varTend>=0?'▲ +':'▼ ')+varTend.toFixed(1)+'%':'—'}</div></div>
+      </div>
+    </div>`;
+  };
+  const tendenciaEl = document.getElementById('metaExtra-tendencia');
+  if (tendenciaEl) tendenciaEl.innerHTML =
+    cardTendencia('Fumo KG', ' kg', totalMetaKg, totalRealKg, tendKg, prevSoma?prevSoma.realKg:null, prevTendKg, fN) +
+    cardTendencia('Papel', '', totalMetaPapel, totalRealPapel, tendPapel, prevSoma?prevSoma.realPapel:null, prevTendPapel, fN) +
+    cardTendencia('Produto Estratégico', '', totalMetaEst, totalRealEst, tendEst, prevSoma?prevSoma.realEst:null, prevTendEst, fF);
 
   const effGerMeta = effectiveGerentes(d);
   const gerRows = gerNames.filter(n=>!effGerMeta||effGerMeta.has(n)).sort((a,b)=>metaExtraFor(d,'gerente',b,mesKey,'meta_papel')-metaExtraFor(d,'gerente',a,mesKey,'meta_papel'));
@@ -3870,6 +4228,82 @@ function renderPlanoMesVigente(){
 // Cada categoria = 1 "memo" de diretoria com 3 partes (Panorama, Diagnóstico,
 // Proposta). Todo número citado vem direto da base — nada aqui é redigido
 // livremente, é template determinístico sobre os agregados já calculados.
+// ── Perfil de compra por CLIENTE (categorias + produtos), pra alimentar as
+// oportunidades de cross-sell do Plano de Ação. Candidatos = mesmo pool de
+// mix_cascata_detalhe/hier_top_clientes.vendedor (Top 50 de cada vendedor) —
+// não é a carteira inteira, mas cobre quem já é relevante o bastante pra
+// aparecer no Top 50 de algum vendedor. Construído 1x por render (não por
+// categoria) porque é usado por TODAS as categorias do plano.
+function buildClientProfileIndex(d){
+  const detalhe = d.mix_cascata_detalhe || {};
+  const hierTopVend = (d.hier_top_clientes && d.hier_top_clientes.vendedor) || {};
+  const perfil = {};
+  Object.keys(hierTopVend).forEach(vend=>{
+    const sup = supervisorDoVendedor(d, vend);
+    const ger = sup ? gerenteDoSupervisor(d, sup) : null;
+    (hierTopVend[vend] || []).forEach(cli=>{
+      if (!perfil[cli.codigo]) perfil[cli.codigo] = { codigo:cli.codigo, nome:cli.nome, vendedor:vend, supervisor:sup, gerente:ger, receitaTotal:cli.r, categorias:{} };
+      const porMes = detalhe[cli.codigo] || {};
+      Object.values(porMes).forEach(catMap=>{
+        Object.entries(catMap).forEach(([cat, produtos])=>{
+          const entry = perfil[cli.codigo].categorias[cat] || (perfil[cli.codigo].categorias[cat] = {r:0, produtos:new Set()});
+          produtos.forEach(p=>{ entry.r += p.r; entry.produtos.add(p.nome); });
+        });
+      });
+    });
+  });
+  return perfil;
+}
+// Matriz de co-ocorrência: quantos clientes do pool compram A E B — usada pra
+// achar, pra uma categoria abaixo da meta, qual OUTRA categoria mais anda
+// junto com ela na base real (não é um palpite: é contagem real do perfil
+// dos clientes acima). Base do cross-sell ENTRE categorias (Proposta 2).
+function buildCoOcorrenciaCategorias(perfil){
+  const co = {};
+  Object.values(perfil).forEach(cli=>{
+    const cats = Object.keys(cli.categorias);
+    cats.forEach(a=>cats.forEach(b=>{
+      if (a===b) return;
+      (co[a] || (co[a]={}))[b] = (co[a][b]||0)+1;
+    }));
+  });
+  return co;
+}
+// Prioridade = potencial em R$ da oportunidade, ponderado pelo tamanho do gap
+// da categoria (categoria mais longe da meta pesa mais na priorização) — os
+// limiares (R$20k/R$5k) são um corte de negócio ilustrativo, documentado aqui
+// e reaproveitado igual pras 2 propostas, não um valor arbitrário por caso.
+function prioridadeOportunidade(potencial, atingCategoria){
+  const fatorGap = 1 + Math.max(0, (100 - (atingCategoria==null?100:atingCategoria)) / 100);
+  const score = potencial * fatorGap;
+  if (score >= 20000) return { label:'ALTA', cls:'mb-hi' };
+  if (score >= 5000) return { label:'MÉDIA', cls:'mb-md' };
+  return { label:'BAIXA', cls:'mb-lo' };
+}
+// Duas propostas por categoria abaixo de 100%, sempre com evidência real:
+// 1) Cross-sell DENTRO da categoria — cliente já compra a categoria mas não
+//    tem os produtos mais vendidos dela (top 5 da empresa).
+// 2) Cross-sell ENTRE categorias — cliente compra a categoria mais
+//    correlacionada (maior co-ocorrência real na base) mas não compra esta.
+// Potencial em R$ é um CENÁRIO ILUSTRATIVO (mesmo racional já usado em
+// ganhoPosReceita/ganhoMargemCash acima): 15%/10% do que o cliente já gasta na
+// categoria de referência — ordem de grandeza, não uma meta formal.
+function buildCrossSellOportunidades(perfil, co, cat, topProdutosCat){
+  const todos = Object.values(perfil);
+  const clientesDoCat = todos.filter(c=>c.categorias[cat]);
+  const clientesForaCat = todos.filter(c=>!c.categorias[cat]);
+  const topNomes = topProdutosCat.slice(0,5).map(p=>p.nome);
+  const prop1 = clientesDoCat.map(c=>{
+    const faltantes = topNomes.filter(n=>!c.categorias[cat].produtos.has(n));
+    return { cliente:c, faltantes, potencial: c.categorias[cat].r * 0.15 };
+  }).filter(x=>x.faltantes.length>0).sort((a,b)=>b.potencial-a.potencial).slice(0,5);
+  const correlacionadas = Object.entries(co[cat]||{}).sort((a,b)=>b[1]-a[1]);
+  const catCorrelata = correlacionadas.length ? correlacionadas[0][0] : null;
+  const prop2 = catCorrelata ? clientesForaCat.filter(c=>c.categorias[catCorrelata])
+    .map(c=>({ cliente:c, potencial: c.categorias[catCorrelata].r * 0.10 }))
+    .sort((a,b)=>b.potencial-a.potencial).slice(0,5) : [];
+  return { prop1, prop2, catCorrelata };
+}
 function renderPlanos(){
   renderPlanoMesVigente();
   const d = curPeriod();
@@ -3877,14 +4311,16 @@ function renderPlanos(){
   const prev = prevPeriod();
   const level = hierLevelActive();
   document.getElementById('planosHierNote').innerHTML = level
-    ? `<div class="alert">⚠ Os planos abaixo usam os números da <strong>empresa inteira</strong> — esta aba não é recortável por Gerente/Supervisor/Vendedor neste cubo (receita/margem por categoria seriam exatos, mas positivação e produto líder por categoria só existem no nível empresa). Filtro de Categoria já é respeitado (mostrando só as categorias selecionadas).</div>` : "";
+    ? `<div class="alert">⚠ Os planos abaixo usam os números da <strong>empresa inteira</strong> — esta aba não é recortável por Gerente/Supervisor/Vendedor neste cubo (receita/margem por categoria seriam exatos, mas positivação e produto líder por categoria só existem no nível empresa). Filtro de Categoria já é respeitado (mostrando só as categorias selecionadas). As oportunidades de cross-sell por cliente (parte 4 de cada categoria) já são por cliente/vendedor real, então não têm essa limitação.</div>` : "";
   let cats = Object.keys(d.por_categoria).sort((a,b)=>d.por_categoria[b].r-d.por_categoria[a].r);
   if (ST.cat.length) cats = cats.filter(c=>ST.cat.includes(c));
   const drv = computeDayDrivers(d.por_dia, d.por_dia_categoria, cats);
-  document.getElementById('planos-cards').innerHTML = cats.map((cat,i)=>buildExecPlan(cat, i, cats.length, d, prev, drv)).join("");
+  const perfilClientes = buildClientProfileIndex(d);
+  const coOcorrencia = buildCoOcorrenciaCategorias(perfilClientes);
+  document.getElementById('planos-cards').innerHTML = cats.map((cat,i)=>buildExecPlan(cat, i, cats.length, d, prev, drv, perfilClientes, coOcorrencia)).join("");
 }
 
-function buildExecPlan(cat, idx, totalCats, d, prev, drv){
+function buildExecPlan(cat, idx, totalCats, d, prev, drv, perfilClientes, coOcorrencia){
   const v = d.por_categoria[cat];
   const pv = (prev && prev.por_categoria[cat]) ? prev.por_categoria[cat] : null;
   const metaVal = (d.meta && d.meta.por_categoria) ? d.meta.por_categoria[cat] : null;
@@ -3967,6 +4403,33 @@ function buildExecPlan(cat, idx, totalCats, d, prev, drv){
 
   const kpiSummary = `Receita <b>${fF(v.r)}</b> · Margem <b>${fPct(v.m)}</b> · Positivação <b>${pos.toFixed(1)}%</b>`;
 
+  // ── 4. Oportunidades de Cross-Sell (dados reais de clientes) — só para
+  // categorias abaixo de 100% de atingimento, quando há perfil de cliente
+  // disponível (candidatos = Top 50 de receita de cada vendedor). Duas
+  // propostas por linha: dentro da categoria (produto faltante) e entre
+  // categorias (correlação real de co-compra na base).
+  let crossSellHtml = '';
+  if (ating != null && ating < 100 && perfilClientes && Object.keys(perfilClientes).length){
+    const { prop1, prop2, catCorrelata } = buildCrossSellOportunidades(perfilClientes, coOcorrencia||{}, cat, topsCategoria);
+    if (prop1.length || prop2.length){
+      const linha = (o, tipo) => {
+        const c = o.cliente;
+        const prio = prioridadeOportunidade(o.potencial, ating);
+        const caminho = `${escAttr(c.gerente||'—')} → ${escAttr(c.supervisor||'—')} → ${escAttr(c.vendedor)} → ${escAttr(c.codigo+' - '+c.nome)}`;
+        return tipo===1
+          ? `<tr><td class="tn">${caminho}</td><td>Já compra ${escAttr(cat)}, mas não os produtos mais vendidos dela</td><td>Cross-sell dentro da categoria</td><td>${o.faltantes.map(escAttr).join(', ')}</td><td class="tv">${fF(o.potencial)}</td><td><span class="${prio.cls}">${prio.label}</span></td></tr>`
+          : `<tr><td class="tn">${caminho}</td><td>Compra ${escAttr(catCorrelata)} mas não ${escAttr(cat)} (categorias com maior co-ocorrência real na base)</td><td>Cross-sell entre categorias</td><td>Introduzir ${escAttr(cat)}</td><td class="tv">${fF(o.potencial)}</td><td><span class="${prio.cls}">${prio.label}</span></td></tr>`;
+      };
+      crossSellHtml = `<div class="exec-part">
+        <div class="exec-part-title"><span class="exec-part-num">4</span>Oportunidades de Cross-Sell — Clientes Reais</div>
+        <div class="exec-sec"><div class="exec-item-lbl">Gerente → Supervisor → Vendedor → Cliente → Problema → Oportunidade → SKU sugerido → Potencial</div>
+        <div class="tbl-wrap"><table class="tbl-vend-meta"><thead><tr><th>Caminho</th><th>Problema identificado</th><th>Oportunidade</th><th>Produto/SKU sugerido</th><th class="tv">Potencial de faturamento</th><th>Prioridade</th></tr></thead>
+        <tbody>${prop1.map(o=>linha(o,1)).join("")}${prop2.map(o=>linha(o,2)).join("")}</tbody></table></div>
+        </div>
+      </div>`;
+    }
+  }
+
   return `<details class="exec-details"${idx===0?' open':''}>
     <summary class="exec-summary">
       <span class="exec-summary-title"><span class="exec-rank">${idx+1}</span>${cat}</span>
@@ -3994,8 +4457,256 @@ function buildExecPlan(cat, idx, totalCats, d, prev, drv){
           <div><div class="exec-item-lbl">Benefícios intangíveis</div><ul class="exec-benefit-list">${beneficiosIntangiveis.map(x=>`<li>${x}</li>`).join("")}</ul></div>
         </div></div>
       </div>
+      ${crossSellHtml}
     </div>
   </details>`;
+}
+
+// ── 3B. VENDEDORES ABAIXO DA META (planos de ação individuais) ──────────
+// Grupo 1: média mensal < R$150 mil → plano para superar R$150 mil em até 3
+// meses. Grupo 2: R$150 mil ≤ média ≤ R$200 mil → plano para se consolidar
+// acima de R$200 mil. Base = ANO CIVIL vigente inteiro (buildYearPeriod), não
+// o semestre — e a MÉDIA só soma os meses FECHADOS do ano (exclui o mês em
+// andamento, que ainda não tem o período todo pra vender e distorceria a
+// média pra baixo). O mês em andamento aparece à parte, comparado com essa
+// média, pra dar pra ver se o vendedor está evoluindo ou regredindo. Respeita
+// Gerente/Supervisor/Vendedor (mesma trava de acesso/filtro do resto do painel).
+const LIMIAR_VEND_1 = 150000, LIMIAR_VEND_2 = 200000;
+// Meses do ano `ano` que já fecharam (têm dado no cubo E não são o mês corrente
+// do calendário real, quando `ano` é o ano corrente). Ano já encerrado → todos
+// os meses com dado já são "fechados".
+function mesesFechadosDoAno(d, ano){
+  const hoje = new Date();
+  const todos = Object.keys(d.por_mes || {}).map(Number).sort((a,b)=>a-b);
+  if (ano === hoje.getFullYear()) return todos.filter(m => m < hoje.getMonth()+1);
+  return todos;
+}
+function vendedorEstatMensal(d, nome, ano){
+  const fechados = mesesFechadosDoAno(d, ano);
+  const hoje = new Date();
+  const rpm = (m) => d.realizado_por_mes && d.realizado_por_mes[String(m)] && d.realizado_por_mes[String(m)].vendedor && d.realizado_por_mes[String(m)].vendedor[nome];
+  // Média = só os meses FECHADOS em que o vendedor teve venda (rec.r>0) — não os
+  // meses fechados do ano inteiro. Sem isto, quem começou no meio do ano (ex.:
+  // admitido em julho) tinha a média achatada pelos meses em que nem trabalhava
+  // ainda, como se fosse baixa performance.
+  let soma = 0, custo = 0, mesesAtivos = 0;
+  fechados.forEach(m => {
+    const rec = rpm(m);
+    if (rec && rec.r > 0){ soma += rec.r; custo += rec.c || 0; mesesAtivos++; }
+  });
+  const nMesesFechados = fechados.length;
+  const media = mesesAtivos > 0 ? soma / mesesAtivos : 0; // 0 = nenhum mês fechado com venda
+  let mesAtual = null;
+  if (ano === hoje.getFullYear()){
+    const mesAtualNum = hoje.getMonth()+1;
+    const recAtual = rpm(mesAtualNum);
+    mesAtual = { mes: mesAtualNum, valor: recAtual ? recAtual.r : 0 };
+  }
+  return { media, mesesAtivos, nMesesFechados, total: soma,
+    margem: soma > 0 ? +(100 * (1 - custo / soma)).toFixed(2) : 0, mesAtual };
+}
+// Lista de vendedores no escopo (trava de acesso já aplicada por vendedoresReais)
+// + filtro de Gerente/Supervisor/Vendedor selecionado — normNome() reconcilia o
+// nome do supervisor vindo do cadastro (_hierarquia, vendedor sem venda) com a
+// chave exata do cubo (mesmo racional já usado dentro de vendedoresReais).
+// Nomes normalizados de vendedores ATIVOS no cadastro. _hierarquiaReal() (API)
+// já só lista quem tem eqvend.ativo em ('S','Sim','1','true') — é a MESMA fonte
+// oficial usada em toda a trava de acesso do painel (buildCanonIndex/
+// vendedoresReais). Usada aqui pra excluir do full_vendedores (que reflete
+// "vendeu no período", sem olhar status atual) quem já foi desligado depois
+// de ter vendido.
+function vendedoresAtivosSet(){
+  const h = window.REAL_DATA && REAL_DATA._hierarquia;
+  const set = new Set();
+  if (h && Array.isArray(h.gerentes)){
+    h.gerentes.forEach(g=>(g.supervisores||[]).forEach(s=>(s.vendedores||[]).forEach(v=>{
+      if (v && v.nomven) set.add(normNome(v.nomven));
+    })));
+  }
+  return set;
+}
+function vendedoresParaPlano(d){
+  const todos = vendedoresReais(d);
+  const effGer = effectiveGerentes(d);
+  const effSup = effectiveSupervisores(d);
+  const effGerN = effGer ? new Set([...effGer].map(normNome)) : null;
+  const effSupN = effSup ? new Set([...effSup].map(normNome)) : null;
+  const ativos = vendedoresAtivosSet();
+  return todos.filter(v => {
+    // Vendedor desligado: vendeu no período mas não está mais no cadastro ativo
+    // — fora desta análise (sem regra de redistribuição de carteira no sistema).
+    if (ativos.size && !ativos.has(normNome(v.nome))) return false;
+    if (ST.vend.length && !ST.vend.includes(v.nome)) return false;
+    if (effSupN && !effSupN.has(normNome(v.supervisor))) return false;
+    if (effGerN){
+      const ger = gerenteDoSupervisor(d, v.supervisor);
+      if (!ger || !effGerN.has(normNome(ger))) return false;
+    }
+    return true;
+  });
+}
+function renderPlanosVendedores(){
+  const ano = anoVigente();
+  const d = buildYearPeriod(ano);
+  const kpisEl = document.getElementById('planosVend-kpis');
+  const noteEl = document.getElementById('planosVendNote');
+  if (!d){
+    if (noteEl) noteEl.textContent = 'Sem dados';
+    if (kpisEl) kpisEl.innerHTML = `<div class="alert" style="grid-column:1/-1">⚠ O ETL ainda não concluiu nenhum semestre para o ano vigente.</div>`;
+    ['planosVend-grupo1','planosVend-grupo2'].forEach(id=>document.getElementById(id).innerHTML = '');
+    return;
+  }
+  const fechados = mesesFechadosDoAno(d, ano);
+  if (!fechados.length){
+    if (noteEl) noteEl.textContent = `${ano} ainda não tem nenhum mês fechado.`;
+    if (kpisEl) kpisEl.innerHTML = `<div class="alert" style="grid-column:1/-1">⚠ ${ano} ainda não tem nenhum mês fechado — a análise (que precisa de meses fechados para calcular a média) volta a funcionar a partir do fim do mês corrente.</div>`;
+    ['planosVend-grupo1','planosVend-grupo2'].forEach(id=>document.getElementById(id).innerHTML = '');
+    return;
+  }
+  const escopo = vendedoresParaPlano(d);
+  const stats = escopo.map(v => Object.assign({}, v, { stats: vendedorEstatMensal(d, v.nome, ano) }));
+  // Benchmark de comparação: média dos vendedores que tiveram AO MENOS 1 mês
+  // fechado com venda (exclui quem nunca vendeu — senão o "sem venda" puxa
+  // artificialmente o benchmark para baixo, mascarando a diferença real).
+  const comVenda = stats.filter(v => v.stats.mesesAtivos > 0);
+  const mediaEmpresa = comVenda.length ? comVenda.reduce((s,v)=>s+v.stats.media,0) / comVenda.length : 0;
+  const mesAtualLbl = stats.length && stats[0].stats.mesAtual ? `${MESES_NOME[stats[0].stats.mesAtual.mes]}/${ano}` : null;
+
+  const grupo1 = stats.filter(v => v.stats.media < LIMIAR_VEND_1).sort((a,b)=>a.stats.media-b.stats.media);
+  const grupo2 = stats.filter(v => v.stats.media >= LIMIAR_VEND_1 && v.stats.media <= LIMIAR_VEND_2).sort((a,b)=>a.stats.media-b.stats.media);
+
+  const level = hierLevelActive();
+  const mesesTxt = `${fechados.length} mês(es) fechado(s) considerado(s) — ${fechados.map(m=>MESES_NOME[m]).join('/')}${mesAtualLbl?` · mês em andamento: ${mesAtualLbl} (não entra na média)`:''}`;
+  if (noteEl) noteEl.textContent = level
+    ? `Recortado por ${eff2rotulo(level)}: ${labelJoin(hierSelectedNames(level))} — ${escopo.length} vendedor(es) no escopo. ${mesesTxt}.`
+    : `${ano} — ${escopo.length} vendedor(es) no escopo. ${mesesTxt}. Média de referência da empresa: ${fF(mediaEmpresa)}/mês.`;
+
+  document.getElementById('planosVend-kpis').innerHTML = [
+    { lbl:"Vendedores no escopo", val: fN(escopo.length) },
+    { lbl:"Abaixo de R$150 mil/mês", val: fN(grupo1.length), cls:"k2" },
+    { lbl:"Entre R$150 mil e R$200 mil/mês", val: fN(grupo2.length), cls:"k1" },
+    { lbl:"Média da empresa (meses fechados)", val: fF(mediaEmpresa) },
+  ].map(k=>`<div class="kpi ${k.cls||''}"><div class="kpi-stripe"></div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div></div>`).join("");
+
+  // Hierarquia OBRIGATÓRIA na leitura: Supervisor → Vendedores dele → resultado
+  // de cada um. Sem isso a lista ficava achatada e o usuário tinha que adivinhar
+  // de qual supervisor era cada vendedor.
+  const bloco = (titulo, lista, limiarAlvo, vazio) => {
+    if (!lista.length) return `
+      <div class="mod-header" style="margin-top:18px;padding-top:0"><div><div class="mod-title" style="font-size:16px">${titulo} (0)</div></div></div>
+      <div class="alert">${vazio}</div>`;
+    const porSupervisor = new Map();
+    lista.forEach(v => { const k = v.supervisor || '(sem supervisor)'; (porSupervisor.get(k) || porSupervisor.set(k, []).get(k)).push(v); });
+    const gruposHtml = [...porSupervisor.entries()]
+      .sort((a,b)=> a[1].reduce((s,v)=>s+v.stats.media,0)/a[1].length - b[1].reduce((s,v)=>s+v.stats.media,0)/b[1].length)
+      .map(([sup, vends]) => `
+        <div class="sup-group">
+          <div class="sup-group-h">Supervisor: <strong>${escAttr(sup)}</strong> <span class="sup-group-count">${vends.length} vendedor(es) nesta faixa</span></div>
+          <div class="tbl-wrap"><table class="tbl-vend-meta">
+            <thead><tr><th>Vendedor</th><th class="tv">Realizado (média/mês)</th><th class="tv">Meta (barreira)</th><th class="tv">% Meta</th><th class="tv">Gap</th><th class="tv">Mês atual</th></tr></thead>
+            <tbody>${vends.map((v,i)=>buildVendedorPlano(v, i, mediaEmpresa, limiarAlvo, d, ano)).join("")}</tbody>
+          </table></div>
+        </div>`).join("");
+    return `
+    <div class="mod-header" style="margin-top:18px;padding-top:0"><div><div class="mod-title" style="font-size:16px">${titulo} (${lista.length})</div></div></div>
+    ${gruposHtml}`;
+  };
+  document.getElementById('planosVend-grupo1').innerHTML = bloco(
+    `Grupo 1 — Média mensal abaixo de R$ 150 mil`, grupo1, LIMIAR_VEND_1,
+    'Nenhum vendedor no escopo está abaixo de R$150 mil/mês.');
+  document.getElementById('planosVend-grupo2').innerHTML = bloco(
+    `Grupo 2 — Média mensal entre R$ 150 mil e R$ 200 mil`, grupo2, LIMIAR_VEND_2,
+    'Nenhum vendedor no escopo está nessa faixa.');
+}
+function eff2rotulo(level){ return level[0].toUpperCase()+level.slice(1); }
+function buildVendedorPlano(v, idx, mediaEmpresa, limiarAlvo, d, ano){
+  const { media, mesesAtivos, nMesesFechados, total, margem, mesAtual } = v.stats;
+  const gap = Math.max(limiarAlvo - media, 0);
+  const vsEmpresa = mediaEmpresa > 0 ? (media - mediaEmpresa) / mediaEmpresa * 100 : null;
+  const catBreak = (d.hier_por_categoria && d.hier_por_categoria.vendedor && d.hier_por_categoria.vendedor[v.nome]) || {};
+  const catsOrdenadas = Object.entries(catBreak).sort((a,b)=>b[1].r-a[1].r);
+  const catForte = catsOrdenadas[0] || null;
+  const catFraca = catsOrdenadas.length > 1 ? catsOrdenadas[catsOrdenadas.length-1] : null;
+  const clientes = (d.hier_top_clientes && d.hier_top_clientes.vendedor && d.hier_top_clientes.vendedor[v.nome]) || [];
+  const nClientes = clientes.length;
+  const consolidando = limiarAlvo === LIMIAR_VEND_2; // grupo 2 = já supera 150k, foco em consolidar 200k
+
+  const situacaoAtual = `<strong>${escAttr(v.nome)}</strong> tem média mensal de <strong>${fF(media)}</strong> em ${ano}, calculada só sobre os <strong>${mesesAtivos}</strong> mês(es) fechado(s) em que teve venda (de ${nMesesFechados} mês(es) fechado(s) no ano — diferença normal para quem começou no meio do ano) — total de ${fF(total)}`
+    + `, margem de <strong>${fPct(margem)}</strong>`
+    + (nClientes ? ` e carteira de <strong>${fN(nClientes)}${nClientes>=50?'+':''}</strong> clientes atendidos.` : '.');
+
+  // Evolução: mês em andamento comparado com a média dos meses já fechados —
+  // deixa visível se o vendedor está melhorando ou piorando frente ao próprio
+  // histórico do ano, não só frente ao limiar fixo.
+  let evolucao = null;
+  if (mesAtual){
+    const nomeMes = `${MESES_NOME[mesAtual.mes]}/${ano}`;
+    if (media > 0){
+      const deltaMes = (mesAtual.valor - media) / media * 100;
+      evolucao = `${nomeMes} (em andamento, parcial): <strong>${fF(mesAtual.valor)}</strong> — `
+        + (deltaMes >= 0 ? `<strong>▲ ${deltaMes.toFixed(1)}% acima</strong>` : `<strong>▼ ${Math.abs(deltaMes).toFixed(1)}% abaixo</strong>`)
+        + ` da média dos meses fechados (${fF(media)}). Como o mês ainda não fechou, compare só a tendência de ritmo — não o valor absoluto.`;
+    } else {
+      evolucao = `${nomeMes} (em andamento, parcial): <strong>${fF(mesAtual.valor)}</strong> — sem média de meses fechados para comparar ainda.`;
+    }
+  }
+
+  const diagnostico = [
+    v.semVenda ? `⚠ Sem nenhuma venda registrada nos meses fechados de ${ano} — prioridade máxima de ativação da carteira.` : null,
+    vsEmpresa!=null ? (vsEmpresa>=0
+      ? `Média <strong>${vsEmpresa.toFixed(1)}% acima</strong> da média dos vendedores ativos da empresa (${fF(mediaEmpresa)}/mês).`
+      : `Média <strong>${Math.abs(vsEmpresa).toFixed(1)}% abaixo</strong> da média dos vendedores ativos da empresa (${fF(mediaEmpresa)}/mês).`) : null,
+    (!v.semVenda && mesesAtivos < nMesesFechados) ? `Vendeu em ${mesesAtivos} dos ${nMesesFechados} mês(es) fechado(s) do ano — a média usa só os meses em que houve venda, não penaliza quem começou depois de janeiro.` : null,
+    catForte ? `Categoria mais forte: <strong>${escAttr(catForte[0])}</strong> (${fF(catForte[1].r)}).` : `Sem categoria de destaque identificada — carteira pouco desenvolvida.`,
+    (catFraca && catForte && catFraca[0]!==catForte[0]) ? `Categoria menos explorada dentro do que já vende: <strong>${escAttr(catFraca[0])}</strong> (${fF(catFraca[1].r)}) — oportunidade de cross-sell imediata.` : null,
+  ].filter(Boolean).join(' ');
+
+  const metaM1 = media + gap/3, metaM2 = media + 2*gap/3;
+  const plano3Meses = consolidando ? [
+    { tit:"Mês 1 — Blindar a base atual", txt:`Mapear os clientes que sustentam a média atual (${fF(media)}/mês) e priorizar visita aos que têm risco de queda ou atraso de pedido, evitando retração abaixo de ${fF(LIMIAR_VEND_1)}.` },
+    { tit:"Mês 2 — Cross-sell dirigido", txt:`Trabalhar cross-sell nas categorias com menor penetração na carteira${catFraca?` (ex.: ${escAttr(catFraca[0])})`:''} para elevar o ticket médio dos clientes já ativos, sem depender de clientes novos. Meta intermediária: <strong>${fF(metaM2)}</strong>/mês.` },
+    { tit:"Mês 3 — Consolidação acima de R$200 mil", txt:`Formalizar com a supervisão direta o novo patamar como piso mensal, não pico isolado. Meta final: sustentar acima de <strong>${fF(limiarAlvo)}</strong>/mês por 2 meses consecutivos.` },
+  ] : [
+    { tit:"Mês 1 — Diagnóstico e ativação", txt:`Mapear clientes inativos na carteira${nClientes?` (hoje ${fN(nClientes)}${nClientes>=50?'+':''} atendidos)`:''} e retomar contato com quem não compra há mais de 60 dias. Meta intermediária: elevar a média para <strong>${fF(metaM1)}</strong>/mês.` },
+    { tit:"Mês 2 — Expansão de mix", txt:`Cross-sell nas categorias fora da carteira atual${catFraca?`, começando por ${escAttr(catFraca[0])}`:''}, priorizando os clientes de maior potencial já atendidos. Meta intermediária: <strong>${fF(metaM2)}</strong>/mês.` },
+    { tit:"Mês 3 — Superar R$150 mil", txt:`Consolidar o ritmo alcançado e acompanhar semanalmente com a supervisão direta. Meta final: superar <strong>${fF(limiarAlvo)}</strong>/mês.` },
+  ];
+
+  // Linha de tabela (Vendedor | Realizado | Meta | % Meta | Gap | Mês atual) —
+  // clicar expande o plano de ação completo numa linha logo abaixo. Hierarquia
+  // Supervisor→Vendedor→Resultado fica inequívoca: cada tabela já está dentro
+  // de um bloco "Supervisor: X" (ver bloco() em renderPlanosVendedores).
+  const pctMeta = limiarAlvo>0 ? (media/limiarAlvo*100) : 0;
+  const expanded = vendPlanoExpanded.has(v.nome);
+  const toggle = `<span class="casc-toggle" style="margin-right:4px">${expanded?'−':'+'}</span>`;
+  const linhaResumo = `<tr class="casc-lvl0" style="cursor:pointer" onclick="toggleVendPlano('${v.nome.replace(/'/g,"\\'")}')">
+    <td class="tn">${toggle}${escAttr(v.nome)}</td>
+    <td class="tv tn">${fF(media)}</td>
+    <td class="tv">${fF(limiarAlvo)}</td>
+    <td class="tv">${atingBadge(pctMeta)}</td>
+    <td class="tv">${fF(gap)}</td>
+    <td class="tv">${mesAtual ? fF(mesAtual.valor) : '<span style="color:var(--t3)">—</span>'}</td>
+  </tr>`;
+  if (!expanded) return linhaResumo;
+  return linhaResumo + `<tr class="casc-info"><td colspan="6" style="padding:0 0 14px">
+    <div class="exec-body" style="padding:2px 14px 0 30px">
+      <div class="exec-part">
+        <div class="exec-part-title"><span class="exec-part-num">1</span>Situação Atual</div>
+        <div class="exec-sec"><div class="exec-item-lbl">Panorama</div><div class="exec-item-body">${situacaoAtual}</div></div>
+        <div class="exec-sec"><div class="exec-item-lbl">Diagnóstico</div><div class="exec-item-body">${diagnostico}</div></div>
+        ${evolucao ? `<div class="exec-sec"><div class="exec-item-lbl">Evolução — mês atual vs. média</div><div class="exec-item-body">${evolucao}</div></div>` : ''}
+      </div>
+      <div class="exec-part">
+        <div class="exec-part-title"><span class="exec-part-num">2</span>Plano de Ação — 3 Meses</div>
+        <div class="exec-sec"><div class="exec-pillars">${plano3Meses.map(p=>`<div class="exec-pillar"><div class="exec-pillar-tit">${p.tit}</div><div class="exec-pillar-txt">${p.txt}</div></div>`).join("")}</div></div>
+      </div>
+    </div>
+  </td></tr>`;
+}
+let vendPlanoExpanded = new Set();
+function toggleVendPlano(nome){
+  if (vendPlanoExpanded.has(nome)) vendPlanoExpanded.delete(nome); else vendPlanoExpanded.add(nome);
+  renderPlanosVendedores();
 }
 
 // ── 4. RANKINGS ───────────────────────────────────────────────
@@ -4057,6 +4768,76 @@ function renderMix(){
       return `<tr><td class="tn">${r.nome}</td><td class="tv">${fF(r.r)}</td><td class="tv">${deltaPillSmall(r.r,pv)}</td><td class="tv">${r.categorias} de ${d.n_cat}</td><td class="tv">${r.meses_ativos} de ${nMeses}</td>
         <td class="tv"><div class="bar-row"><div class="bar-bg"><div class="bar-fg" style="width:${pos}%"></div></div><div class="bar-pct">${pos}%</div></div></td></tr>`;
     }).join("")}</tbody>`;
+
+  const tMixCascataEl = document.getElementById("tMixCascata");
+  if (tMixCascataEl) tMixCascataEl.innerHTML = `<thead><tr><th>Supervisor / Vendedor / Cliente / Mês / Categoria / Produto</th><th class="tv">Receita</th></tr></thead><tbody>${renderMixCascata(d)}</tbody>`;
+}
+// ── Mix em Cascata: Supervisor → Vendedor → Cliente → Mês → Categoria →
+// Produtos. Candidatos = os mesmos clientes já no Top 50 de receita de CADA
+// vendedor (hier_top_clientes.vendedor, o mesmo dado que a hierarquia normal
+// do painel usa) — mix_cascata_detalhe (novo, do ETL) dá o detalhe de
+// mês×categoria×produto só para esses códigos. Set de expansão PRÓPRIO, com
+// path key namespaced "MIXC|||" (mesmo racional das outras cascatas do painel).
+let mixCascataExpanded = new Set();
+function toggleMixCascata(pathKey){
+  if (mixCascataExpanded.has(pathKey)) mixCascataExpanded.delete(pathKey); else mixCascataExpanded.add(pathKey);
+  renderMix();
+}
+function mixCascToggle(key, expanded){
+  return `<span class="casc-toggle" onclick="toggleMixCascata('${key.replace(/'/g,"\\'")}')">${expanded?'−':'+'}</span>`;
+}
+function renderMixCascata(d){
+  const detalhe = d.mix_cascata_detalhe || {};
+  const hierTopVend = (d.hier_top_clientes && d.hier_top_clientes.vendedor) || {};
+  const effGer = effectiveGerentes(d), effSup = effectiveSupervisores(d);
+  const vendNomes = Object.keys(hierTopVend).filter(v => ST.vend.length===0 || ST.vend.includes(v));
+  const porSupervisor = new Map();
+  vendNomes.forEach(vend=>{
+    const sup = supervisorDoVendedor(d, vend) || '(sem supervisor)';
+    if (effSup && !effSup.has(sup)) return;
+    if (effGer){
+      const ger = gerenteDoSupervisor(d, sup);
+      if (!ger || !effGer.has(ger)) return;
+    }
+    (porSupervisor.get(sup) || porSupervisor.set(sup, []).get(sup)).push(vend);
+  });
+  let html = '';
+  [...porSupervisor.entries()].sort((a,b)=>a[0].localeCompare(b[0])).forEach(([sup, vends])=>{
+    const kSup = 'MIXC|||'+sup;
+    const expSup = mixCascataExpanded.has(kSup);
+    html += `<tr class="casc-lvl0"><td>${mixCascToggle(kSup,expSup)}${escAttr(sup)}</td><td class="tv">${vends.length} vendedor(es)</td></tr>`;
+    if (!expSup) return;
+    vends.slice().sort().forEach(vend=>{
+      const kVend = kSup+'|||'+vend;
+      const expVend = mixCascataExpanded.has(kVend);
+      const clientes = (hierTopVend[vend]||[]).filter(cli=>ST.cli.length===0 || ST.cli.some(c=>c.startsWith(cli.codigo+' -')||c===cli.nome));
+      html += `<tr class="casc-lvl1"><td style="padding-left:18px">${mixCascToggle(kVend,expVend)}${escAttr(vend)}</td><td class="tv">${clientes.length} cliente(s)</td></tr>`;
+      if (!expVend) return;
+      clientes.slice().sort((a,b)=>b.r-a.r).forEach(cli=>{
+        const kCli = kVend+'|||'+cli.codigo;
+        const expCli = mixCascataExpanded.has(kCli);
+        html += `<tr class="casc-lvl2"><td style="padding-left:36px">${mixCascToggle(kCli,expCli)}${escAttr(cli.codigo+' - '+cli.nome)}</td><td class="tv">${fF(cli.r)}</td></tr>`;
+        if (!expCli) return;
+        const porMes = detalhe[cli.codigo] || {};
+        Object.keys(porMes).map(Number).sort((a,b)=>a-b).forEach(mes=>{
+          const kMes = kCli+'|||'+mes;
+          const expMes = mixCascataExpanded.has(kMes);
+          const cats = porMes[String(mes)];
+          const totalMes = Object.values(cats).reduce((s,ps)=>s+ps.reduce((s2,p)=>s2+p.r,0),0);
+          html += `<tr class="casc-lvl3"><td style="padding-left:54px">${mixCascToggle(kMes,expMes)}${MESES_NOME[mes]}</td><td class="tv">${fF(totalMes)}</td></tr>`;
+          if (!expMes) return;
+          Object.entries(cats).sort((a,b)=>b[1].reduce((s,p)=>s+p.r,0)-a[1].reduce((s,p)=>s+p.r,0)).forEach(([cat, produtos])=>{
+            const totalCat = produtos.reduce((s,p)=>s+p.r,0);
+            html += `<tr class="casc-lvl4"><td style="padding-left:72px">${escAttr(cat)}</td><td class="tv">${fF(totalCat)}</td></tr>`;
+            produtos.forEach(p=>{
+              html += `<tr class="casc-info"><td colspan="2" style="padding-left:90px">${escAttr(p.nome)} — ${fF(p.r)} · Qtde ${fN(p.q)}</td></tr>`;
+            });
+          });
+        });
+      });
+    });
+  });
+  return html || `<tr><td colspan="2" style="text-align:center;color:var(--t3);padding:20px">Nenhum candidato no escopo/filtro atual.</td></tr>`;
 }
 
 // ── 6. ABCD (Clientes de A a I) ──────────────────────────────
@@ -4520,6 +5301,110 @@ function renderInadimplencia(){
         <td class="tv">${fN(c.titulos)}</td><td class="tv">${c.cheques?fN(c.cheques):'<span style="color:var(--t3)">—</span>'}</td>
         <td class="tv">${fF(c.saldo)}</td><td class="tv">${fN(c.atraso_max)}</td><td>${c.venc_mais_antigo||'—'}</td></tr>`).join('')
     }</tbody>`;
+}
+
+// ── ABA "Clientes Ativos sem Compra (60+ dias)" ─────────────────────────
+// Fonte: REAL_DATA._clientesSemCompra60 (sempre "até hoje", independente de
+// período — mesmo racional de _estoque/_abcd90/_inadimplencia). Cascata
+// Gerente → Supervisor → Vendedor → Cliente; no Cliente, "+" abre as
+// categorias que ele costuma comprar (últimos 365 dias) com a média mensal.
+// Set de expansão PRÓPRIO (não reaproveita estoqueCascataExpanded): aquele Set
+// é compartilhado por 3 abas cujo toggle só re-renderiza ESSAS 3 — reaproveitar
+// aqui faria o "+" desta aba não atualizar a própria tela até outro gatilho
+// disparar renderAll().
+let clientesSemCompraExpanded = new Set();
+function toggleClientesSemCompraCascata(pathKey){
+  if (clientesSemCompraExpanded.has(pathKey)) clientesSemCompraExpanded.delete(pathKey); else clientesSemCompraExpanded.add(pathKey);
+  renderClientesSemCompra();
+}
+function scClientesNoEscopo(dados){
+  const ger = new Set(ST.ger.map(normNome));
+  const sup = new Set(ST.sup.map(normNome));
+  const vend = new Set(ST.vend.map(normNome));
+  return dados.clientes.filter(c => {
+    if (ger.size  && !ger.has(normNome(c.gerente)))    return false;
+    if (sup.size  && !sup.has(normNome(c.supervisor))) return false;
+    if (vend.size && !vend.has(normNome(c.vendedor)))  return false;
+    return true;
+  });
+}
+function scAgregar(lista){
+  const n = lista.length;
+  const somaDias = lista.reduce((s,c)=>s+(c.dias_sem_compra||0),0);
+  return { clientes: n, mediaDias: n ? Math.round(somaDias/n) : 0 };
+}
+function scGroupRowHtml(nome, nivel, pathKey, agg){
+  const expanded = clientesSemCompraExpanded.has(pathKey);
+  const toggle = `<span class="casc-toggle" onclick="toggleClientesSemCompraCascata('${pathKey.replace(/'/g,"\\'")}')">${expanded?'−':'+'}</span>`;
+  return `<tr class="casc-lvl${nivel}"><td style="padding-left:${nivel*18}px">${toggle}${escAttr(nome)}</td>
+    <td class="tv">${fN(agg.clientes)}</td><td class="tv">${fN(agg.mediaDias)} dias</td><td></td></tr>`;
+}
+function scClienteRowHtml(c, pathKey, categorias){
+  const hasCats = categorias && categorias.length;
+  const expanded = hasCats && clientesSemCompraExpanded.has(pathKey);
+  const toggle = hasCats
+    ? `<span class="casc-toggle" onclick="toggleClientesSemCompraCascata('${pathKey.replace(/'/g,"\\'")}')">${expanded?'−':'+'}</span>`
+    : '<span class="casc-toggle-spacer"></span>';
+  let html = `<tr class="casc-lvl3"><td style="padding-left:54px">${toggle}${escAttr(c.codigo+' - '+c.nome)}</td>
+    <td class="tv">—</td><td class="tv">${fN(c.dias_sem_compra)} dias</td><td>${c.ultima_compra||'—'}</td></tr>`;
+  if (expanded){
+    categorias.forEach(cat=>{
+      html += `<tr class="casc-info"><td colspan="4" style="padding-left:74px">${escAttr(cat.categoria)} — Total últimos 365d <strong>${fF(cat.total)}</strong> · Média mensal <strong>${fF(cat.media_mensal)}</strong> · ${fN(cat.pedidos)} pedido(s)</td></tr>`;
+    });
+  }
+  return html;
+}
+// Agrupa a lista plana nos 3 níveis, sob demanda (só expande o que o usuário
+// abriu) — mesmo racional de renderInadCascata, sem depender dela.
+function renderScCascata(clientes, categoriasPorCliente){
+  const porNivel = (lista, campo) => {
+    const m = new Map();
+    lista.forEach(c => { const k = c[campo]; (m.get(k) || m.set(k, []).get(k)).push(c); });
+    return [...m.entries()].sort((a,b)=> b[1].length - a[1].length);
+  };
+  let html = '';
+  porNivel(clientes, 'gerente').forEach(([g, cliG]) => {
+    const kG = 'SC60|||'+g;
+    html += scGroupRowHtml(g, 0, kG, scAgregar(cliG));
+    if (!clientesSemCompraExpanded.has(kG)) return;
+    porNivel(cliG, 'supervisor').forEach(([s, cliS]) => {
+      const kS = kG+'|||'+s;
+      html += scGroupRowHtml(s, 1, kS, scAgregar(cliS));
+      if (!clientesSemCompraExpanded.has(kS)) return;
+      porNivel(cliS, 'vendedor').forEach(([v, cliV]) => {
+        const kV = kS+'|||'+v;
+        html += scGroupRowHtml(v, 2, kV, scAgregar(cliV));
+        if (!clientesSemCompraExpanded.has(kV)) return;
+        cliV.slice().sort((a,b)=>b.dias_sem_compra-a.dias_sem_compra).forEach(c => {
+          html += scClienteRowHtml(c, kV+'|||'+c.codigo, categoriasPorCliente[c.codigo]);
+        });
+      });
+    });
+  });
+  return html;
+}
+function renderClientesSemCompra(){
+  const dados = REAL_DATA._clientesSemCompra60;
+  const sub = document.getElementById('scSub');
+  if (!dados){
+    if (sub) sub.textContent = motivoEtapaAusente('clientesSemCompra60');
+    document.getElementById('sc-kpis').innerHTML = '';
+    document.getElementById('tClientesSemCompra').innerHTML = '';
+    return;
+  }
+  const clientes = scClientesNoEscopo(dados);
+  const agg = scAgregar(clientes);
+  const escopo = ST.vend.length ? 'Vendedor' : ST.sup.length ? 'Supervisor' : ST.ger.length ? 'Gerente' : 'empresa';
+  if (sub) sub.textContent = `Posição em ${dados.gerado_em} — ${fN(agg.clientes)} clientes ativos, não inadimplentes, há mais de 60 dias sem comprar (recorte: ${escopo}). Não muda com o filtro de Período/Mês.`;
+
+  document.getElementById('sc-kpis').innerHTML = [
+    { lbl:'Clientes no recorte', val: fN(agg.clientes) },
+    { lbl:'Média de dias sem compra', val: fN(agg.mediaDias)+' dias' },
+    { lbl:'Maior tempo sem compra', val: clientes.length ? fN(Math.max(...clientes.map(c=>c.dias_sem_compra)))+' dias' : '—' },
+  ].map((k,i)=>`<div class="kpi${i===0?' k0':''}"><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div></div>`).join('');
+
+  const cabecalho = `<thead><tr><th>Gerente / Supervisor / Vendedor / Cliente</th><th class="tv">Clientes</th><th class="tv">Média dias sem compra</th><th>Última compra</th></tr></thead>`;
+  document.getElementById('tClientesSemCompra').innerHTML = cabecalho + `<tbody>${renderScCascata(clientes, dados.categorias_por_cliente || {})}</tbody>`;
 }
 
 function renderEstoque(){
@@ -5493,6 +6378,7 @@ async function loadAndInit(){
       const data = await res.json();
       if (!data || typeof data !== 'object') throw new Error('payload inválido');
       window.REAL_DATA = data;
+      limparCacheAno();
       DIAG.etl = data._etl || null;
 
       // Aplicar Trava de Acesso Rígida (nomes resolvidos p/ chaves canônicas do cubo)
@@ -5584,6 +6470,7 @@ async function vigiarEtl(){
       const data = await r.json();
       if (!data || typeof data !== 'object') continue;
       window.REAL_DATA = data;
+      limparCacheAno();
       DIAG.etl = data._etl || st;
       // O índice canônico depende de _hierarquia: se ela acabou de chegar, a trava
       // precisa ser reaplicada para gravar as chaves certas em ST — mas sem apagar
