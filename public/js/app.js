@@ -625,40 +625,6 @@ function categoriaCascadeRowsFor(d, mes){
   const rows = Object.entries(base).map(([cat,v])=>[cat,{r:v.r,c:v.c,m:v.r>0?+(100*(1-v.c/v.r)).toFixed(2):0}]).filter(([n])=>ST.cat.length===0||ST.cat.includes(n));
   return { level, names, rows, monthNote:null };
 }
-// Receita por mês já recortada pelos filtros ativos, usando o grão mais fino que
-// existe para cada combinação:
-//   Cliente          → por_mes vindo da API (/clientes), exato
-//   Gerente [+Cat]   → hier_por_dia_categoria.gerente
-//   Categoria        → por_dia_categoria (nível empresa)
-//   Supervisor/Vend. → sem grão mensal no cubo: cai p/ empresa, com aviso
-function receitaPorMesDoRecorte(d){
-  const meses = Object.keys(d.por_mes).sort((a,b)=>+a-+b);
-  const geral = () => meses.map(m=>d.por_mes[m].r);
-
-  if (precisaRecorte()){
-    const sc = cliScopeAtual();
-    if (sc) return { meses, vals: meses.map(m => (sc.por_mes[String(m)] ? sc.por_mes[String(m)].r : 0)),
-                     note: `Recorte: ${recorteLabel()}` };
-    return { meses, vals: geral(), note: 'Carregando recorte…' };
-  }
-
-  const level = hierLevelActive();
-  const somaCats = agg => { let r=0; ST.cat.forEach(cat=>{ if (agg[cat]) r += agg[cat].r; }); return r; };
-
-  if (level === 'gerente'){
-    if (ST.cat.length) return { meses, vals: meses.map(m=>somaCats(monthlyGerenteUnionCategoriaAgg(d, ST.ger, +m))),
-                                note: `Recorte: Gerente + Categoria` };
-    return { meses, vals: meses.map(m=>monthlyGerenteUnionAgg(d, ST.ger, +m).r), note: `Recorte: Gerente: ${labelJoin(ST.ger)}` };
-  }
-  if (level){
-    return { meses, vals: geral(),
-             note: `Sem grão mensal por ${level} neste cubo — gráfico no nível empresa (os KPIs acima já estão recortados).` };
-  }
-  if (ST.cat.length){
-    return { meses, vals: meses.map(m=>somaCats(monthlyCategoriaAgg(d, +m))), note: `Recorte: Categoria: ${labelJoin(ST.cat)}` };
-  }
-  return { meses, vals: geral(), note: null };
-}
 
 function categoriaMonthValueFor(period, level, names, catName, mes){
   if (!period) return null;
@@ -868,12 +834,6 @@ function buildYearPeriod(ano){
   out.margem_geral = receita>0 ? +(100*(1-custo/receita)).toFixed(2) : 0;
   YEAR_CACHE[ano] = out;
   return out;
-}
-// Receita por mês do ano inteiro, direto de d.por_mes (sem passar pelo recorte
-// global — usada só quando o recorte não é suportado no modo Ano, ver renderVisao).
-function receitaPorMesAno(d){
-  const meses = Object.keys(d.por_mes).sort((a,b)=>+a-+b);
-  return { meses, vals: meses.map(m=>d.por_mes[m].r), note: null };
 }
 
 // Abre no semestre do mês corrente (julho/2026 → "2026_2"), caindo no mais recente
@@ -1217,6 +1177,79 @@ function prevPeriod(){
   _mescladoPrevObj = mesclarRecorte(p, rec);
   _mescladoPrevKey = key;
   return _mescladoPrevObj;
+}
+
+// ── RECORTE DO ANO (Visão Geral) ────────────────────────────────────────────
+// A Visão Geral trabalha por ANO CIVIL, mas CLI_SCOPE/`/recorte` são montados por
+// SEMESTRE (periodo=ST.per) — reaproveitar aquele recorte aqui mostraria metade do
+// período com rótulo de ano. Foi por isso que os cards da aba passaram a ler o cubo
+// puro e a exibir o total da EMPRESA mesmo com filtro ativo (CIGARROS DE PALHA em
+// 374,6M dentro de um supervisor de 13,7M).
+//
+// A rota aceita `anomes` com meses de qualquer ano e deriva a janela do menor/maior,
+// então o ano inteiro sai numa consulta só, com os MESMOS filtros da barra lateral
+// (menos Mês, que esta aba não usa) — inclusive a trava de acesso do usuário logado,
+// que applyAccessLock() grava em ST.ger/ST.sup. Por vir da mesma query do ETL, o
+// total bate com o cubo por construção (medido: 13.724.165,53 nos dois caminhos).
+const ANO_SCOPE = {};          // { [ano]: { key, dados } }
+const anoScopePending = {};    // { [ano]: key em vôo }
+// Key que falhou, por ano. Sem isto o catch → renderVisao() → ensureAnoScope() vira
+// laço infinito de retentativa, martelando a API a cada erro.
+const anoScopeFalhou = {};
+let anoScopeErro = null;       // última falha, p/ avisar na tela em vez de zerar calado
+
+// Filtros que valem na Visão Geral: todos, MENOS Mês — a aba é sempre o ano inteiro,
+// então seleção de meses não pode contar como filtro (activeFilterCount conta).
+function filtrosDoAno(){
+  return ["ger","sup","vend","cat","grp","cli","canal","status"].filter(k=>ST[k].length>0).length;
+}
+// Meses "YYYY-MM" que o cubo tem para o ano — só os que existem de verdade, para não
+// pedir ao banco uma janela maior que a do dado.
+function mesesDoAno(ano){
+  const d = buildYearPeriod(ano);
+  if (!d) return [];
+  return Object.keys(d.por_mes).sort((a,b)=>+a-+b).map(m=>`${ano}-${String(m).padStart(2,'0')}`);
+}
+function anoScopeQuery(ano){
+  const meses = mesesDoAno(ano);
+  if (!meses.length) return null;
+  const p = new URLSearchParams();
+  // `periodo` aqui só valida a chave no serviço; com `anomes` a janela vem dos meses.
+  p.set('periodo', (window.REAL_DATA && REAL_DATA[`${ano}_2`]) ? `${ano}_2` : `${ano}_1`);
+  const add = (k, arr) => { if (arr && arr.length) p.set(k, arr.join('|')); };
+  add('cli', cliCodesFromST());
+  add('ger', ST.ger); add('sup', ST.sup); add('vend', ST.vend);
+  add('cat', ST.cat); add('grp', ST.grp);
+  add('canal', ST.canal); add('status', ST.status);
+  p.set('anomes', meses.join('|'));
+  return p.toString();
+}
+// Recorte do ano já carregado que corresponde EXATAMENTE aos filtros atuais (ou null).
+function anoScopeDados(ano){
+  const k = anoScopeQuery(ano);
+  return (k && ANO_SCOPE[ano] && ANO_SCOPE[ano].key === k) ? ANO_SCOPE[ano].dados : null;
+}
+// Dispara a consulta se necessário; ao chegar, re-renderiza a aba (idempotente).
+function ensureAnoScope(ano){
+  if (filtrosDoAno() === 0){ delete ANO_SCOPE[ano]; delete anoScopePending[ano]; return; }
+  const key = anoScopeQuery(ano);
+  if (!key) return;
+  if ((ANO_SCOPE[ano] && ANO_SCOPE[ano].key === key) || anoScopePending[ano] === key) return;
+  if (anoScopeFalhou[ano] === key) return;   // já falhou nesta combinação — só retenta ao recarregar
+  anoScopePending[ano] = key;
+  fetch(`${API_BASE_URL}/recorte?${key}`)
+    .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+    .then(j => {
+      if (j && j.error) throw new Error(j.error);
+      ANO_SCOPE[ano] = { key, dados: j };
+      anoScopeErro = null; delete anoScopeFalhou[ano];
+      if (anoScopePending[ano] === key){ delete anoScopePending[ano]; renderVisao(); }
+    })
+    .catch(e => {
+      console.warn(`[recorte ano ${ano}] falha:`, e.message);
+      anoScopeErro = e.message; anoScopeFalhou[ano] = key;
+      if (anoScopePending[ano] === key){ delete anoScopePending[ano]; renderVisao(); }
+    });
 }
 // Rótulo do recorte ativo, do filtro mais específico para o mais amplo.
 function recorteLabel(){
@@ -1900,17 +1933,38 @@ function renderVisao(){
     return;
   }
   const prev = buildYearPeriod(ano - 1);
-  // Canal/Inadimplente/Status/Cliente/Grupo+Hierarquia só têm número exato via
-  // consulta ao banco (/recorte) — e essa consulta é feita por SEMESTRE (ST.per),
-  // não por ano. Reaproveitar o recorte global aqui mostraria o semestre errado
-  // com rótulo de "ano". Nesse caso ignoramos esses filtros (com aviso) em vez de
-  // arriscar um número silenciosamente errado.
-  const bloqueado = precisaRecorte();
-  const eff = bloqueado ? {r:d.receita,c:d.custo,q:d.qtde,label:null,monthNote:null} : effectiveFor(d, null);
-  const prevEff = prev ? (bloqueado ? {r:prev.receita,c:prev.custo,q:prev.qtde,label:null} : effectiveFor(prev, null)) : null;
+  // TODOS os filtros da barra lateral valem aqui — inclusive os que o cubo não cruza
+  // (Canal/Inadimplente/Status/Cliente e Grupo+Hierarquia). O número exato vem do
+  // RECORTE DO ANO (uma consulta ao banco cobrindo os meses do ano inteiro, ver
+  // ensureAnoScope): antes esta aba lia o cubo puro e, com filtro ativo, mostrava o
+  // total da EMPRESA nos cards de Mês/Gerente/Grupo — um supervisor de 13,7M exibindo
+  // CIGARROS DE PALHA em 374,6M. Enquanto a consulta não volta, os valores ficam
+  // zerados com aviso, nunca no nível empresa.
+  const comFiltro = filtrosDoAno() > 0;
+  if (comFiltro) ensureAnoScope(ano);
+  const recAno = comFiltro ? anoScopeDados(ano) : null;
+  // O ano anterior (só para os deltas) só é pedido DEPOIS que o ano corrente chega:
+  // as duas consultas cobrem 12 meses cada e, disparadas juntas com as do recorte
+  // por semestre, esgotavam o pool do banco ("Connection terminated due to connection
+  // timeout", HTTP 500). Em série, o que está na tela vem primeiro.
+  if (comFiltro && prev && recAno) ensureAnoScope(ano - 1);
+  const recPrev = (comFiltro && prev) ? anoScopeDados(ano - 1) : null;
+  // mesclarRecorte substitui no período do ano só o que o recorte cobre — assim
+  // por_mes/por_categoria/por_gerente/por_grupo passam a ser os do escopo, e os
+  // helpers de cascata reconhecem o objeto pelo `_recorte`.
+  const dEff = comFiltro ? mesclarRecorte(d, recAno || recorteVazio()) : d;
+  // Sem o MESMO recorte no ano anterior, o delta compararia o escopo filtrado contra
+  // a empresa inteira — então fica "sem base" até a segunda consulta voltar.
+  const prevEff2 = !prev ? null : (comFiltro ? (recPrev ? mesclarRecorte(prev, recPrev) : null) : prev);
+  const eff = comFiltro
+    ? {r:dEff.receita, c:dEff.custo, q:dEff.qtde, label:recorteLabel(), monthNote:null, carregando:!recAno}
+    : effectiveFor(d, null);
+  const prevEff = !prevEff2 ? null
+    : (comFiltro ? {r:prevEff2.receita, c:prevEff2.custo, q:prevEff2.qtde, label:recorteLabel()}
+                 : effectiveFor(prev, null));
 
   document.getElementById("vg-sub").textContent = eff.label ? `${d.label} · recortado por ${eff.label}` : d.label;
-  document.getElementById("vg-meta").textContent = eff.label ? `${fN(d.linhas)} linhas no ano (recorte não desagrega linhas)` : `${fN(d.linhas)} linhas · ${fN(d.n_pedidos)} pedidos`;
+  document.getElementById("vg-meta").textContent = `${fN(dEff.linhas)} linhas · ${fN(dEff.n_pedidos)} pedidos`;
 
   const effMargem = eff.r>0 ? +(100*(1-eff.c/eff.r)).toFixed(2) : 0;
   const prevMargem = prevEff ? (prevEff.r>0?100*(1-prevEff.c/prevEff.r):0) : null;
@@ -1922,14 +1976,18 @@ function renderVisao(){
     {lbl:"Margem %", val:fPct(effMargem), delta: prevEff?fDelta(effMargem,prevMargem):null, cls:"k1"},
     {lbl:"Cash Margem (R$)", val:fM(cashMargem), delta: prevEff?fDelta(cashMargem,prevCashMargem):null, cls:"k6"},
     {lbl:"Qtde vendida", val: eff.q!=null?fN(eff.q):"—", delta: (prevEff&&eff.q!=null&&prevEff.q!=null)?fDelta(eff.q,prevEff.q):null, note: eff.q==null?"não recortável para este filtro neste cubo":null, cls:"k2"},
-    {lbl:"Ticket médio/pedido", val:fF(d.ticket_pedido), delta: prev?fDelta(d.ticket_pedido,prev.ticket_pedido):null, note: eff.label?"nível ano (pedidos não recortados)":null, cls:"k3"},
-    {lbl:"Clientes ativos", val:fN(d.n_cli), delta: prev?fDelta(d.n_cli,prev.n_cli):null, note: eff.label?"nível ano (não recortável por "+eff.label.split(" · ")[0].split(":")[0]+")":null, cls:"k4"},
-    {lbl:"Vendedores ativos", val:fN(d.n_vend), delta: prev?fDelta(d.n_vend,prev.n_vend):null, note: eff.label?"nível ano (não recortável por "+eff.label.split(" · ")[0].split(":")[0]+")":null, cls:"k5"},
+    // Pedidos, clientes e vendedores também saem do recorte do ano — antes eram
+    // sempre os da empresa, com uma nota explicando que "não eram recortáveis".
+    {lbl:"Ticket médio/pedido", val:fF(dEff.ticket_pedido), delta: prevEff2?fDelta(dEff.ticket_pedido,prevEff2.ticket_pedido):null, cls:"k3"},
+    {lbl:"Clientes ativos", val:fN(dEff.n_cli), delta: prevEff2?fDelta(dEff.n_cli,prevEff2.n_cli):null, cls:"k4"},
+    {lbl:"Vendedores ativos", val:fN(dEff.n_vend), delta: prevEff2?fDelta(dEff.n_vend,prevEff2.n_vend):null, cls:"k5"},
   ];
   const banners = [];
-  if (bloqueado) banners.push(`⚠ Filtro de Canal/Inadimplente/Status/Cliente ou Grupo+Hierarquia não é suportado no Ano Vigente (só existe consulta exata ao banco por semestre) — os números abaixo <strong>ignoram esse filtro</strong>. Para vê-lo aplicado, use as demais abas (recorte por semestre).`);
-  if (recorteErro) banners.push(`⚠ Falha ao aplicar o recorte do seu acesso (<strong>${recorteErro}</strong>) — os valores estão zerados por segurança. Recarregue a página.`);
-  else if (eff.carregando) banners.push(`⏳ Consultando no banco o recorte <strong>${eff.label || recorteLabel()}</strong> — os valores aparecem em alguns segundos.`);
+  // O erro é global às duas consultas (ano e ano anterior): só zera a tela quando
+  // quem faltou foi o recorte do ano corrente.
+  if (anoScopeErro && comFiltro && !recAno) banners.push(`⚠ Falha ao consultar o recorte do ano (<strong>${anoScopeErro}</strong>) — os valores estão zerados por segurança. Recarregue a página.`);
+  else if (eff.carregando) banners.push(`⏳ Consultando no banco o recorte <strong>${eff.label || recorteLabel()}</strong> do ano inteiro — os valores aparecem em alguns segundos.`);
+  else if (comFiltro && !prevEff) banners.push(`⏳ Consultando ${ano-1} no mesmo recorte para calcular as variações — os deltas aparecem em alguns segundos.`);
   if (eff.monthNote) banners.push(`⚠ ${eff.monthNote}`);
   document.getElementById("vg-kpis").innerHTML = banners.map(b=>`<div class="alert" style="grid-column:1/-1">${b}</div>`).join("") + kpis.map(k=>`
     <div class="kpi ${k.cls}"><div class="kpi-stripe"></div>
@@ -1938,32 +1996,40 @@ function renderVisao(){
       <div class="kpi-note">${k.note || (prevEff?'vs. ano anterior completo':'sem base comparável')}</div>
     </div>`).join("");
 
-  const rpm = bloqueado ? receitaPorMesAno(d) : receitaPorMesDoRecorte(d);
+  // Rótulo comum aos 4 cards: o que está sendo mostrado ali.
+  const notaRecorte = comFiltro
+    ? (recAno ? `Recorte: ${recorteLabel()}` : 'Consultando o recorte no banco…')
+    : `${ano} — ano completo`;
+
+  // Receita por Mês: eixo sempre com os meses que o ano tem no cubo (não some mês
+  // enquanto o recorte carrega); valores do escopo.
+  const mesesAno = Object.keys(d.por_mes).sort((a,b)=>+a-+b);
+  const rpmVals = mesesAno.map(m => dEff.por_mes[m] ? dEff.por_mes[m].r : 0);
   const noteMes = document.getElementById("vgMesNote");
-  if (noteMes) noteMes.textContent = rpm.note || (eff.label ? `Recorte: ${eff.label}` : `${ano} — ano completo`);
-  mkChart("cVgMes",{type:"bar",data:{labels:rpm.meses.map(m=>MESES_NOME[m]),datasets:[{data:rpm.vals,backgroundColor:C.acc+"cc",borderRadius:4}]},
+  if (noteMes) noteMes.textContent = notaRecorte;
+  mkChart("cVgMes",{type:"bar",data:{labels:mesesAno.map(m=>MESES_NOME[m]),datasets:[{data:rpmVals,backgroundColor:C.acc+"cc",borderRadius:4}]},
     options:{responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>" "+fF(c.raw)}}},scales:{y:{ticks:{callback:v=>fM(v)}}}}});
 
-  // Mix por Categoria respeita o recorte de Gerente/Supervisor/Vendedor (cubo
-  // hier_por_categoria, somado entre os 2 semestres) e o filtro de Categoria.
-  const cats = categoriaCascadeRowsFor(d, null).rows.slice().sort((a,b)=>b[1].r-a[1].r);
+  // Mix por Categoria: com recorte, categoriaCascadeRowsFor lê dEff.por_categoria
+  // (já filtrado no banco); sem filtro, o cubo do ano.
+  const cats = categoriaCascadeRowsFor(dEff, null).rows.slice().sort((a,b)=>b[1].r-a[1].r);
   mkChart("cVgCat",{type:"doughnut",data:{labels:cats.map(c=>c[0]),datasets:[{data:cats.map(c=>c[1].r),backgroundColor:P}]},
     options:{plugins:{legend:{position:"right",labels:{boxWidth:10,font:{size:10}}},tooltip:{callbacks:{label:c=>" "+c.label+": "+fF(c.raw)}}}}});
 
-  // Só os gerentes dentro do escopo ativo (trava de acesso / cascata).
-  const gers = gerenteCascadeRowsFor(d, null).rows.slice().sort((a,b)=>b[1].r-a[1].r);
+  // Receita por Gerente: o valor é o do ESCOPO dentro do gerente (com um supervisor
+  // filtrado mostra a fatia dele, não o gerente inteiro), e a cascata continua
+  // limitando quais gerentes aparecem.
+  const gers = gerenteCascadeRowsFor(dEff, null).rows.slice().sort((a,b)=>b[1].r-a[1].r);
   mkChart("cVgGer",{type:"bar",data:{labels:gers.map(g=>g[0]),datasets:[{data:gers.map(g=>g[1].r),backgroundColor:P.map(c=>c+"bb"),borderRadius:4}]},
     options:{indexAxis:"y",responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>" "+fF(c.raw)}}},scales:{x:{ticks:{callback:v=>fM(v)}}}}});
 
-  // Grupos: o cubo não cruza Grupo com hierarquia — usa sempre d.por_grupo (já
-  // soma os 2 semestres); nunca o recorte global (que é de outro período/semestre).
-  const grps = Object.entries(d.por_grupo)
+  // Grupos: o cubo não cruza Grupo com hierarquia — por isso este card depende do
+  // recorte do ano para respeitar o filtro.
+  const grps = Object.entries(dEff.por_grupo)
     .filter(([n,v]) => (ST.grp.length===0 || ST.grp.includes(n)) && (ST.cat.length===0 || ST.cat.includes(v.categoria)))
     .sort((a,b)=>b[1].r-a[1].r).slice(0,8);
   const grpNote = document.getElementById("vgGrpNote");
-  if (grpNote) grpNote.textContent = bloqueado
-    ? 'Grupo + Hierarquia não suportado no Ano Vigente — nível empresa'
-    : (activeFilterCount() ? `Filtro ativo` : `${ano} — ano completo`);
+  if (grpNote) grpNote.textContent = notaRecorte;
   mkChart("cVgGrp",{type:"bar",data:{labels:grps.map(g=>g[0]),datasets:[{data:grps.map(g=>g[1].r),backgroundColor:C.acc2+"cc",borderRadius:4}]},
     options:{indexAxis:"y",responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>" "+fF(c.raw)}}},scales:{x:{ticks:{callback:v=>fM(v)}}}}});
 }
