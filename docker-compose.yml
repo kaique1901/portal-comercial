@@ -9,8 +9,24 @@ services:
     restart: unless-stopped
     ports:
       - "4001:4001"
-    env_file:
-      - ./api/.env
+    # As credenciais NÃO vêm mais de `env_file: ./api/.env`. Aquele arquivo está no
+    # .gitignore (guarda a senha do Postgres de produção), então num clone do
+    # repositório ele simplesmente não existe — e o compose abortava antes de
+    # construir qualquer coisa:
+    #   "failed to resolve services environment: env file /data/compose/194/api/.env
+    #    not found"
+    # Com substituição de variáveis, os valores vêm de fora do repositório:
+    #   • Portainer  -> aba "Environment variables" do stack (ele monta o stack.env);
+    #   • local      -> docker compose --env-file api/.env up -d --build
+    # O `:?` faz o deploy falhar na hora, com mensagem clara, se alguém esquecer de
+    # preencher — melhor que subir e só descobrir no timeout de conexão do banco.
+    environment:
+      PORT: ${PORT:-4001}
+      DB_HOST: ${DB_HOST:?defina DB_HOST nas variaveis de ambiente do stack}
+      DB_PORT: ${DB_PORT:-5432}
+      DB_USER: ${DB_USER:?defina DB_USER nas variaveis de ambiente do stack}
+      DB_PASSWORD: ${DB_PASSWORD:?defina DB_PASSWORD nas variaveis de ambiente do stack}
+      DB_NAME: ${DB_NAME:?defina DB_NAME nas variaveis de ambiente do stack}
     networks:
       - cifal_network
 

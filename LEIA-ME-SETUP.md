@@ -39,9 +39,31 @@ máquina/porta, ajuste `window.API_BASE_URL` no topo de `public/js/app.js`.
 
 ## 4. Docker (opcional)
 
+O compose **não lê `api/.env`** — esse arquivo está no `.gitignore`, então num clone
+do repositório ele não existe e o compose aborta antes de construir qualquer coisa
+(`failed to resolve services environment: env file .../api/.env not found`). As
+credenciais entram por variável de ambiente, de fora do repositório.
+
+**Local:**
+
 ```bash
-docker compose up -d --build
+docker compose --env-file api/.env up -d --build
 ```
+
+**Portainer (stack a partir do Git):** cadastre em *Environment variables* do stack,
+antes de fazer o deploy:
+
+| Variável | Obrigatória | Padrão |
+| --- | --- | --- |
+| `DB_HOST` | sim | — |
+| `DB_USER` | sim | — |
+| `DB_PASSWORD` | sim | — |
+| `DB_NAME` | sim | — |
+| `DB_PORT` | não | `5432` |
+| `PORT` | não | `4001` |
+
+Faltando alguma das obrigatórias, o deploy falha na hora com o nome da variável em
+vez de subir e morrer depois no timeout de conexão do banco.
 
 API em `:4001`, front em `:3006`. Atenção: o `public/Dockerfile` **copia** os
 arquivos para dentro da imagem, então toda alteração no front exige
