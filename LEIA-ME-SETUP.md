@@ -34,8 +34,17 @@ Qualquer servidor de arquivos estáticos sobre `public/`:
 npx serve public -l 3006
 ```
 
-O front descobre a API por `http://<hostname>:4001` — se a API estiver em outra
-máquina/porta, ajuste `window.API_BASE_URL` no topo de `public/js/app.js`.
+O front escolhe a URL da API pelo protocolo da página:
+
+- **HTTP** (`npx serve`, ou o container acessado direto por `IP:3006`) →
+  `http://<hostname>:4001`.
+- **HTTPS** (produção, atrás do proxy da borda) → same-origin `/api/v1/dashboard`,
+  atendido pelo proxy do `public/nginx.conf`. Chamar `http://<host>:4001` a partir
+  de uma página HTTPS é Mixed Content: o navegador bloqueia antes de a requisição
+  sair, e a tela mostra "Failed to fetch".
+
+Para API em outra máquina/porta, defina `window.API_BASE_URL` antes de carregar o
+`app.js` — esse valor vence a regra acima.
 
 ## 4. Docker (opcional)
 

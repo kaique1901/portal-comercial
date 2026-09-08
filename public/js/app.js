@@ -18,7 +18,24 @@ Chart.defaults.font.family = "'Segoe UI',system-ui,sans-serif";
 Chart.defaults.font.size = 11;
 
 // ── FONTE DE DADOS: 100% via API ─────────────────────────────────
-window.API_BASE_URL = window.API_BASE_URL || `http://${window.location.hostname}:4001/api/v1/dashboard`;
+// A URL da API depende de COMO o front esta sendo servido:
+//
+//   HTTPS  -> same-origin (/api/...). O nginx do container do front faz o proxy
+//             para api:4001 (ver public/nginx.conf). Chamar http://<host>:4001 a
+//             partir de uma pagina HTTPS e Mixed Content: o navegador bloqueia
+//             antes de a requisicao sair e o painel mostra "Failed to fetch".
+//             A porta 4001 nao tem TLS, entao trocar o esquema tambem nao resolve.
+//   HTTP   -> porta 4001 do mesmo host, que e o que existe quando o front vem de
+//             um servidor estatico simples (npx serve) ou do container acessado
+//             direto por IP:3006, casos em que nao ha proxy de /api.
+//
+// window.API_BASE_URL definido antes deste script continua vencendo — e a saida
+// para API em outra maquina/porta.
+window.API_BASE_URL = window.API_BASE_URL || (
+  window.location.protocol === 'https:'
+    ? `${window.location.origin}/api/v1/dashboard`
+    : `http://${window.location.hostname}:4001/api/v1/dashboard`
+);
 window.REAL_DATA = {};
 
 // ── DIAGNÓSTICO: por que uma visão/filtro está sem dado ───────────
@@ -6489,7 +6506,7 @@ async function loadAndInit(){
       if (errBox) {
         errBox.textContent = warming
           ? `A API ainda está montando os dados. Aguarde e recarregue a página.`
-          : `Falha ao carregar dados da API (${API_BASE_URL}). A API está rodando na porta 4001? Detalhe: ${e.message}`;
+          : `Falha ao carregar dados da API (${API_BASE_URL}). ${window.location.protocol === 'https:' ? 'O proxy de /api no nginx do front está de pé?' : 'A API está rodando na porta 4001?'} Detalhe: ${e.message}`;
         errBox.style.display = 'block';
       }
       if (overlay) overlay.style.display = 'none';

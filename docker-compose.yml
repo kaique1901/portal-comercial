@@ -38,6 +38,12 @@ services:
     restart: unless-stopped
     ports:
       - "3006:80"
+    # O nginx resolve o upstream `api` na hora de carregar a config: se o container
+    # da API ainda nao existe, ele sai com "host not found in upstream" e fica
+    # reiniciando ate pegar. depends_on nao espera a API ficar pronta, mas garante
+    # que o nome ja resolva.
+    depends_on:
+      - api
     networks:
       - cifal_network
 
