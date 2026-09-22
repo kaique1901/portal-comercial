@@ -1159,7 +1159,23 @@ function ensureCliScope(){
 function prevScopeKey(){
   const prevKey = PREV_OF[ST.per];
   if (!prevKey) return null;
-  return cliScopeKey().replace(`periodo=${encodeURIComponent(ST.per)}`, `periodo=${encodeURIComponent(prevKey)}`);
+  const p = new URLSearchParams(cliScopeKey());
+  p.set('periodo', prevKey);
+  // BUG CORRIGIDO: só trocar `periodo` não bastava — a rota /recorte deriva a
+  // janela de datas de `anomes` (não de `periodo`) quando ele está presente (ver
+  // _limitesDeAnomes em DashboardRecorteService), então a consulta do "ano
+  // anterior" pedia a MESMA janela (ex.: 2026-09) da consulta atual, trazendo os
+  // MESMOS códigos de cliente — Positivação "ano anterior" saía idêntica à atual
+  // para qualquer usuário com escopo travado (todo gerente/supervisor/vendedor
+  // logado, que sempre tem recorte ativo). Cada "YYYY-MM" precisa recuar 1 ano.
+  const anomes = p.get('anomes');
+  if (anomes){
+    p.set('anomes', anomes.split('|').map(am => {
+      const [ano, mes] = am.split('-');
+      return `${parseInt(ano, 10) - 1}-${mes}`;
+    }).join('|'));
+  }
+  return p.toString();
 }
 function prevScopeDados(){
   const k = prevScopeKey();
@@ -2971,9 +2987,12 @@ function objPrevRealGeralFor(prev, level, name, meses){
 // quanto na cascata inline de cada linha das tabelas por Gerente/Supervisor/
 // Vendedor abaixo (mesmas colunas, recortadas para 1 entidade só).
 // Bonificação/%Bonif x Venda ficam "—": sem fonte de dados no ETL atual.
-// Positivação/Estoque Box também ficam "—" quando level!=null: não existe
-// cubo hierárquico para eles (mostrar o total da empresa pareceria dado do
-// recorte, mas não é). Gerente tem grão diário exato p/ Realizado
+// Positivação e Estoque Box respeitam o filtro de Gerente/Supervisor/Vendedor
+// (level/names): cada um usa seu próprio cruzamento hierárquico do ETL
+// (por_mes_categoria_clientes_cod recortado pelo /recorte, por_<nivel>_categoria
+// em REAL_DATA._estoque) e cai em "—" — nunca no total da empresa — quando o
+// cubo carregado ainda não tem o cruzamento (cache antigo). Gerente tem grão
+// diário exato p/ Realizado
 // (hier_por_dia_categoria) — Supervisor/Vendedor caem pro semestre inteiro
 // (hier_por_categoria, sem grão mensal), com aviso. Meta por categoria usa
 // d.meta.hier_por_mes_categoria nos 3 níveis (grão mensal exato).
@@ -3124,6 +3143,25 @@ function buildCategoriaTable(d, prev, meses, level, names){
     return out;
   })();
 
+  // Estoque Box recortado pelo filtro de Gerente/Supervisor/Vendedor ativo —
+  // antes era sempre REAL_DATA._estoque.por_categoria (total da empresa), então
+  // um Gerente via o estoque de todo mundo em cada categoria, não só o dele.
+  // por_<nivel>_categoria vem do ETL já cruzado (mesma linha da query de saldo
+  // tem categoria + gerente/supervisor/vendedor); "—" (não 0/total da empresa)
+  // quando o cubo carregado ainda não tem o campo (cache antigo).
+  function estoqueCatFor(nome){
+    const est = REAL_DATA._estoque;
+    if (!est) return null;
+    if (!level || !names || !names.length){
+      return est.por_categoria[nome] ? est.por_categoria[nome].valor_carga : null;
+    }
+    const dict = level==='gerente' ? est.por_gerente_categoria
+      : level==='supervisor' ? est.por_supervisor_categoria
+      : level==='vendedor' ? est.por_vendedor_categoria : null;
+    if (!dict) return null;
+    return names.reduce((s,n)=> s + ((dict[n] && dict[n][nome]) ? dict[n][nome].valor_carga : 0), 0);
+  }
+
   function catRow(nome, metaVal, r, c, prevR, prevC, trend, trendC, metaCash, nCliCat, prevNCliCat){
     const pctReal = metaVal>0 ? r/metaVal*100 : null;
     const pctTrend = metaVal>0 ? trend/metaVal*100 : null;
@@ -3136,17 +3174,23 @@ function buildCategoriaTable(d, prev, meses, level, names){
     const pctRealCash = metaCash>0 ? cash/metaCash*100 : null;
     const trendCash = trend-trendC;
     const pctTrendCash = metaCash>0 ? trendCash/metaCash*100 : null;
-    const estoque = (REAL_DATA._estoque && REAL_DATA._estoque.por_categoria[nome]) ? REAL_DATA._estoque.por_categoria[nome].valor_carga : null;
+    // Cash Margem do ano anterior só existe quando há base dos dois lados
+    // (receita E custo do ano anterior); com só receita, custo ficaria 0 e a
+    // cash margem apareceria inflada.
+    const prevCash = (prevR!=null && prevC!=null) ? (prevR-prevC) : null;
+    const estoque = estoqueCatFor(nome);
     return `<tr><td class="tv">${pesoMeta.toFixed(1)}%</td><td class="tv">${pesoReal.toFixed(1)}%</td><td class="tn">${nome}</td>
       <td class="tv">${fF(metaVal)}</td><td class="tv">${fF(r)}</td><td class="tv">${atingBadge(pctReal)}</td>
       <td class="tv">${fF(trend)}</td><td class="tv">${atingBadge(pctTrend)}</td>
       <td class="tv">${prevR!=null?fF(prevR):'<span style="color:var(--t3)">sem base</span>'}</td>
-      <td class="tv">${deltaPillSmall(r,prevR)}</td>
+      <td class="tv">${deltaPillSmall(trend,prevR)}</td>
       <td class="tv">${metaCash>0?fF(metaCash):'<span style="color:var(--t3)">—</span>'}</td>
       <td class="tv">${fF(cash)}</td>
       <td class="tv">${atingBadge(pctRealCash)}</td>
       <td class="tv">${fF(trendCash)}</td>
       <td class="tv">${atingBadge(pctTrendCash)}</td>
+      <td class="tv">${prevCash!=null?fF(prevCash):'<span style="color:var(--t3)">sem base</span>'}</td>
+      <td class="tv">${deltaPillSmall(trendCash,prevCash)}</td>
       <td class="tv">${metaMargemPct!=null?fPct(metaMargemPct):'<span style="color:var(--t3)">—</span>'}</td>
       <td class="tv">${margem!=null?margemBadge(margem):'<span style="color:var(--t3)">—</span>'}</td>
       <td class="tv">${prevMargem!=null?fPct(prevMargem):'<span style="color:var(--t3)">sem base</span>'}</td>
@@ -3162,29 +3206,29 @@ function buildCategoriaTable(d, prev, meses, level, names){
     const trendC = perMes.reduce((s,pm)=>s+tendencia((pm.catAgg[cat]&&pm.catAgg[cat].c)||0, d, pm.mes),0);
     return catRow(cat, metaCatSel[cat]||0, agg.r, agg.c, pagg?pagg.r:null, pagg?pagg.c:null, trend, trendC, metaCashCatSel[cat]||0, positivacaoDisponivel?(nCliCatSel[cat]||0):null, positivacaoDisponivel?(prevNCliCatSel[cat]||0):null);
   }).join("");
-  // Estoque Box do TOTAL: soma o snapshot das categorias exibidas (a linha de
-  // total mostrava "—" mesmo com todas as categorias preenchidas).
-  const totalEstoqueBox = (REAL_DATA._estoque && REAL_DATA._estoque.por_categoria)
-    ? catNames.reduce((s,c)=>{
-        const e = REAL_DATA._estoque.por_categoria[c];
-        return s + ((e && e.valor_carga) || 0);
-      }, 0)
+  // Estoque Box do TOTAL: soma o valor (já recortado pelo filtro de hierarquia
+  // ativo, ver estoqueCatFor) das categorias exibidas.
+  const totalEstoqueBox = REAL_DATA._estoque
+    ? catNames.reduce((s,c)=> s + (estoqueCatFor(c) || 0), 0)
     : null;
   const totalNCli = positivacaoDisponivel?catNames.reduce((s,c)=>s+(nCliCatSel[c]||0),0):null;
   const prevTotalNCli = positivacaoDisponivel?catNames.reduce((s,c)=>s+(prevNCliCatSel[c]||0),0):null;
   const totalMetaCash = catNames.reduce((s,c)=>s+(metaCashCatSel[c]||0),0);
   const totalCash = totalRealCat-totalCustoCat;
+  const prevTotalCash = prev ? (prevTotalRealCat-prevTotalCustoCat) : null;
   const totalMetaMargemPct = totalMetaCat>0 ? totalMetaCash/totalMetaCat*100 : null;
   const totalRow = `<tr style="font-weight:700"><td class="tv">100,0%</td><td class="tv">100,0%</td><td class="tn">TOTAL GERAL</td>
     <td class="tv">${fF(totalMetaCat)}</td><td class="tv">${fF(totalRealCat)}</td><td class="tv">${atingBadge(totalMetaCat>0?totalRealCat/totalMetaCat*100:null)}</td>
     <td class="tv">${fF(totalTrend)}</td><td class="tv">${atingBadge(totalMetaCat>0?totalTrend/totalMetaCat*100:null)}</td>
     <td class="tv">${prev?fF(prevTotalRealCat):'<span style="color:var(--t3)">sem base</span>'}</td>
-    <td class="tv">${deltaPillSmall(totalRealCat,prev?prevTotalRealCat:null)}</td>
+    <td class="tv">${deltaPillSmall(totalTrend,prev?prevTotalRealCat:null)}</td>
     <td class="tv">${totalMetaCash>0?fF(totalMetaCash):'<span style="color:var(--t3)">—</span>'}</td>
     <td class="tv">${fF(totalCash)}</td>
     <td class="tv">${atingBadge(totalMetaCash>0?totalCash/totalMetaCash*100:null)}</td>
     <td class="tv">${fF(totalTrendCash)}</td>
     <td class="tv">${atingBadge(totalMetaCash>0?totalTrendCash/totalMetaCash*100:null)}</td>
+    <td class="tv">${prev?fF(prevTotalCash):'<span style="color:var(--t3)">sem base</span>'}</td>
+    <td class="tv">${deltaPillSmall(totalTrendCash,prevTotalCash)}</td>
     <td class="tv">${totalMetaMargemPct!=null?fPct(totalMetaMargemPct):'<span style="color:var(--t3)">—</span>'}</td>
     <td class="tv">${totalMargemGeral!=null?margemBadge(totalMargemGeral):'<span style="color:var(--t3)">—</span>'}</td>
     <td class="tv">${prevTotalMargemGeral!=null?fPct(prevTotalMargemGeral):'<span style="color:var(--t3)">sem base</span>'}</td>
@@ -3193,7 +3237,7 @@ function buildCategoriaTable(d, prev, meses, level, names){
     <td class="tv">${totalNCli!=null?deltaPillSmall(totalNCli,prevTotalNCli):'<span style="color:var(--t3)">—</span>'}</td>
     ${celulasBonificacao(bonifCatSel ? catNames.reduce((s,c)=>s+(bonifCatSel[c]||0),0) : null, totalRealCat)}
     <td class="tv">${totalEstoqueBox!=null?fF(totalEstoqueBox):'<span style="color:var(--t3)">—</span>'}</td></tr>`;
-  const html = `<thead><tr><th>% Peso Meta</th><th>% Peso Real</th><th>Categoria</th><th class="tv">Meta</th><th class="tv">Realizado</th><th class="tv">% Real</th><th class="tv">Tendência</th><th class="tv">% Tendência</th><th class="tv">Realizado ano ant.</th><th class="tv">Δ Fat. vs ano ant.</th><th class="tv">Meta Cash Margem</th><th class="tv">Real Cash Margem</th><th class="tv">% Real Cash Margem</th><th class="tv">Tendência Cash Margem</th><th class="tv">% Tendência Cash Margem</th><th class="tv">Meta Margem %</th><th class="tv">Margem %</th><th class="tv">Margem % ano ant.</th><th class="tv">Δ Margem vs ano ant.</th><th class="tv">Positivação</th><th class="tv">Positivação ano ant.</th><th class="tv">Δ Positivação</th><th class="tv">Bonificação</th><th class="tv">% Bonif. x Venda</th><th class="tv">Estoque Box (snapshot)</th></tr></thead><tbody>${catBodyRows}${totalRow}</tbody>`;
+  const html = `<thead><tr><th>% Peso Meta</th><th>% Peso Real</th><th>Categoria</th><th class="tv">Meta</th><th class="tv">Realizado</th><th class="tv">% Real</th><th class="tv">Tendência</th><th class="tv">% Tendência</th><th class="tv">Realizado ano ant.</th><th class="tv" title="Tendência de fechamento do período atual vs. o realizado (fechado) do mesmo período no ano anterior">Δ Tendência vs ano ant.</th><th class="tv">Meta Cash Margem</th><th class="tv">Real Cash Margem</th><th class="tv">% Real Cash Margem</th><th class="tv">Tendência Cash Margem</th><th class="tv">% Tendência Cash Margem</th><th class="tv">Cash Margem ano ant.</th><th class="tv" title="Tendência de fechamento da Cash Margem vs. o realizado (fechado) do mesmo período no ano anterior">Δ Cash Margem vs ano ant.</th><th class="tv">Meta Margem %</th><th class="tv">Margem %</th><th class="tv">Margem % ano ant.</th><th class="tv">Δ Margem vs ano ant.</th><th class="tv">Positivação</th><th class="tv">Positivação ano ant.</th><th class="tv">Δ Positivação</th><th class="tv">Bonificação</th><th class="tv">% Bonif. x Venda</th><th class="tv">Estoque Box (snapshot)</th></tr></thead><tbody>${catBodyRows}${totalRow}</tbody>`;
 
   return { html, totalMetaCat, totalRealCat, totalCustoCat, totalTrend, totalTrendCash, totalMetaCash, totalCash, totalMetaMargemPct, prevTotalRealCat, prevTotalCustoCat, totalMargemGeral, prevTotalMargemGeral, realCatMonthNote };
 }
@@ -3307,7 +3351,11 @@ function renderObjetivos(){
   const level = hierLevelActive();
   const names = level ? hierSelectedNames(level) : [];
   const built = buildCategoriaTable(d, prev, meses, level, names);
-  const { totalMetaCat, totalRealCat, totalTrend, totalTrendCash, totalMetaCash, totalCash, totalMetaMargemPct, prevTotalRealCat, totalMargemGeral, prevTotalMargemGeral, realCatMonthNote } = built;
+  const { totalMetaCat, totalRealCat, totalTrend, totalTrendCash, totalMetaCash, totalCash, totalMetaMargemPct, prevTotalRealCat, prevTotalCustoCat, totalMargemGeral, prevTotalMargemGeral, realCatMonthNote } = built;
+  // Cash Margem do ano anterior (R$) — mesma base do "Realizado ano ant." acima,
+  // só que líquida de custo. Serve pro comparativo Tendência de Cash Margem vs
+  // ano anterior no KPI abaixo (mesmo racional do Δ Fat./Realizado).
+  const prevTotalCash = prev ? (prevTotalRealCat - prevTotalCustoCat) : null;
 
   const totalMetaGeral = scope ? scope.metaGeral : totalMetaCat;
   const totalRealGeral = scope ? scope.realGeral : totalRealCat;
@@ -3332,14 +3380,18 @@ function renderObjetivos(){
           {lbl:"% Atingimento Geral", val: totalAtingGeral!=null?totalAtingGeral.toFixed(1)+"%":"—"},
         ] : [
           {lbl:"Meta Geral", val:fM(totalMetaGeral)},
-          {lbl:"Realizado", val:fM(totalRealGeral), cur:totalRealGeral, prevv: prev?prevTotalRealCat:null},
+          // Δ vs ano anterior compara a TENDÊNCIA de fechamento do período atual
+          // (não o realizado parcial) contra o realizado (fechado) do mesmo
+          // período no ano anterior — comparar realizado parcial x fechado
+          // penaliza artificialmente um mês em andamento.
+          {lbl:"Realizado", val:fM(totalRealGeral), cur:totalTrend, prevv: prev?prevTotalRealCat:null},
           {lbl:"% Realizado", val: totalAtingGeral!=null?totalAtingGeral.toFixed(1)+"%":"—"},
           {lbl:"Tendência (fechamento)", val:fM(totalTrend)},
           {lbl:"% Tendência", val: totalTrendAting!=null?totalTrendAting.toFixed(1)+"%":"—"},
           {lbl:"Margem", val:fPct(totalMargemGeral), cur:totalMargemGeral, prevv:prevTotalMargemGeral},
           {lbl:"Meta Margem %", val: totalMetaMargemPct!=null?fPct(totalMetaMargemPct):"—",
            note: totalMetaMargemPct!=null?"meta cash margem ÷ meta faturamento":"sem meta de margem cadastrada no ERP p/ este período"},
-          {lbl:"Tendência de Fechamento — Cash Margem", val:fM(totalTrendCash),
+          {lbl:"Tendência de Fechamento — Cash Margem", val:fM(totalTrendCash), cur:totalTrendCash, prevv:prevTotalCash,
            note: totalMetaCash>0?`${fPct(totalTrendCash/totalMetaCash*100)} da meta de Cash Margem (${fM(totalMetaCash)})`:"sem meta de Cash Margem cadastrada no ERP p/ este período"},
         ]).map((k,i)=>`<div class="kpi k${i%7}"><div class="kpi-stripe"></div><div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div>
         ${k.cur!=null?deltaPillSmall(k.cur,k.prevv):''}

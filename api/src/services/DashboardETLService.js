@@ -1037,6 +1037,12 @@ class DashboardETLService {
     for (const row of venda90Rows) venda90[`${row.codven}|${row.codproduto}`] = { r: num(row.r), q: num(row.qq) };
 
     const detalhe = [], vendedor_info = {}, por_vendedor = {}, por_supervisor = {}, por_gerente = {}, por_categoria = {}, por_fornecedor = {}, por_produto = {};
+    // Cruzamento hierarquia × categoria — sem isto o painel só tinha o total da
+    // empresa POR categoria e o total do gerente/supervisor/vendedor SEM quebra
+    // por categoria; nunca "quanto de CIGARROS esse gerente tem em estoque". Cada
+    // linha de `rows` já traz as duas dimensões juntas (mesma query do saldo),
+    // então isto reaproveita o loop abaixo em vez de nova consulta ao banco.
+    const por_gerente_categoria = {}, por_supervisor_categoria = {}, por_vendedor_categoria = {};
     const prodVend = {}; let comSaldo = 0;
     // Totais de movimento da carga. O gerente compara a linha "total da remessa"
     // da planilha; antes o painel só publicava o saldo, então não havia como
@@ -1063,6 +1069,17 @@ class DashboardETLService {
       if (r.gerente) acc(por_gerente, r.gerente);
       if (r.categoria) acc(por_categoria, r.categoria);
       acc(por_fornecedor, fornecedor, { codfor: r.codfor != null ? String(r.codfor) : null });
+      const accCat = (o, k) => {
+        if (!k || !r.categoria) return;
+        const grupo = o[k] || (o[k] = {});
+        if (!grupo[r.categoria]) grupo[r.categoria] = { saldo: 0, valor_carga: 0, venda90: 0, remessa: 0, vendido: 0, devolvido: 0 };
+        const g = grupo[r.categoria];
+        g.saldo += saldo; g.valor_carga += valor; g.venda90 += v90.r;
+        g.remessa += remessa; g.vendido += vendido; g.devolvido += devolvido;
+      };
+      accCat(por_gerente_categoria, r.gerente);
+      accCat(por_supervisor_categoria, r.supervisor);
+      accCat(por_vendedor_categoria, r.vendedor);
       const pk = String(r.codproduto);
       if (!por_produto[pk]) { por_produto[pk] = { saldo: 0, valor_carga: 0, venda90: 0, remessa: 0, descricao: r.descricao, categoria: r.categoria, grupo: r.grupo, fornecedor, n_vendedores: 0 }; prodVend[pk] = new Set(); }
       por_produto[pk].saldo += saldo; por_produto[pk].valor_carga += valor; por_produto[pk].venda90 += v90.r; por_produto[pk].remessa += remessa;
@@ -1070,10 +1087,13 @@ class DashboardETLService {
     }
     const rnd = o => { for (const k in o) { for (const c of ['saldo', 'valor_carga', 'venda90', 'remessa', 'vendido', 'devolvido']) if (o[k][c] != null) o[k][c] = round2(o[k][c]); } };
     rnd(por_vendedor); rnd(por_supervisor); rnd(por_gerente); rnd(por_categoria); rnd(por_fornecedor);
+    const rndCat = o => { for (const k in o) rnd(o[k]); };
+    rndCat(por_gerente_categoria); rndCat(por_supervisor_categoria); rndCat(por_vendedor_categoria);
     for (const k in por_produto) { por_produto[k].saldo = round2(por_produto[k].saldo); por_produto[k].valor_carga = round2(por_produto[k].valor_carga); por_produto[k].venda90 = round2(por_produto[k].venda90); por_produto[k].remessa = round2(por_produto[k].remessa); por_produto[k].n_vendedores = prodVend[k].size; }
     for (const k in totalMov) totalMov[k] = round2(totalMov[k]);
     return {
       linhas: rows.length, linhas_com_saldo: comSaldo, vendedor_info, por_vendedor, por_supervisor, por_gerente, por_categoria, por_fornecedor, por_produto, detalhe,
+      por_gerente_categoria, por_supervisor_categoria, por_vendedor_categoria,
       total_movimento: totalMov,
       dias_uteis_90: diasUteis90, janela_venda_90: { inicio: iniStr, fim: fimStr },
     };
