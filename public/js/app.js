@@ -1853,8 +1853,11 @@ function resetFiltros(){
 }
 
 // ── INIT ──────────────────────────────────────────────────────
-function init(){
-  const selPer = document.getElementById("fPeriodo");
+// Período e mês de abertura. Roda no boot ANTES do recorte do escopo: sem isso o
+// boot pedia /recorte com ST.meses vazio (= semestre inteiro, consulta pesada) e,
+// logo depois, init() escolhia o mês corrente e disparava OUTRA consulta — a tela
+// "Aplicando o seu escopo de acesso…" esperava uma consulta que era descartada.
+function aplicarPeriodoEMesPadrao(){
   // Garante que o período aberto existe no cubo (o padrão é o do mês corrente).
   if (!REAL_DATA[ST.per]) ST.per = periodoInicial();
   // Abre no mês corrente; se ele ainda não tem venda, no mês mais recente que tem.
@@ -1870,6 +1873,10 @@ function init(){
     if (padrao != null) ST.meses = [`${anoPer}-${String(padrao).padStart(2,'0')}`];
   }
   sincronizarMes();
+}
+function init(){
+  const selPer = document.getElementById("fPeriodo");
+  aplicarPeriodoEMesPadrao();
   selPer.innerHTML = PERIOD_ORDER.filter(k=>REAL_DATA[k]).map(k=>`<option value="${k}">${REAL_DATA[k].label}</option>`).join("");
   selPer.value = ST.per;
   selPer.onchange = () => { ST.per = selPer.value; resetFiltros(); };
@@ -1884,6 +1891,9 @@ function showMod(id, el){
   document.querySelectorAll(".nav-item").forEach(n=>n.classList.remove("on"));
   el.classList.add("on");
   document.getElementById("topSection").textContent = el.querySelector(".nav-txt").textContent;
+  if (id === 'm-mix' || id === 'm-planos') {
+    if (typeof ensureMixCascata === 'function') ensureMixCascata(ST.per);
+  }
 }
 
 // Re-renderiza as LISTAS DE OPÇÕES dos filtros e o painel de diagnóstico.
@@ -4470,6 +4480,7 @@ function buildCrossSellOportunidades(perfil, co, cat, topProdutosCat){
   return { prop1, prop2, catCorrelata };
 }
 function renderPlanos(){
+  if (typeof ensureMixCascata === 'function') ensureMixCascata(ST.per);
   renderPlanoMesVigente();
   const d = curPeriod();
   const prevKey = PREV_OF[ST.per];
@@ -4915,7 +4926,37 @@ function tblRank(rows,nameKey,prevFn,prevMarginFn){
 }
 
 // ── 5. MIX & POSITIVAÇÃO ──────────────────────────────────────
+const _mixCascataCarregando = {};
+function ensureMixCascata(periodo){
+  if (!periodo || !window.REAL_DATA || !window.REAL_DATA[periodo]) return;
+  const d = window.REAL_DATA[periodo];
+  if (d.mix_cascata_detalhe && Object.keys(d.mix_cascata_detalhe).length > 0) return;
+  if (_mixCascataCarregando[periodo]) return;
+  _mixCascataCarregando[periodo] = true;
+
+  fetch(`${API_BASE_URL}/mix-cascata?periodo=${encodeURIComponent(periodo)}`)
+    .then(r => {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(data => {
+      _mixCascataCarregando[periodo] = false;
+      if (window.REAL_DATA && window.REAL_DATA[periodo]) {
+        window.REAL_DATA[periodo].mix_cascata_detalhe = data || {};
+        const activeMod = document.querySelector('.mod.on');
+        const activeId = activeMod ? activeMod.id : '';
+        if (activeId === 'm-mix') renderMix();
+        if (activeId === 'm-planos') renderPlanos();
+      }
+    })
+    .catch(err => {
+      _mixCascataCarregando[periodo] = false;
+      console.warn('[mix-cascata] falha ao carregar sob demanda:', err.message);
+    });
+}
+
 function renderMix(){
+  ensureMixCascata(ST.per);
   const d = curPeriod();
   const prevKey = PREV_OF[ST.per];
   const prev = prevPeriod();
@@ -4935,7 +4976,13 @@ function renderMix(){
     }).join("")}</tbody>`;
 
   const tMixCascataEl = document.getElementById("tMixCascata");
-  if (tMixCascataEl) tMixCascataEl.innerHTML = `<thead><tr><th>Supervisor / Vendedor / Cliente / Mês / Categoria / Produto</th><th class="tv">Receita</th></tr></thead><tbody>${renderMixCascata(d)}</tbody>`;
+  if (tMixCascataEl) {
+    if (_mixCascataCarregando[ST.per]) {
+      tMixCascataEl.innerHTML = `<tbody><tr><td colspan="2" class="tc" style="padding:20px;color:var(--t3);font-size:13px">⏳ Carregando detalhe do Mix em Cascata sob demanda...</td></tr></tbody>`;
+    } else {
+      tMixCascataEl.innerHTML = `<thead><tr><th>Supervisor / Vendedor / Cliente / Mês / Categoria / Produto</th><th class="tv">Receita</th></tr></thead><tbody>${renderMixCascata(d)}</tbody>`;
+    }
+  }
 }
 // ── Mix em Cascata: Supervisor → Vendedor → Cliente → Mês → Categoria →
 // Produtos. Candidatos = os mesmos clientes já no Top 50 de receita de CADA
@@ -6526,10 +6573,9 @@ async function loadAndInit(){
 
   // Carteira de clientes do usuário (login novo ou sessão restaurada sem ela).
   // Dezenas de requisições → mostra o progresso no overlay.
-  if (!(authSession && Array.isArray(authSession.clientes) && authSession.clientes.length)){
-    if (txt) txt.textContent = 'Carregando carteira de clientes…';
-    await ensureCarteira();
-  }
+  // Roda em PARALELO com /full e o recorte: a trava de acesso não depende dela
+  // (usa gerente/supervisor da sessão), só o filtro Cliente — aguardada antes do init().
+  const carteiraPronta = ensureCarteira();
   // O ETL do backend leva ~6-7 min para montar o cache no boot (ver
   // DashboardCacheManager: INTERVALO_MS/comentário). O orçamento de retry
   // precisa ultrapassar esse tempo, senão o front desiste antes do cache ficar
@@ -6568,6 +6614,8 @@ async function loadAndInit(){
 
       // Espera o recorte do escopo do usuário ANTES de renderizar: sem ele as abas
       // cairiam no cubo da empresa por alguns segundos.
+      // Mesmo mês que init() vai abrir → a consulta do boot é a que a tela usa.
+      aplicarPeriodoEMesPadrao();
       if (activeFilterCount() > 0){
         if (txt) txt.textContent = 'Aplicando o seu escopo de acesso…';
         await ensureCliScope();
@@ -6595,6 +6643,7 @@ async function loadAndInit(){
       return;
     }
   }
+  await carteiraPronta;
   if (overlay) overlay.style.display = 'none';
   const btn = document.getElementById('themeTog'); if (btn) btn.textContent = (currentTheme()==='dark' ? '☀️' : '🌙');
   applyChartTheme();
@@ -6634,6 +6683,13 @@ async function vigiarEtl(){
       if (!r.ok) continue;
       const data = await r.json();
       if (!data || typeof data !== 'object') continue;
+      for (const k of Object.keys(data)) {
+        if (!k.startsWith('_') && window.REAL_DATA && window.REAL_DATA[k] && window.REAL_DATA[k].mix_cascata_detalhe && Object.keys(window.REAL_DATA[k].mix_cascata_detalhe).length > 0) {
+          if (!data[k].mix_cascata_detalhe || Object.keys(data[k].mix_cascata_detalhe).length === 0) {
+            data[k].mix_cascata_detalhe = window.REAL_DATA[k].mix_cascata_detalhe;
+          }
+        }
+      }
       window.REAL_DATA = data;
       limparCacheAno();
       DIAG.etl = data._etl || st;

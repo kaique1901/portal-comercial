@@ -27,6 +27,11 @@ services:
       DB_USER: ${DB_USER:?defina DB_USER nas variaveis de ambiente do stack}
       DB_PASSWORD: ${DB_PASSWORD:?defina DB_PASSWORD nas variaveis de ambiente do stack}
       DB_NAME: ${DB_NAME:?defina DB_NAME nas variaveis de ambiente do stack}
+    # Snapshots do ETL e escopos pré-calculados do /recorte. Sem volume, todo
+    # redeploy recriava o container com a pasta vazia: o painel voltava a pagar a
+    # carga fria (~minutos por login) até o 1º ciclo do ETL terminar.
+    volumes:
+      - cifal_cache_etl:/usr/src/app/.cache-etl
     networks:
       - cifal_network
 
@@ -46,6 +51,9 @@ services:
       - api
     networks:
       - cifal_network
+
+volumes:
+  cifal_cache_etl:
 
 networks:
   cifal_network:

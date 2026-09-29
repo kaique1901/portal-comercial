@@ -1,4 +1,4 @@
-﻿const express = require('express');
+const express = require('express');
 const router = express.Router();
 const DashboardController = require('../controllers/DashboardController');
 
@@ -12,5 +12,6 @@ router.get('/hierarquia', DashboardController.getHierarquia.bind(DashboardContro
 router.get('/clientes', DashboardController.getClientes.bind(DashboardController));
 router.get('/recorte', DashboardController.getRecorte.bind(DashboardController));
 router.get('/dow-cascata', DashboardController.getDowCascata.bind(DashboardController));
+router.get('/mix-cascata', DashboardController.getMixCascata.bind(DashboardController));
 
 module.exports = router;

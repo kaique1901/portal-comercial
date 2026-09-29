@@ -1555,12 +1555,67 @@ class DashboardETLService {
     } catch (e) { return null; }        // não existe / corrompido: remonta
   }
 
+  _arquivoSnapshotExtras() { return path.join(this._dirSnapshots(), 'extras.json'); }
+
+  async _gravarSnapshotExtras(extras) {
+    try {
+      await fsp.mkdir(this._dirSnapshots(), { recursive: true });
+      await fsp.writeFile(this._arquivoSnapshotExtras(),
+        JSON.stringify({ gravadoEm: new Date().toISOString(), dados: extras }));
+    } catch (e) { console.warn('[ETL] snapshot extras não gravado:', e.message); }
+  }
+
+  async _lerSnapshotExtras() {
+    try {
+      const txt = await fsp.readFile(this._arquivoSnapshotExtras(), 'utf8');
+      const snap = JSON.parse(txt);
+      return snap && snap.dados ? snap.dados : null;
+    } catch (e) { return null; }
+  }
+
   async _gravarSnapshot(key, dados) {
     try {
       await fsp.mkdir(this._dirSnapshots(), { recursive: true });
       await fsp.writeFile(this._arquivoSnapshot(key),
         JSON.stringify({ gravadoEm: new Date().toISOString(), dados }));
     } catch (e) { console.warn(`[ETL] snapshot de ${key} não gravado:`, e.message); }
+  }
+
+  async carregarSnapshotsIniciais() {
+    const resultado = {};
+    const dir = this._dirSnapshots();
+    try {
+      await fsp.mkdir(dir, { recursive: true });
+      const arquivos = await fsp.readdir(dir);
+      for (const arq of arquivos) {
+        if (arq.startsWith('periodo-') && arq.endsWith('.json')) {
+          const key = arq.replace(/^periodo-/, '').replace(/\.json$/, '');
+          const snap = await this._lerSnapshot(key, Infinity);
+          if (snap && snap.dados) {
+            resultado[key] = snap.dados;
+            console.log(`[ETL Cache Inicial] Período ${key} carregado do disco (${snap.gravadoEm})`);
+          }
+        }
+      }
+      const extras = await this._lerSnapshotExtras();
+      if (extras) {
+        Object.assign(resultado, extras);
+        console.log(`[ETL Cache Inicial] Extras (_inadimplencia, _estoque, etc.) carregados do disco`);
+      }
+    } catch (e) {
+      console.warn('[ETL Cache Inicial] Erro ao carregar snapshots do disco:', e.message);
+    }
+
+    if (!resultado._hierarquia) {
+      try {
+        console.log('[ETL Cache Inicial] Carregando hierarquia inicial direto do banco...');
+        resultado._hierarquia = await this._hierarquiaReal();
+      } catch (e) {
+        console.warn('[ETL Cache Inicial] Não foi possível carregar hierarquia inicial:', e.message);
+      }
+    }
+
+    return resultado;
   }
 
   async run(onParcial, cachePrevio) {
@@ -1618,7 +1673,9 @@ class DashboardETLService {
           continue;
         }
         // 2) snapshot em disco local (sobrevive a restart da API)
-        const snap = await this._lerSnapshot(periodo.key, REVALIDAR_MS);
+        // Períodos fechados são históricos: nunca expiram no disco a menos de ETL_FORCAR_TUDO=1
+        const maxIdade = fechado ? Infinity : REVALIDAR_MS;
+        const snap = await this._lerSnapshot(periodo.key, maxIdade);
         if (snap) {
           resultado[periodo.key] = snap.dados;
           reaproveitados++;
@@ -1629,7 +1686,7 @@ class DashboardETLService {
       }
 
       resultado[periodo.key] = await cronometrar(`período ${periodo.key}`, () => this._buildPeriodo(periodo));
-      if (fechado) await this._gravarSnapshot(periodo.key, resultado[periodo.key]);
+      await this._gravarSnapshot(periodo.key, resultado[periodo.key]);
       publicar(); // já dá pra abrir o painel neste período
     }
     if (reaproveitados) {
@@ -1655,6 +1712,16 @@ class DashboardETLService {
     // a segunda chance; se deu certo, apenas atualiza (o cadastro pode ter mudado
     // durante os ~25 min do ciclo).
     try { resultado._hierarquia = await cronometrar('hierarquia (refresh)', () => this._hierarquiaReal()); publicar(); } catch (e) {}
+
+    // Grava snapshot dos extras para carregamento instantâneo no próximo boot
+    await this._gravarSnapshotExtras({
+      _inadimplencia: resultado._inadimplencia,
+      _clientesSemCompra60: resultado._clientesSemCompra60,
+      _estoque: resultado._estoque,
+      _abcd90: resultado._abcd90,
+      _dowCascata: resultado._dowCascata,
+      _hierarquia: resultado._hierarquia
+    });
 
     const total = Object.values(tempos).reduce((a, b) => a + b, 0);
     const ranking = Object.entries(tempos).sort((a, b) => b[1] - a[1])

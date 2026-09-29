@@ -1,3 +1,5 @@
+const path = require('path');
+const fsp = require('fs').promises;
 const db = require('../config/db');
 const ETL = require('./DashboardETLService');
 
@@ -14,19 +16,41 @@ const num = v => parseFloat(v) || 0;
 const round2 = v => Math.round(v * 100) / 100;
 const margem = (r, c) => (r > 0 ? round2((1 - c / r) * 100) : 0);
 
-const TTL_MS = 5 * 60 * 1000;
-const MAX_ENTRIES = 300;
+// O recorte frio custa de ~15s a >3 min (medido: 198s com o ETL rodando no banco),
+// e é ele que segura a tela "Aplicando o seu escopo de acesso…" no boot. Com TTL de
+// 5 min quase todo login caía no frio. Agora a entrada vale o mesmo que o cubo
+// (ciclo do ETL, 6h por padrão) e o escopo de abertura de cada gerente/supervisor
+// é pré-calculado ao fim de cada ciclo (ver prewarm) e gravado em disco, para
+// sobreviver a restart da API.
+const TTL_MS = Math.max(1, parseInt(process.env.RECORTE_TTL_MIN, 10) || parseInt(process.env.ETL_INTERVALO_MIN, 10) || 360) * 60 * 1000;
+// Escopos pré-aquecidos valem até o PRÓXIMO prewarm substituí-los. O próximo ciclo
+// é agendado 6h após o FIM do anterior (+ duração do ciclo e do prewarm), então com
+// TTL de 6h eles expirariam antes de serem renovados e o login voltaria ao frio.
+// 2× o TTL cobre a folga; se o ETL falhar por muito tempo, eles acabam expirando.
+const TTL_PREWARM_MS = TTL_MS * 2;
+const MAX_ENTRIES = 400;
+const PREWARM_KEYS = new Set();
 const cache = new Map();
 const cacheGet = key => {
   const hit = cache.get(key);
   if (!hit) return null;
-  if (Date.now() - hit.em > TTL_MS) { cache.delete(key); return null; }
+  const ttl = PREWARM_KEYS.has(key) ? TTL_PREWARM_MS : TTL_MS;
+  if (Date.now() - hit.em > ttl) { cache.delete(key); return null; }
   return hit.dados;
 };
-const cacheSet = (key, dados) => {
-  if (cache.size >= MAX_ENTRIES) cache.delete(cache.keys().next().value);
-  cache.set(key, { em: Date.now(), dados });
+const cacheSet = (key, dados, em = Date.now()) => {
+  cache.delete(key);   // reinsere no fim: a expulsão por tamanho tira a mais antiga
+  if (cache.size >= MAX_ENTRIES) {
+    // Nunca expulsa um escopo de abertura por causa de consultas avulsas.
+    for (const k of cache.keys()) { if (!PREWARM_KEYS.has(k)) { cache.delete(k); break; } }
+  }
+  cache.set(key, { em, dados });
 };
+// Consultas em voo por chave: boot + re-render + vigia do ETL pedindo o MESMO
+// recorte ao mesmo tempo viravam N varreduras idênticas no banco.
+const emVoo = new Map();
+
+const ARQ_PREWARM = path.join(__dirname, '..', '..', '.cache-etl', 'recorte-prewarm.json');
 
 // Onde cada filtro é aplicado importa MUITO para o tempo de resposta:
 //  • "interno": vai no WHERE do subselect de Pedidos/ItensPedido, antes dos joins de
@@ -108,7 +132,13 @@ class DashboardRecorteService {
       .sort().join('&');
     const hit = cacheGet(key);
     if (hit) return hit;
+    if (emVoo.has(key)) return emVoo.get(key);
+    const p = this._consultar(periodo, ativos, key).finally(() => emVoo.delete(key));
+    emVoo.set(key, p);
+    return p;
+  }
 
+  async _consultar(periodo, ativos, key) {
     // $1/$2 são as datas do BASE_CTE; os filtros seguem a partir de $3.
     // Com `anomes`, o intervalo vem da própria seleção (pode cruzar anos) em vez
     // das datas do semestre.
@@ -281,7 +311,7 @@ class DashboardRecorteService {
     const linha = row => { const rr = num(row.r), cc = num(row.c); return { r: round2(rr), c: round2(cc), q: round2(num(row.qq)), m: margem(rr, cc), cash_margin: round2(rr - cc) }; };
 
     const dados = {
-      periodo: periodoKey,
+      periodo: periodo.key,
       filtros: ativos.reduce((o, a) => { o[a.key] = a.vals; return o; }, {}),
       r: round2(r), c: round2(c), q: round2(num(t.qq)), p: round2(num(t.p)),
       m: margem(r, c), cash_margem: round2(r - c),
@@ -433,6 +463,104 @@ class DashboardRecorteService {
 
     cacheSet(key, dados);
     return dados;
+  }
+
+  // ── PRÉ-AQUECIMENTO ───────────────────────────────────────────────────────
+  // Todo gerente/supervisor logado abre o painel com o MESMO recorte: ele próprio
+  // no mês corrente (+ o mesmo mês do ano anterior, para os deltas). São ~60
+  // pessoas, então dá para deixar tudo pronto antes de alguém logar. Chamado ao fim
+  // de cada ciclo do ETL — nunca durante, para não competir com ele no banco — e
+  // em série, uma consulta por vez.
+  //
+  // Os parâmetros espelham o boot do front (aplicarPeriodoEMesPadrao/prevScopeKey
+  // em public/js/app.js); se aquela escolha mudar, mude aqui também, senão o
+  // pré-aquecimento vira consulta que ninguém usa.
+  _alvosDeAbertura(cubo) {
+    const hoje = new Date();
+    const atual = `${hoje.getFullYear()}_${hoje.getMonth() < 6 ? 1 : 2}`;
+    const ordem = (ETL.PERIODOS || []).map(p => p.key).sort().reverse();
+    const per = cubo[atual] ? atual : ordem.find(k => cubo[k]);
+    if (!per) return [];
+    const mesesPer = Object.keys((cubo[per] && cubo[per].por_mes) || {}).map(Number);
+    if (!mesesPer.length) return [];
+    const hojeMes = hoje.getMonth() + 1;
+    const mes = mesesPer.includes(hojeMes) ? hojeMes : Math.max(...mesesPer);
+    const [ano, sem] = per.split('_').map(Number);
+    const mm = String(mes).padStart(2, '0');
+    const alvos = [{ periodo: per, anomes: `${ano}-${mm}` }];
+    const prev = `${ano - 1}_${sem}`;
+    if ((ETL.PERIODOS || []).some(p => p.key === prev)) alvos.push({ periodo: prev, anomes: `${ano - 1}-${mm}` });
+    return alvos;
+  }
+
+  async prewarm(cubo) {
+    const hier = cubo && cubo._hierarquia;
+    if (!hier || !Array.isArray(hier.gerentes)) return;
+    const ger = new Set(), sup = new Set();
+    for (const g of hier.gerentes) {
+      if (g.nomegerente) ger.add(g.nomegerente);
+      for (const s of g.supervisores || []) if (s.nomesupervisor) sup.add(s.nomesupervisor);
+    }
+    const alvos = this._alvosDeAbertura(cubo);
+    const tarefas = [];
+    for (const a of alvos) {
+      for (const n of ger) tarefas.push({ periodo: a.periodo, filtros: { ger: [n], anomes: [a.anomes] } });
+      for (const n of sup) tarefas.push({ periodo: a.periodo, filtros: { sup: [n], anomes: [a.anomes] } });
+    }
+    const inicio = Date.now();
+    let ok = 0, falhas = 0;
+    // Mês virou (ou hierarquia mudou): os alvos antigos deixam de ser protegidos.
+    PREWARM_KEYS.clear();
+    tarefas.forEach(t => PREWARM_KEYS.add(this._chave(t.periodo, t.filtros)));
+    // Ciclo novo = dado novo. NÃO apaga antes de consultar: quem logar durante o
+    // prewarm continua recebendo o escopo do ciclo anterior na hora; a entrada só é
+    // trocada quando a nova consulta termina.
+    for (const t of tarefas) {
+      try {
+        await this._consultarChave(t.periodo, t.filtros);
+        ok++;
+      } catch (e) { falhas++; console.warn('[recorte prewarm]', JSON.stringify(t.filtros), e.message); }
+    }
+    console.log(`[recorte prewarm] ${ok}/${tarefas.length} escopos prontos em ${((Date.now() - inicio) / 1000).toFixed(0)}s${falhas ? ` (${falhas} falha(s))` : ''}`);
+    await this._gravarPrewarm(tarefas.map(t => this._chave(t.periodo, t.filtros)));
+  }
+
+  // getScope ignorando o cache (mas compartilhando consulta em voo): recalcula e grava.
+  async _consultarChave(periodoKey, filtros) {
+    const key = this._chave(periodoKey, filtros);
+    const ativos = CAMPOS.filter(c => filtros[c.key]).map(c => ({ ...c, vals: filtros[c.key] }));
+    if (emVoo.has(key)) return emVoo.get(key);
+    const p = this._consultar(this._periodo(periodoKey), ativos, key).finally(() => emVoo.delete(key));
+    emVoo.set(key, p);
+    return p;
+  }
+
+  // Mesma chave de getScope (os alvos do prewarm só usam ger/sup + anomes).
+  _chave(periodoKey, filtros) {
+    return periodoKey + '|' + Object.keys(filtros)
+      .map(k => `${k}=${filtros[k].slice().sort().join('~')}`)
+      .sort().join('&');
+  }
+
+  async _gravarPrewarm(chaves) {
+    try {
+      const entradas = chaves.map(k => [k, cache.get(k)]).filter(([, v]) => v);
+      await fsp.mkdir(path.dirname(ARQ_PREWARM), { recursive: true });
+      await fsp.writeFile(ARQ_PREWARM, JSON.stringify(entradas));
+    } catch (e) { console.warn('[recorte prewarm] não gravado em disco:', e.message); }
+  }
+
+  // No boot da API: devolve ao cache o pré-aquecimento do último ciclo, se ainda
+  // dentro do TTL — login logo após um restart não paga o recorte frio.
+  async carregarPrewarm() {
+    try {
+      const entradas = JSON.parse(await fsp.readFile(ARQ_PREWARM, 'utf8'));
+      let n = 0;
+      for (const [k, v] of entradas) {
+        if (v && v.dados && Date.now() - v.em <= TTL_PREWARM_MS) { PREWARM_KEYS.add(k); cacheSet(k, v.dados, v.em); n++; }
+      }
+      if (n) console.log(`[recorte prewarm] ${n} escopo(s) restaurados do disco`);
+    } catch (e) { /* sem arquivo ainda */ }
   }
 
   // Vendas por Dia da Semana (cascata Dia → Categoria → Top 10 Produtos),

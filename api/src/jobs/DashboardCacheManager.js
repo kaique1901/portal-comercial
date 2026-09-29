@@ -1,4 +1,5 @@
 const DashboardETLService = require('../services/DashboardETLService');
+const DashboardRecorteService = require('../services/DashboardRecorteService');
 
 // ETL pesado (reproduz todo o schema do painel a partir do banco). Roda 1 ciclo
 // no boot e recicla a cada intervalo. Sem snapshot/Excel: TUDO vem do DB.
@@ -114,6 +115,10 @@ class DashboardCacheManager {
       this._falhas = 0;
       this._cache = { ...dados, _etl: this._montarEtlInfo(dados, true) };
       console.log(`[DashboardCache] atualizado (100% DB) em ${((Date.now() - inicio) / 1000).toFixed(1)}s`);
+      // Escopo de abertura de cada gerente/supervisor, já com o dado novo. Em
+      // background e só agora (ETL terminado) para não disputar o banco com ele.
+      DashboardRecorteService.prewarm(this._cache)
+        .catch(err => console.warn('[DashboardCache] prewarm do recorte falhou:', err.message));
       return true;
     } catch (err) {
       this._falhas++;
@@ -139,11 +144,31 @@ class DashboardCacheManager {
     }, espera);
   }
 
+  async _carregarCacheInicial() {
+    try {
+      const snapData = await DashboardETLService.carregarSnapshotsIniciais();
+      const temPeriodo = Object.keys(snapData).some(k => !k.startsWith('_'));
+      if (temPeriodo) {
+        this._atualizadoEm = new Date();
+        this._cache = { ...snapData, _etl: this._montarEtlInfo(snapData, false) };
+        console.log(`[DashboardCache] Cache inicial carregado com sucesso do disco (${Object.keys(snapData).filter(k => !k.startsWith('_')).length} períodos). API pronta imediatamente!`);
+      }
+    } catch (err) {
+      console.warn('[DashboardCache] Falha ao carregar cache inicial do disco:', err.message);
+    }
+  }
+
   async start() {
     this._parado = false;
     console.log(`[DashboardCache] intervalo entre varreduras: ${INTERVALO_MIN} min (a partir do fim de cada ciclo).`);
-    const ok = await this._executarCiclo(); // 1º ciclo no boot
-    this._agendarProximo(ok);               // demais ciclos, sempre com folga após o anterior
+    // 1) Carrega instantaneamente os snapshots locais do disco (boot em < 1s, fim do 503)
+    await this._carregarCacheInicial();
+    await DashboardRecorteService.carregarPrewarm();
+    // 2) Dispara o ciclo em background (não bloqueia requisições)
+    this._executarCiclo().then(ok => this._agendarProximo(ok)).catch(err => {
+      console.error('[DashboardCache] Erro não tratado no ciclo em background:', err);
+      this._agendarProximo(false);
+    });
   }
 
   stop() {

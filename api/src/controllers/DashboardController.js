@@ -1,4 +1,4 @@
-﻿const DashboardService = require('../services/DashboardService');
+const DashboardService = require('../services/DashboardService');
 const DashboardClienteService = require('../services/DashboardClienteService');
 const DashboardRecorteService = require('../services/DashboardRecorteService');
 const DashboardCacheManager = require('../jobs/DashboardCacheManager');
@@ -76,12 +76,35 @@ class DashboardController {
   }
 
   // Serve o JSON pré-processado pelo cron (instantâneo, sem query no request).
+  // Por padrão omite mix_cascata_detalhe (que sozinho tem >200MB) para o payload cair de 316MB para ~15MB.
   async getFull(req, res) {
     const cache = DashboardCacheManager.getCache();
     if (!cache) {
       return res.status(503).json({ error: 'Cache ainda não pronto, tente novamente em instantes.' });
     }
-    res.json(cache);
+    if (req.query.includeMix === 'true') {
+      return res.json(cache);
+    }
+    const lightweight = {};
+    for (const k of Object.keys(cache)) {
+      if (!k.startsWith('_') && cache[k] && typeof cache[k] === 'object') {
+        lightweight[k] = { ...cache[k], mix_cascata_detalhe: {} };
+      } else {
+        lightweight[k] = cache[k];
+      }
+    }
+    res.json(lightweight);
+  }
+
+  // Serve o detalhe de mix_cascata sob demanda para um período específico (~40MB em vez de 200MB de uma vez)
+  async getMixCascata(req, res) {
+    const periodo = req.query.periodo || '2026_1';
+    const cache = DashboardCacheManager.getCache();
+    if (!cache || !cache[periodo]) {
+      return res.status(404).json({ error: `Período ${periodo} não encontrado no cache` });
+    }
+    const mixDetalhe = (cache[periodo] && cache[periodo].mix_cascata_detalhe) || {};
+    res.json(mixDetalhe);
   }
 
   // Só o metadado de progresso do ETL (~400 bytes), sem o payload de 5 MB. O front
