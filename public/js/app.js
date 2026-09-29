@@ -3477,23 +3477,41 @@ function objFocusToggle(level, nome){
 // Fumo/Papel/Estratégico já são métricas únicas, não por categoria) — por
 // isso não há tabela aninhada como em Acompanhamento Objetivos, só o realce/
 // filtro da linha selecionada.
+// Cabeçalho + célula de UM indicador (KG Fumo/Papel/Estratégico): Meta,
+// Realizado, %Ating, Tendência, %Tendência x Meta, Realizado ano anterior,
+// Δ Tendência vs ano anterior — mesmas 4 últimas colunas pedidas pelo usuário
+// para cada linha, no mesmo racional já usado no card-resumo da aba
+// (cardTendencia) e em Acompanhamento Objetivos.
+function metaExtraColHead(nome){
+  return `<th class="tv">Meta ${nome}</th><th class="tv">Realiz. ${nome}</th><th class="tv">% Ating.</th><th class="tv">Tendência</th><th class="tv">% Tend. x Meta</th><th class="tv">${nome} ano ant.</th><th class="tv">Δ Tend. vs ano ant.</th>`;
+}
+function metaExtraColCell(meta, real, tend, prevReal, fmt, unidade){
+  const ating = meta>0 ? real/meta*100 : null;
+  const atingTend = meta>0 ? tend/meta*100 : null;
+  return `<td class="tv">${fmt(meta)}${unidade}</td><td class="tv">${fmt(real)}${unidade}</td><td class="tv">${atingBadge(ating)}</td>
+    <td class="tv">${fmt(tend)}${unidade}</td><td class="tv">${atingBadge(atingTend)}</td>
+    <td class="tv">${prevReal!=null?fmt(prevReal)+unidade:'<span style="color:var(--t3)">sem base</span>'}</td>
+    <td class="tv">${deltaPillSmall(tend,prevReal)}</td>`;
+}
 function metaExtraTable(names, fn, level, emptyMsg){
+  const headRow = `<th>Nome</th>${metaExtraColHead('KG Fumo')}${metaExtraColHead('Papel')}${metaExtraColHead('Estratégico')}`;
   if (!names.length && emptyMsg){
-    return `<thead><tr><th>Nome</th><th class="tv">Meta KG Fumo</th><th class="tv">Realiz. KG Fumo</th><th class="tv">% Ating. KG</th><th class="tv">Meta Papel (Qtd)</th><th class="tv">Realizado Papel (Qtd)</th><th class="tv">% Ating. Papel</th><th class="tv">Meta Estratégico</th><th class="tv">Realizado Estratégico</th><th class="tv">% Ating. Estrat.</th></tr></thead><tbody><tr><td colspan="10" style="text-align:center;color:var(--t3);padding:20px">${emptyMsg}</td></tr></tbody>`;
+    return `<thead><tr>${headRow}</tr></thead><tbody><tr><td colspan="22" style="text-align:center;color:var(--t3);padding:20px">${emptyMsg}</td></tr></tbody>`;
   }
-  return `<thead><tr><th>Nome</th><th class="tv">Meta KG Fumo</th><th class="tv">Realiz. KG Fumo</th><th class="tv">% Ating. KG</th><th class="tv">Meta Papel (Qtd)</th><th class="tv">Realizado Papel (Qtd)</th><th class="tv">% Ating. Papel</th><th class="tv">Meta Estratégico</th><th class="tv">Realizado Estratégico</th><th class="tv">% Ating. Estrat.</th></tr></thead><tbody>${
+  return `<thead><tr>${headRow}</tr></thead><tbody>${
     names.map(n=>{
       const v = fn(n);
-      const atingKg = v.metaKg>0 ? v.realKg/v.metaKg*100 : null;
-      const atingPapel = v.metaPapel>0 ? v.realPapel/v.metaPapel*100 : null;
-      const atingEst = v.metaEst>0 ? v.realEst/v.metaEst*100 : null;
       const focusKey = level==='gerente'?'ger':'sup';
       // Único item da lista (ex.: Gerente logado só vê a si mesmo) conta como
       // selecionado mesmo sem clique — renderMetasExtra já trata esse caso
       // como focado (focoGer/focoSup) pra abrir o nível abaixo automaticamente.
       const selected = level && (metaExtraFocus[focusKey]===n || names.length===1);
       const trAttrs = level ? ` class="obj-focus-row${selected?' obj-focus-sel':''}" style="cursor:pointer" onclick="metaExtraFocusToggle('${level}','${n.replace(/'/g,"\\'")}')"` : '';
-      return `<tr${trAttrs}><td class="tn">${n}</td><td class="tv">${fN(v.metaKg)} kg</td><td class="tv">${fN(v.realKg)} kg</td><td class="tv">${atingBadge(atingKg)}</td><td class="tv">${fN(v.metaPapel)}</td><td class="tv">${fN(v.realPapel)}</td><td class="tv">${atingBadge(atingPapel)}</td><td class="tv">${fF(v.metaEst)}</td><td class="tv">${fF(v.realEst)}</td><td class="tv">${atingBadge(atingEst)}</td></tr>`;
+      return `<tr${trAttrs}><td class="tn">${n}</td>
+        ${metaExtraColCell(v.metaKg, v.realKg, v.tendKg, v.prevRealKg, fN, ' kg')}
+        ${metaExtraColCell(v.metaPapel, v.realPapel, v.tendPapel, v.prevRealPapel, fN, '')}
+        ${metaExtraColCell(v.metaEst, v.realEst, v.tendEst, v.prevRealEst, fF, '')}
+      </tr>`;
     }).join("")}</tbody>`;
 }
 // efeito cascata Gerente→Supervisor→Vendedor desta aba (independente do
@@ -3523,6 +3541,29 @@ function realExtraFor(d, level, name, mesKey, realField){
   }
   const src = level==='gerente'?d.por_gerente:level==='supervisor'?d.por_supervisor:d.full_vendedores;
   return (src[name] && src[name][realField]) || 0;
+}
+// Dados de UMA linha (Gerente/Supervisor/Vendedor) das 3 tabelas de
+// metaExtraTable: Meta/Realizado (já existiam) + Tendência de fechamento e
+// Realizado do mesmo período no ano anterior (pedido do usuário). Tendência
+// só projeta com UM mês selecionado (mesmo racional de tendencia() usado no
+// card-resumo acima); com semestre inteiro/vários meses, tendência=realizado.
+// Realizado ano anterior fica null (não 0) quando não há semestre equivalente
+// no ano anterior (prevAvail=false) — 0 seria "positivou zero", diferente de
+// "sem dado pra comparar".
+function metaExtraLinha(d, prev, prevAvail, level, n, mesKey){
+  const monthActive = ST.mes!=null;
+  const metaKg = metaExtraFor(d,level,n,mesKey,'meta_kg'), realKg = realExtraFor(d,level,n,mesKey,'rkg');
+  const metaPapel = metaExtraFor(d,level,n,mesKey,'meta_papel'), realPapel = realExtraFor(d,level,n,mesKey,'rp');
+  const metaEst = metaExtraFor(d,level,n,mesKey,'meta_estrategico'), realEst = realExtraFor(d,level,n,mesKey,'rest');
+  return {
+    metaKg, realKg, metaPapel, realPapel, metaEst, realEst,
+    tendKg: monthActive ? tendencia(realKg, d, +ST.mes) : realKg,
+    tendPapel: monthActive ? tendencia(realPapel, d, +ST.mes) : realPapel,
+    tendEst: monthActive ? tendencia(realEst, d, +ST.mes) : realEst,
+    prevRealKg: prevAvail ? realExtraFor(prev,level,n,mesKey,'rkg') : null,
+    prevRealPapel: prevAvail ? realExtraFor(prev,level,n,mesKey,'rp') : null,
+    prevRealEst: prevAvail ? realExtraFor(prev,level,n,mesKey,'rest') : null,
+  };
 }
 // Soma Meta/Realizado de KG Fumo/Papel/Estratégico para o filtro ATIVO
 // (Vendedor > Supervisor > Gerente > empresa inteira), num período `d`
@@ -3595,7 +3636,8 @@ function renderMetasExtra(){
   // (mesmo semestre 1 ano antes — PREV_OF) — nunca o período imediatamente
   // anterior.
   const prev = prevPeriod();
-  const prevSoma = (prev && prev.meta) ? metaExtraSomar(prev, mesKey) : null;
+  const prevAvail = !!(prev && prev.meta);
+  const prevSoma = prevAvail ? metaExtraSomar(prev, mesKey) : null;
   const tendKg = monthActive ? tendencia(totalRealKg, d, +ST.mes) : totalRealKg;
   const tendPapel = monthActive ? tendencia(totalRealPapel, d, +ST.mes) : totalRealPapel;
   const tendEst = monthActive ? tendencia(totalRealEst, d, +ST.mes) : totalRealEst;
@@ -3629,11 +3671,7 @@ function renderMetasExtra(){
 
   const effGerMeta = effectiveGerentes(d);
   const gerRows = gerNames.filter(n=>!effGerMeta||effGerMeta.has(n)).sort((a,b)=>metaExtraFor(d,'gerente',b,mesKey,'meta_papel')-metaExtraFor(d,'gerente',a,mesKey,'meta_papel'));
-  document.getElementById('tMetaExtraGer').innerHTML = metaExtraTable(gerRows, n=>({
-    metaKg:metaExtraFor(d,'gerente',n,mesKey,'meta_kg'), realKg:realExtraFor(d,'gerente',n,mesKey,'rkg'),
-    metaPapel:metaExtraFor(d,'gerente',n,mesKey,'meta_papel'), realPapel:realExtraFor(d,'gerente',n,mesKey,'rp'),
-    metaEst:metaExtraFor(d,'gerente',n,mesKey,'meta_estrategico'), realEst:realExtraFor(d,'gerente',n,mesKey,'rest'),
-  }), 'gerente');
+  document.getElementById('tMetaExtraGer').innerHTML = metaExtraTable(gerRows, n=>metaExtraLinha(d, prev, prevAvail, 'gerente', n, mesKey), 'gerente');
 
   // Cascata "de verdade": Supervisor só aparece depois de clicar num Gerente;
   // Vendedor só aparece depois de clicar num Supervisor (ou num Gerente, caso
@@ -3650,11 +3688,7 @@ function renderMetasExtra(){
     ? supRowsAll.filter(n=>d.meta.por_supervisor[n].gerente===focoGer).sort((a,b)=>metaExtraFor(d,'supervisor',b,mesKey,'meta_papel')-metaExtraFor(d,'supervisor',a,mesKey,'meta_papel'))
     : [];
   document.getElementById('metaExtraSupSub').textContent = focoGer ? `Supervisores de ${focoGer}` : 'Clique num gerente acima para ver os supervisores dele';
-  document.getElementById('tMetaExtraSup').innerHTML = metaExtraTable(supRows, n=>({
-    metaKg:metaExtraFor(d,'supervisor',n,mesKey,'meta_kg'), realKg:realExtraFor(d,'supervisor',n,mesKey,'rkg'),
-    metaPapel:metaExtraFor(d,'supervisor',n,mesKey,'meta_papel'), realPapel:realExtraFor(d,'supervisor',n,mesKey,'rp'),
-    metaEst:metaExtraFor(d,'supervisor',n,mesKey,'meta_estrategico'), realEst:realExtraFor(d,'supervisor',n,mesKey,'rest'),
-  }), 'supervisor', 'Clique num gerente acima para ver os supervisores dele.');
+  document.getElementById('tMetaExtraSup').innerHTML = metaExtraTable(supRows, n=>metaExtraLinha(d, prev, prevAvail, 'supervisor', n, mesKey), 'supervisor', 'Clique num gerente acima para ver os supervisores dele.');
 
   const focoSup = metaExtraFocus.sup || (supRows.length===1 ? supRows[0] : null);
   let vendRows = [];
@@ -3670,11 +3704,7 @@ function renderMetasExtra(){
     : focoGer
       ? `${vendRows.length} vendedores de ${focoGer}`
       : 'Clique num supervisor (ou gerente) acima para ver os vendedores';
-  document.getElementById('tMetaExtraVend').innerHTML = metaExtraTable(vendRows, n=>({
-    metaKg:metaExtraFor(d,'vendedor',n,mesKey,'meta_kg'), realKg:realExtraFor(d,'vendedor',n,mesKey,'rkg'),
-    metaPapel:metaExtraFor(d,'vendedor',n,mesKey,'meta_papel'), realPapel:realExtraFor(d,'vendedor',n,mesKey,'rp'),
-    metaEst:metaExtraFor(d,'vendedor',n,mesKey,'meta_estrategico'), realEst:realExtraFor(d,'vendedor',n,mesKey,'rest'),
-  }), null, 'Clique num supervisor (ou gerente) acima para ver os vendedores.');
+  document.getElementById('tMetaExtraVend').innerHTML = metaExtraTable(vendRows, n=>metaExtraLinha(d, prev, prevAvail, 'vendedor', n, mesKey), null, 'Clique num supervisor (ou gerente) acima para ver os vendedores.');
 }
 
 // Agrega por_dia_categoria/por_dia (diário, ano completo do período) por mês —
