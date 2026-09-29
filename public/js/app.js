@@ -4721,6 +4721,31 @@ function vendedoresParaPlano(d){
     return true;
   });
 }
+// Vendedores DESLIGADOS que, não fosse o corte de vendedoresAtivosSet(),
+// estariam no mesmo escopo de vendedoresParaPlano (mesmos filtros de
+// Gerente/Supervisor/Vendedor/ST.vend) — usado só para AVISAR quantos e quem
+// foi excluído da análise, em vez de a lista encolher caladamente. Sem fonte
+// de status ativo (_hierarquia ainda não carregou), devolve [] — nesse caso
+// vendedoresParaPlano também não filtra ninguém, então não há o que avisar.
+function vendedoresDesligadosNoEscopo(d){
+  const todos = vendedoresReais(d);
+  const ativos = vendedoresAtivosSet();
+  if (!ativos.size) return [];
+  const effGer = effectiveGerentes(d);
+  const effSup = effectiveSupervisores(d);
+  const effGerN = effGer ? new Set([...effGer].map(normNome)) : null;
+  const effSupN = effSup ? new Set([...effSup].map(normNome)) : null;
+  return todos.filter(v => {
+    if (ativos.has(normNome(v.nome))) return false;
+    if (ST.vend.length && !ST.vend.includes(v.nome)) return false;
+    if (effSupN && !effSupN.has(normNome(v.supervisor))) return false;
+    if (effGerN){
+      const ger = gerenteDoSupervisor(d, v.supervisor);
+      if (!ger || !effGerN.has(normNome(ger))) return false;
+    }
+    return true;
+  });
+}
 function renderPlanosVendedores(){
   const ano = anoVigente();
   const d = buildYearPeriod(ano);
@@ -4757,7 +4782,17 @@ function renderPlanosVendedores(){
     ? `Recortado por ${eff2rotulo(level)}: ${labelJoin(hierSelectedNames(level))} — ${escopo.length} vendedor(es) no escopo. ${mesesTxt}.`
     : `${ano} — ${escopo.length} vendedor(es) no escopo. ${mesesTxt}. Média de referência da empresa: ${fF(mediaEmpresa)}/mês.`;
 
-  document.getElementById('planosVend-kpis').innerHTML = [
+  // Desligados são excluídos desta análise (não há plano de ação pra quem não
+  // está mais na empresa, e eles puxariam o "abaixo da meta" pra baixo sem
+  // motivo real de gestão) — mas a exclusão precisa ficar visível, não some
+  // caladamente: sem isto alguém compara a contagem aqui com outra tela sem
+  // o mesmo corte e acha que o painel está errado.
+  const desligados = vendedoresDesligadosNoEscopo(d);
+  const avisoDesligados = desligados.length
+    ? `<div class="alert" style="grid-column:1/-1">ℹ ${desligados.length} vendedor(es) desligado(s) da empresa foram excluídos desta análise (venderam no período mas não constam mais como ativos no cadastro): ${desligados.map(v=>escAttr(v.nome)).join(', ')}.</div>`
+    : '';
+
+  document.getElementById('planosVend-kpis').innerHTML = avisoDesligados + [
     { lbl:"Vendedores no escopo", val: fN(escopo.length) },
     { lbl:"Abaixo de R$150 mil/mês", val: fN(grupo1.length), cls:"k2" },
     { lbl:"Entre R$150 mil e R$200 mil/mês", val: fN(grupo2.length), cls:"k1" },
