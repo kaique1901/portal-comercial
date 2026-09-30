@@ -30,7 +30,7 @@ RUN mv /usr/share/nginx/html/nginx.conf /etc/nginx/conf.d/default.conf
 # velho de forma silenciosa.
 RUN set -e; \
     cd /usr/share/nginx/html; \
-    for f in js/app.js js/chart.umd.min.js css/style.css; do \
+    for f in js/app.js js/chart.umd.min.js js/apresentacao.js js/pptxgen.bundle.js css/style.css; do \
       v=$(md5sum "$f" | cut -c1-10); \
       sed -i "s|\"$f\"|\"$f?v=$v\"|g" index.html; \
     done; \

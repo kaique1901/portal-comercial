@@ -1894,6 +1894,9 @@ function showMod(id, el){
   if (id === 'm-mix' || id === 'm-planos') {
     if (typeof ensureMixCascata === 'function') ensureMixCascata(ST.per);
   }
+  // Apresentação Executiva (public/js/apresentacao.js): só monta a checklist
+  // ao abrir a aba — o deck em si só é montado no clique de "Gerar".
+  if (id === 'm-apex' && typeof apexRenderChecklist === 'function') apexRenderChecklist();
 }
 
 // Re-renderiza as LISTAS DE OPÇÕES dos filtros e o painel de diagnóstico.
@@ -2728,6 +2731,14 @@ function renderMargemCash(){
   document.getElementById("tMargemCli").innerHTML = tblMargemCli(cliListM.slice(0,50), d, prev, ST.mes);
   document.getElementById("tMargemProd").innerHTML = tblMargemProd(prodListM.slice(0,50), prev, d, ST.mes);
   document.getElementById("tMargemVend").innerHTML = tblMargemVend(vendRowsMargem, d, prev);
+
+  // Aditivo p/ Apresentação Executiva (public/js/apresentacao.js): expõe os
+  // números já calculados acima em vez de recalcular — nada aqui muda o que a
+  // função já escrevia no DOM.
+  return { effR, prevEffR: prevEff?prevEff.r:null, effM, trendM, prevM, metaMargemPct, atingMargem,
+    cash, prevCash, trendCash, metaValRent,
+    catRows: catRows.map(([nome,v])=>({ nome, r:v.r, c:v.c, m:v.m })),
+    topVendedoresCash: vendRowsCash.slice(0,5).map(v=>({ nome:v.nome, cash:v.cash_margin })) };
 }
 
 // ── 3B. META X REALIZADO ───────────────────────────────────────
@@ -3125,6 +3136,23 @@ function buildCategoriaTable(d, prev, meses, level, names){
     Object.assign(nCliCatSel, somaDistinta(d, meses));
     if (prev) Object.assign(prevNCliCatSel, somaDistinta(prev, meses));
   }
+  // Positivação do TOTAL GERAL: contagem de CodCliente DISTINTO no período,
+  // unindo os códigos de TODAS as categorias — não a soma da positivação de
+  // cada categoria (um cliente que compra em 2+ categorias no mesmo mês era
+  // contado 1x por categoria e inflava o total). Duas pessoas/lojas com o
+  // mesmo nome mas CodCliente diferente continuam contando como 2 — a união é
+  // por código, nunca por nome. null (não 0) quando o cubo carregado não tem
+  // os códigos (cache antigo) — não dá pra montar a união sem eles, e mostrar
+  // 0 seria "positivou zero", informação diferente de "sem dado pra somar".
+  const somaDistintaTotalGeral = (period, mesesSel) => {
+    if (!period.por_mes_categoria_clientes_cod) return null;
+    const set = new Set();
+    mesesSel.forEach(mes=>{
+      const mc = period.por_mes_categoria_clientes_cod[mes] || {};
+      Object.keys(mc).forEach(cat=>{ mc[cat].forEach(cod=>set.add(cod)); });
+    });
+    return set.size;
+  };
 
   // Par de células "Bonificação" + "% Bonif. x Venda". valor null = a etapa não
   // existe no cubo carregado (cache antigo) — aí sim mostra "—"; 0 é zero de
@@ -3210,7 +3238,25 @@ function buildCategoriaTable(d, prev, meses, level, names){
       ${celulasBonificacao(bonifCatSel ? (bonifCatSel[nome]||0) : null, r)}
       <td class="tv">${estoque!=null?fF(estoque):'<span style="color:var(--t3)">—</span>'}</td></tr>`;
   }
-  const catBodyRows = catNames.slice().sort((a,b)=>(metaCatSel[b]||0)-(metaCatSel[a]||0)).map(cat=>{
+  const catNamesSorted = catNames.slice().sort((a,b)=>(metaCatSel[b]||0)-(metaCatSel[a]||0));
+  // catRowsData: mesma iteração de catBodyRows abaixo, só que devolvendo dado
+  // cru (não HTML) — aditivo p/ Apresentação Executiva, que precisa dos
+  // números por categoria sem fazer parsing do HTML já montado.
+  const catRowsData = catNamesSorted.map(cat=>{
+    const agg = realCatSel[cat]||{r:0,c:0}; const pagg = prevRealCatSel[cat];
+    const trend = perMes.reduce((s,pm)=>s+tendencia((pm.catAgg[cat]&&pm.catAgg[cat].r)||0, d, pm.mes),0);
+    const trendC = perMes.reduce((s,pm)=>s+tendencia((pm.catAgg[cat]&&pm.catAgg[cat].c)||0, d, pm.mes),0);
+    const prevR = pagg?pagg.r:null, prevC = pagg?pagg.c:null;
+    return {
+      nome: cat, meta: metaCatSel[cat]||0, real: agg.r, trend, prevReal: prevR,
+      metaCash: metaCashCatSel[cat]||0, cash: agg.r-agg.c, trendCash: trend-trendC,
+      prevCash: (prevR!=null&&prevC!=null)?(prevR-prevC):null,
+      margem: agg.r>0?100*(1-agg.c/agg.r):null,
+      nCliCat: positivacaoDisponivel?(nCliCatSel[cat]||0):null, prevNCliCat: positivacaoDisponivel?(prevNCliCatSel[cat]||0):null,
+      estoque: estoqueCatFor(cat),
+    };
+  });
+  const catBodyRows = catNamesSorted.map(cat=>{
     const agg = realCatSel[cat]||{r:0,c:0}; const pagg = prevRealCatSel[cat];
     const trend = perMes.reduce((s,pm)=>s+tendencia((pm.catAgg[cat]&&pm.catAgg[cat].r)||0, d, pm.mes),0);
     const trendC = perMes.reduce((s,pm)=>s+tendencia((pm.catAgg[cat]&&pm.catAgg[cat].c)||0, d, pm.mes),0);
@@ -3221,8 +3267,8 @@ function buildCategoriaTable(d, prev, meses, level, names){
   const totalEstoqueBox = REAL_DATA._estoque
     ? catNames.reduce((s,c)=> s + (estoqueCatFor(c) || 0), 0)
     : null;
-  const totalNCli = positivacaoDisponivel?catNames.reduce((s,c)=>s+(nCliCatSel[c]||0),0):null;
-  const prevTotalNCli = positivacaoDisponivel?catNames.reduce((s,c)=>s+(prevNCliCatSel[c]||0),0):null;
+  const totalNCli = positivacaoDisponivel ? somaDistintaTotalGeral(d, meses) : null;
+  const prevTotalNCli = (positivacaoDisponivel && prev) ? somaDistintaTotalGeral(prev, meses) : null;
   const totalMetaCash = catNames.reduce((s,c)=>s+(metaCashCatSel[c]||0),0);
   const totalCash = totalRealCat-totalCustoCat;
   const prevTotalCash = prev ? (prevTotalRealCat-prevTotalCustoCat) : null;
@@ -3249,7 +3295,8 @@ function buildCategoriaTable(d, prev, meses, level, names){
     <td class="tv">${totalEstoqueBox!=null?fF(totalEstoqueBox):'<span style="color:var(--t3)">—</span>'}</td></tr>`;
   const html = `<thead><tr><th>% Peso Meta</th><th>% Peso Real</th><th>Categoria</th><th class="tv">Meta</th><th class="tv">Realizado</th><th class="tv">% Real</th><th class="tv">Tendência</th><th class="tv">% Tendência</th><th class="tv">Realizado ano ant.</th><th class="tv" title="Tendência de fechamento do período atual vs. o realizado (fechado) do mesmo período no ano anterior">Δ Tendência vs ano ant.</th><th class="tv">Meta Cash Margem</th><th class="tv">Real Cash Margem</th><th class="tv">% Real Cash Margem</th><th class="tv">Tendência Cash Margem</th><th class="tv">% Tendência Cash Margem</th><th class="tv">Cash Margem ano ant.</th><th class="tv" title="Tendência de fechamento da Cash Margem vs. o realizado (fechado) do mesmo período no ano anterior">Δ Cash Margem vs ano ant.</th><th class="tv">Meta Margem %</th><th class="tv">Margem %</th><th class="tv">Margem % ano ant.</th><th class="tv">Δ Margem vs ano ant.</th><th class="tv">Positivação</th><th class="tv">Positivação ano ant.</th><th class="tv">Δ Positivação</th><th class="tv">Bonificação</th><th class="tv">% Bonif. x Venda</th><th class="tv">Estoque Box (snapshot)</th></tr></thead><tbody>${catBodyRows}${totalRow}</tbody>`;
 
-  return { html, totalMetaCat, totalRealCat, totalCustoCat, totalTrend, totalTrendCash, totalMetaCash, totalCash, totalMetaMargemPct, prevTotalRealCat, prevTotalCustoCat, totalMargemGeral, prevTotalMargemGeral, realCatMonthNote };
+  return { html, totalMetaCat, totalRealCat, totalCustoCat, totalTrend, totalTrendCash, totalMetaCash, totalCash, totalMetaMargemPct, prevTotalRealCat, prevTotalCustoCat, totalMargemGeral, prevTotalMargemGeral, realCatMonthNote,
+    catRowsData, totalNCli, prevTotalNCli, totalEstoqueBox };
 }
 // Modo "Personalizado (datas exatas)": único caminho de comparação que NÃO
 // usa curPeriod()/prevPeriod() (que só existem por semestre) — soma direto o
@@ -3715,6 +3762,14 @@ function renderMetasExtra(){
       ? `${vendRows.length} vendedores de ${focoGer}`
       : 'Clique num supervisor (ou gerente) acima para ver os vendedores';
   document.getElementById('tMetaExtraVend').innerHTML = metaExtraTable(vendRows, n=>metaExtraLinha(d, prev, prevAvail, 'vendedor', n, mesKey), null, 'Clique num supervisor (ou gerente) acima para ver os vendedores.');
+
+  // Aditivo p/ Apresentação Executiva — expõe os totais já calculados acima.
+  return {
+    scopeLabel: scope?scope.label:null,
+    kg:  { meta:totalMetaKg, real:totalRealKg, tend:tendKg, prevReal:prevSoma?prevSoma.realKg:null, prevTend:prevTendKg },
+    papel:{ meta:totalMetaPapel, real:totalRealPapel, tend:tendPapel, prevReal:prevSoma?prevSoma.realPapel:null, prevTend:prevTendPapel },
+    estrategico:{ meta:totalMetaEst, real:totalRealEst, tend:tendEst, prevReal:prevSoma?prevSoma.realEst:null, prevTend:prevTendEst },
+  };
 }
 
 // Agrega por_dia_categoria/por_dia (diário, ano completo do período) por mês —
@@ -5018,6 +5073,17 @@ function renderMix(){
       tMixCascataEl.innerHTML = `<thead><tr><th>Supervisor / Vendedor / Cliente / Mês / Categoria / Produto</th><th class="tv">Receita</th></tr></thead><tbody>${renderMixCascata(d)}</tbody>`;
     }
   }
+
+  // Aditivo p/ Apresentação Executiva — mesma lista Top 25 já montada acima.
+  return {
+    scopeLabel: level ? `${level}: ${labelJoin(names)}` : null,
+    nCatTotal: d.n_cat,
+    clientes: rows.map(r=>({
+      nome: r.nome, receita: r.r, prevReceita: prevLookupList(prev,"top_clientes","nome",r.nome),
+      categorias: r.categorias, mesesAtivos: r.meses_ativos, nMeses,
+      positivacaoPct: Math.round(r.meses_ativos/nMeses*100),
+    })),
+  };
 }
 // ── Mix em Cascata: Supervisor → Vendedor → Cliente → Mês → Categoria →
 // Produtos. Candidatos = os mesmos clientes já no Top 50 de receita de CADA
