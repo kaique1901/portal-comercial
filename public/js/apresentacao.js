@@ -128,8 +128,17 @@ function apexSplitTable(table, opts){
 // Devolver `null` = aba pulada no deck (sem dado disponível agora).
 // ═══════════════════════════════════════════════════════════════════════
 
+// BUG CORRIGIDO: antes, com a aba "Acompanhamento Objetivos" no modo
+// "Personalizado (datas exatas)" (OBJ.modo==='datas'), este extractor sempre
+// devolvia null — a aba ficava marcada na checklist mas nunca entrava no
+// deck, sem nenhum aviso claro além de uma linha pequena de status. Agora
+// despacha pro extractor certo conforme o modo ativo; só volta null quando
+// REALMENTE não há dado (nenhum dos dois modos tem meses/datas selecionadas).
 function apexExtractObjetivos(){
-  if (typeof OBJ !== 'undefined' && OBJ.modo === 'datas') return null; // modo sem Meta/Tendência
+  if (typeof OBJ !== 'undefined' && OBJ.modo === 'datas') return apexExtractObjetivosDatas();
+  return apexExtractObjetivosMensal();
+}
+function apexExtractObjetivosMensal(){
   const d = curPeriod(), prev = prevPeriod();
   if (!d || !d.meta) return null;
   const meses = objMesesSelecionados();
@@ -176,6 +185,27 @@ function apexExtractObjetivos(){
   }
 
   return { tabKey:'obj', tabLabel:'Acompanhamento Objetivos', scopeLabel, kpis, tables, ranking, notas: built.realCatMonthNote?[built.realCatMonthNote]:[] };
+}
+// Modo "Personalizado (datas exatas)" — sem Meta/Tendência/Positivação/
+// Estoque Box (não existem com grão diário, mesma limitação já avisada na
+// própria aba). Só Receita/Margem/Cash Margem vs. mesmo intervalo do ano
+// anterior, geral e por categoria.
+function apexExtractObjetivosDatas(){
+  const res = renderObjetivosDatas();
+  if (!res) return null;
+  const kpis = [
+    { label:'Receita', value: fF(res.atual.r), delta: apexDeltaTxt(res.atual.r, res.anterior.r) },
+    { label:'Margem %', value: fPct(res.atual.m), delta: apexDeltaTxt(res.atual.m, res.anterior.m) },
+    { label:'Cash Margem', value: fF(res.atual.r-res.atual.c), delta: apexDeltaTxt(res.atual.r-res.atual.c, res.anterior.r-res.anterior.c) },
+  ];
+  const cats = res.categorias || [];
+  const ranking = cats.length ? { titulo:'Participação por Categoria (Receita)', tipo:'pizza', items: cats.slice().sort((a,b)=>b.r-a.r).map(c=>({label:c.nome, value:c.r})) } : null;
+  const totalR = cats.reduce((s,c)=>s+c.r,0), totalPrevR = cats.every(c=>c.prevR!=null) ? cats.reduce((s,c)=>s+c.prevR,0) : null;
+  const tables = cats.length ? [{ titulo:'Receita e Margem por Categoria', headers:['Categoria','Receita','Receita Ano Ant.','Δ Fat.','Margem %','Margem % Ano Ant.','Δ Margem (p.p.)'],
+    rows: cats.map(c=>[c.nome, fF(c.r), c.prevR!=null?fF(c.prevR):'sem base', apexDeltaTxt(c.r,c.prevR).texto, fPct(c.m), c.prevM!=null?fPct(c.prevM):'sem base', apexDeltaPP(c.m,c.prevM).texto]),
+    totalRow: ['TOTAL GERAL', fF(totalR), totalPrevR!=null?fF(totalPrevR):'sem base', apexDeltaTxt(totalR,totalPrevR).texto, fPct(res.atual.m), fPct(res.anterior.m), apexDeltaPP(res.atual.m,res.anterior.m).texto] }] : [];
+  return { tabKey:'obj', tabLabel:'Acompanhamento Objetivos', scopeLabel: res.scopeLabel||'Empresa inteira', kpis, tables, ranking,
+    notas: [`Período personalizado: ${res.periodoTxt} vs. ${res.prevPeriodoTxt} (mesmo intervalo, 1 ano antes). Sem Meta/Tendência/Positivação/Estoque Box neste modo — a Meta do ERP só existe por mês, não por dia.`] };
 }
 
 function apexExtractMargemCash(){

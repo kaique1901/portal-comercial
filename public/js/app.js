@@ -3343,7 +3343,7 @@ function renderObjetivosDatas(){
   if (!OBJ.dataIni || !OBJ.dataFim || OBJ.dataIni > OBJ.dataFim){
     document.getElementById('objSub').textContent = 'Selecione a data inicial e final (data inicial não pode ser depois da final).';
     kpisEl.innerHTML = ''; document.getElementById('tObjCat').innerHTML = ''; if (catNote) catNote.innerHTML='';
-    return;
+    return null;
   }
   const iniPrev = mesmoDiaAnoAnterior(OBJ.dataIni), fimPrev = mesmoDiaAnoAnterior(OBJ.dataFim);
   const level = hierLevelActive();
@@ -3385,6 +3385,16 @@ function renderObjetivosDatas(){
       <td class="tv">${margemBadge(a.m)}</td><td class="tv">${p.r?fPct(p.m):'<span style="color:var(--t3)">—</span>'}</td>
       <td class="tv">${p.r?deltaPP(a.m,p.m,false):'<span style="color:var(--t3)">—</span>'}</td></tr>`).join("")
   }</tbody>`;
+
+  // Aditivo p/ Apresentação Executiva — mesmos números já calculados acima.
+  // Sem Meta/Tendência/Positivação/Estoque Box (não existem com grão diário).
+  return {
+    periodoTxt: `${fmtDia(OBJ.dataIni)} a ${fmtDia(OBJ.dataFim)}`,
+    prevPeriodoTxt: `${fmtDia(iniPrev)} a ${fmtDia(fimPrev)}`,
+    scopeLabel: (gerNames&&gerNames.length&&!bloqueado) ? `Gerente: ${labelJoin(gerNames)}` : null,
+    atual, anterior,
+    categorias: catRows.map(({cat,a,p})=>({ nome:cat, r:a.r, c:a.c, m:a.m, prevR:p.r||null, prevC:p.c||null, prevM:p.r?p.m:null })),
+  };
 }
 function renderObjetivos(){
   const d = curPeriod();
