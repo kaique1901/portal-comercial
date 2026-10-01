@@ -1976,7 +1976,7 @@ function renderVisao(){
     document.getElementById("vg-meta").textContent = "—";
     document.getElementById("vg-kpis").innerHTML = `<div class="alert" style="grid-column:1/-1">⚠ O ETL ainda não concluiu nenhum semestre para o ano vigente.</div>`;
     ["cVgMes","cVgCat","cVgGer","cVgGrp"].forEach(id=>{ if (charts[id]) { charts[id].destroy(); delete charts[id]; } });
-    return;
+    return null;
   }
   const prev = buildYearPeriod(ano - 1);
   // TODOS os filtros da barra lateral valem aqui — inclusive os que o cubo não cruza
@@ -2078,6 +2078,18 @@ function renderVisao(){
   if (grpNote) grpNote.textContent = notaRecorte;
   mkChart("cVgGrp",{type:"bar",data:{labels:grps.map(g=>g[0]),datasets:[{data:grps.map(g=>g[1].r),backgroundColor:C.acc2+"cc",borderRadius:4}]},
     options:{indexAxis:"y",responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>" "+fF(c.raw)}}},scales:{x:{ticks:{callback:v=>fM(v)}}}}});
+
+  // Aditivo p/ Apresentação Executiva — expõe os números já calculados acima.
+  return {
+    label: d.label, escopoLabel: eff.label||null,
+    r: eff.r, prevR: prevEff?prevEff.r:null, effMargem, prevMargem, cashMargem, prevCashMargem,
+    ticket: dEff.ticket_pedido, prevTicket: prevEff2?prevEff2.ticket_pedido:null,
+    nCli: dEff.n_cli, prevNCli: prevEff2?prevEff2.n_cli:null,
+    nVend: dEff.n_vend, prevNVend: prevEff2?prevEff2.n_vend:null,
+    categorias: cats.map(c=>({ nome:c[0], r:c[1].r })),
+    gerentes: gers.map(g=>({ nome:g[0], r:g[1].r })),
+    grupos: grps.map(g=>({ nome:g[0], r:g[1].r })),
+  };
 }
 
 // ── 2. COMPARATIVOS ───────────────────────────────────────────
@@ -2095,7 +2107,7 @@ function renderComp(){
   if (!d){
     document.getElementById("comp-cards").innerHTML = `<div class="alert" style="grid-column:1/-1">⚠ O ETL ainda não concluiu nenhum semestre para este ano.</div>`;
     ["cCompMes","cCompMargem","cCompCash","cCompCat"].forEach(id=>{ if (charts[id]) { charts[id].destroy(); delete charts[id]; } });
-    return;
+    return null;
   }
   const prev = buildYearPeriod(ST.compAno - 1);
   const bloqueado = precisaRecorte();
@@ -2163,6 +2175,13 @@ function renderComp(){
   } else {
     compCharts.forEach(id=>{ if (charts[id]) { charts[id].destroy(); delete charts[id]; } });
   }
+
+  // Aditivo p/ Apresentação Executiva — mesmos cards/séries já montados acima.
+  return {
+    periodoTxt, prevLabel,
+    linhas: rows.map(r=>({ label:r.lbl, atual:r.a, anterior:r.b, fmt:r.f===fPct?'pct':(r.f===fN?'n':(r.f===fF?'f':'m')) })),
+    categorias: prev ? Object.entries(d.por_categoria).sort((a,b)=>b[1].r-a[1].r).map(([nome,v])=>({ nome, r:v.r, prevR: prev.por_categoria[nome]?prev.por_categoria[nome].r:null })) : [],
+  };
 }
 function round2c(v){ return Math.round((v||0)*100)/100; }
 
@@ -2652,20 +2671,26 @@ function renderMargemCash(){
     metaCashCat = metaValRentCategoriaFor(d, ST.mes);
     metaFatCat = ST.mes!=null ? ((d.meta.por_mes_categoria&&d.meta.por_mes_categoria[ST.mes])||{}) : (d.meta.por_categoria||{});
   }
+  // catRowsFull: mesmo cálculo linha a linha abaixo, só que devolvendo dado
+  // cru (não HTML) — aditivo p/ Apresentação Executiva, que precisa das
+  // colunas completas (Meta/Ating/Tendência/Ano Anterior), não só r/c/m.
+  const catRowsFull = catRows.map(([n,v])=>{
+    const cm = v.r-v.c;
+    const metaCash = metaCashCat[n]||0;
+    const metaFat = metaFatCat[n]||0;
+    const metaMargemCat = metaFat>0 ? metaCash/metaFat*100 : 0;
+    const atingCash = metaCash>0 ? cm/metaCash*100 : null;
+    const atingMargemCat = metaMargemCat>0 ? v.m/metaMargemCat*100 : null;
+    const trendCash = tendencia(v.r,d,ST.mes)-tendencia(v.c,d,ST.mes);
+    const atingTrendCash = metaCash>0 ? trendCash/metaCash*100 : null;
+    const pe = ST.mes!=null ? categoriaMonthValueFor(prev, catInfo.level, catInfo.names, n, ST.mes) : categoriaValueFor(prev, catInfo.level, catInfo.names, n);
+    const pcm = pe ? (pe.r-pe.c) : null;
+    const pvM = pe ? pe.m : null;
+    return { nome:n, r:v.r, c:v.c, cash:cm, metaFat, metaCash, atingCash, trendCash, atingTrendCash, prevCash:pcm, metaMargemCat, margem:v.m, atingMargemCat, prevMargem:pvM };
+  });
   document.getElementById("tMcCat").innerHTML = `<thead><tr><th>Categoria</th><th class="tv">Faturamento</th><th class="tv">Meta Cash Margem</th><th class="tv">Cash Margem</th><th class="tv">% Ating.</th><th class="tv">Tendência Cash Margem</th><th class="tv">% Ating. Tendência</th><th class="tv">Δ vs ano ant.</th><th class="tv">Meta Margem %</th><th class="tv">Margem %</th><th class="tv">% Ating.</th><th class="tv">Δ Margem (p.p.)</th></tr></thead><tbody>${
-    catRows.map(([n,v])=>{
-      const cm = v.r-v.c;
-      const metaCash = metaCashCat[n]||0;
-      const metaFat = metaFatCat[n]||0;
-      const metaMargemCat = metaFat>0 ? metaCash/metaFat*100 : 0;
-      const atingCash = metaCash>0 ? cm/metaCash*100 : null;
-      const atingMargemCat = metaMargemCat>0 ? v.m/metaMargemCat*100 : null;
-      const trendCash = tendencia(v.r,d,ST.mes)-tendencia(v.c,d,ST.mes);
-      const atingTrendCash = metaCash>0 ? trendCash/metaCash*100 : null;
-      const pe = ST.mes!=null ? categoriaMonthValueFor(prev, catInfo.level, catInfo.names, n, ST.mes) : categoriaValueFor(prev, catInfo.level, catInfo.names, n);
-      const pcm = pe ? (pe.r-pe.c) : null;
-      const pvM = pe ? pe.m : null;
-      return `<tr><td class="tn">${n}</td><td class="tv">${fF(v.r)}</td><td class="tv">${metaCash>0?fF(metaCash):'<span style="color:var(--t3)">—</span>'}</td><td class="tv tn">${fF(cm)}</td><td class="tv">${atingBadge(atingCash)}</td><td class="tv">${fF(trendCash)}</td><td class="tv">${atingBadge(atingTrendCash)}</td><td class="tv">${deltaPillSmall(cm,pcm)}</td><td class="tv">${metaMargemCat>0?fPct(metaMargemCat):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${margemBadge(v.m)}</td><td class="tv">${atingBadge(atingMargemCat)}</td><td class="tv">${deltaPP(v.m,pvM,false)}</td></tr>`;
+    catRowsFull.map(x=>{
+      return `<tr><td class="tn">${x.nome}</td><td class="tv">${fF(x.r)}</td><td class="tv">${x.metaCash>0?fF(x.metaCash):'<span style="color:var(--t3)">—</span>'}</td><td class="tv tn">${fF(x.cash)}</td><td class="tv">${atingBadge(x.atingCash)}</td><td class="tv">${fF(x.trendCash)}</td><td class="tv">${atingBadge(x.atingTrendCash)}</td><td class="tv">${deltaPillSmall(x.cash,x.prevCash)}</td><td class="tv">${x.metaMargemCat>0?fPct(x.metaMargemCat):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${margemBadge(x.margem)}</td><td class="tv">${atingBadge(x.atingMargemCat)}</td><td class="tv">${deltaPP(x.margem,x.prevMargem,false)}</td></tr>`;
     }).join("")}</tbody>`;
 
   const level = hierLevelActive();
@@ -2738,7 +2763,13 @@ function renderMargemCash(){
   return { effR, prevEffR: prevEff?prevEff.r:null, effM, trendM, prevM, metaMargemPct, atingMargem,
     cash, prevCash, trendCash, metaValRent,
     catRows: catRows.map(([nome,v])=>({ nome, r:v.r, c:v.c, m:v.m })),
-    topVendedoresCash: vendRowsCash.slice(0,5).map(v=>({ nome:v.nome, cash:v.cash_margin })) };
+    catRowsFull,
+    topVendedoresCash: vendRowsCash.slice(0,10).map(v=>({ nome:v.nome, r:v.r, c:v.c, cash:v.cash_margin })),
+    topClientesCash: cliList.slice(0,10).map(c=>({ nome:c.nome, r:c.r, c:c.c, m:c.m })),
+    topProdutosCash: prodList.slice(0,10).map(p=>({ nome:p.nome, r:p.r, c:p.c, m:p.m })),
+    topClientesMargem: cliListM.slice(0,10).map(c=>({ nome:c.nome, r:c.r, c:c.c, m:c.m })),
+    topProdutosMargem: prodListM.slice(0,10).map(p=>({ nome:p.nome, r:p.r, c:p.c, m:p.m })),
+    topVendedoresMargem: vendRowsMargem.slice(0,10).map(v=>({ nome:v.nome, r:v.r, c:v.c, m:v.m })) };
 }
 
 // ── 3B. META X REALIZADO ───────────────────────────────────────
@@ -4061,7 +4092,7 @@ function renderDias(){
     document.getElementById('diaSemanaSub').textContent = `${win.label} — sem dados diários disponíveis.`;
     ['tDiaSemanaReceita','tDiaSemanaCash','tDiaSemanaMargem'].forEach(id=>document.getElementById(id).innerHTML="");
     if (charts["cDiaSemana"]) { charts["cDiaSemana"].destroy(); delete charts["cDiaSemana"]; }
-    return;
+    return null;
   }
   const geral = computeDowSeries(win.porDia, win.porDiaCategoria, null, win.iniStr, win.finStr);
   const temPrev = Object.keys(win.prevPorDia||{}).length>0;
@@ -4091,6 +4122,14 @@ function renderDias(){
     options:{responsive:true,plugins:{legend:{display:!!geralPrev,position:"top",labels:{boxWidth:10,font:{size:10}}},
       tooltip:{callbacks:{ label:c=>" "+(c.dataset.label||"")+": "+fF(c.raw) }}},
       scales:{y:{ticks:{callback:v=>fM(v)}}}}});
+
+  // Aditivo p/ Apresentação Executiva — série por dia da semana já calculada acima.
+  const byDow = DOW_ORDER.map(dow=>({ dow, nome:DOW_NAMES[dow], receita:geral.byDow[dow].receita, prevReceita: geralPrev?geralPrev.byDow[dow].receita:null }));
+  return {
+    label: win.label,
+    byDow,
+    categorias: rows.filter(r=>r.nome.indexOf('GERAL')!==0).map(r=>({ nome:r.nome, receita: DOW_ORDER.reduce((s,dow)=>s+r.s.byDow[dow].receita,0) })),
+  };
 }
 // Reconstrói uma série {data: [r,c]} para UMA categoria a partir de por_dia_categoria
 // (que é {data: {categoria: [r,c]}}) — usado para repetir a análise por categoria.
@@ -4369,7 +4408,7 @@ function renderPlanoMesVigente(){
   if (!dAtual || !dAtual.meta){
     elSub.textContent = 'Sem dados de meta cadastrados para o mês vigente.';
     elKpis.innerHTML=''; elCatSub.textContent='—'; elCatTbl.innerHTML=''; elExtra.innerHTML='';
-    return;
+    return null;
   }
 
   const diasNoMes = new Date(anoAtual, mesAtual, 0).getDate();
@@ -4405,6 +4444,7 @@ function renderPlanoMesVigente(){
 
   // ── por Categoria — mesma limitação já documentada em Acompanhamento
   // Objetivos: grão mensal por categoria só existe sem filtro ou com Gerente.
+  let itens = []; // hoisted (aditivo p/ Apresentação Executiva no fim da função)
   if (level==='supervisor' || level==='vendedor'){
     elCatSub.textContent = 'Indisponível recortado por Supervisor/Vendedor';
     elCatTbl.innerHTML = `<tbody><tr><td style="padding:16px;color:var(--t3)">Detalhamento por Categoria não tem grão mensal recortado por Supervisor/Vendedor (só Gerente ou empresa inteira) — use o painel Geral acima.</td></tr></tbody>`;
@@ -4419,7 +4459,7 @@ function renderPlanoMesVigente(){
     } else {
       metaAgg = (dAtual.meta.por_mes_categoria && dAtual.meta.por_mes_categoria[mesAtual]) || {};
     }
-    const itens = catNames.map(cat=>{
+    itens = catNames.map(cat=>{
       const meta = metaAgg[cat]||0;
       const real = (realAgg[cat]&&realAgg[cat].r)||0;
       return Object.assign({cat}, buildAcaoItem(meta, real, diasUteisComDados, diasUteisRestantes, totalDiasUteis));
@@ -4452,6 +4492,15 @@ function renderPlanoMesVigente(){
     extraAcaoCard('Papel (Qtd)', itemPapel, diasUteisRestantes, v=>fN(v)),
     extraAcaoCard('Produto Estratégico', itemEst, diasUteisRestantes, fF),
   ].join("");
+
+  // Aditivo p/ Apresentação Executiva — itens já calculados acima (números
+  // crus, não o texto corrido do "memo de diretoria" de renderPlanos()).
+  return {
+    mesLabel: `${MESES_NOME[mesAtual]}/${anoAtual}`, diaAtual, diasNoMes, diasUteisRestantes,
+    scopeLabel: level ? `${level[0].toUpperCase()+level.slice(1)}: ${labelJoin(names)}` : null,
+    geral: itemGeral,
+    categoriasUrgentes: itens.slice(0,8).map(x=>({ nome:x.cat, meta:x.meta, real:x.real, pctReal:x.pctReal, trend:x.trend, pctTrend:x.pctTrend, gap:x.gap })),
+  };
 }
 
 // ── 6B. PLANOS DE AÇÃO POR CATEGORIA (formato executivo/diretoria) ──
@@ -5007,6 +5056,15 @@ function renderRank(){
   const ofensores = [...base].sort((a,b)=>a.m-b.m).slice(0,50);
   document.getElementById("tOfensores").innerHTML = tblRank(ofensores,"nome",
     r=>prevLookupList(prev,"top_clientes","nome",r.nome), r=>prevLookupListMargin(prev,"top_clientes","nome",r.nome));
+
+  // Aditivo p/ Apresentação Executiva — top-10 de cada ranking já montado acima.
+  return {
+    scopeLabel: level ? `${level[0].toUpperCase()+level.slice(1)}: ${labelJoin(names)}` : null,
+    clientes: cli.slice(0,10).map(r=>({ nome:r.nome, r:r.r, c:r.c, m:r.m, prevR:prevLookupList(prev,"top_clientes","nome",r.nome) })),
+    produtos: prod.slice(0,10).map(r=>({ nome:r.nome, r:r.r, c:r.c, m:r.m, prevR:prevLookupList(prev,"top_produtos","nome",r.nome) })),
+    vendedores: vend.slice(0,10).map(r=>({ nome:r.nome, r:r.r, c:r.c, m:r.m, prevR:prevLookupList(prev,"top_vendedores","nome",r.nome) })),
+    ofensores: ofensores.slice(0,10).map(r=>({ nome:r.nome, r:r.r, c:r.c, m:r.m })),
+  };
 }
 // prevFn/prevMarginFn: opcionais — recebem a linha e retornam a receita/margem do
 // mesmo item no período anterior (null se o item não estava no Top-N daquele período).
@@ -5249,7 +5307,7 @@ function abcd90Pool(){
 }
 function renderAbcd(){
   const a = REAL_DATA._abcd90;
-  if (!a){ document.getElementById('abcd-sub').textContent = motivoEtapaAusente('abcd90'); return; }
+  if (!a){ document.getElementById('abcd-sub').textContent = motivoEtapaAusente('abcd90'); return null; }
 
   const altoR = ABCD_OVERRIDE.altoR!=null ? ABCD_OVERRIDE.altoR : ABCD_DEFAULTS.altoR;
   const baixoR = ABCD_OVERRIDE.baixoR!=null ? ABCD_OVERRIDE.baixoR : ABCD_DEFAULTS.baixoR;
@@ -5315,6 +5373,14 @@ function renderAbcd(){
       }).join(""):'<tr><td colspan="4" style="color:var(--t3)">Nenhum cliente cai neste grupo com os parâmetros atuais</td></tr>'}</tbody>
       </table></div></div>`;
   }).join("");
+
+  // Aditivo p/ Apresentação Executiva — classificação já calculada acima.
+  return {
+    janela: a.janela,
+    grupos: defs.map(x=>({ letra:x.k, titulo:x.title, count:q[x.k].count, receita:q[x.k].receita, cashMargin:q[x.k].cash_margin,
+      pct: totalReceita>0 ? q[x.k].receita/totalReceita*100 : 0 })),
+    topGrupoA: q.A.itens.slice(0,5).map(e=>({ nome:e.nome, r:e.r, c:e.c, m:e.m })),
+  };
 }
 
 // ── 6C. ESTOQUE X VENDA — COBERTURA EM DIAS ──────────────────────
@@ -5587,7 +5653,7 @@ function renderInadimplencia(){
     document.getElementById('tInadHier').innerHTML = '';
     document.getElementById('tInadClientes').innerHTML = '';
     document.getElementById('inad-kpis').innerHTML = '';
-    return;
+    return null;
   }
   const clientes = inadClientesNoEscopo(inad);
   const agg = inadAgregar(clientes);
@@ -5614,6 +5680,13 @@ function renderInadimplencia(){
         <td class="tv">${fN(c.titulos)}</td><td class="tv">${c.cheques?fN(c.cheques):'<span style="color:var(--t3)">—</span>'}</td>
         <td class="tv">${fF(c.saldo)}</td><td class="tv">${fN(c.atraso_max)}</td><td>${c.venc_mais_antigo||'—'}</td></tr>`).join('')
     }</tbody>`;
+
+  // Aditivo p/ Apresentação Executiva — agregados já calculados acima.
+  return {
+    geradoEm: inad.gerado_em, saldo: agg.saldo, clientes: agg.clientes, titulos: agg.titulos,
+    f365Mais: agg.f365_mais, vencidoAntigoPct: vencidoAntigo, atrasoMax: agg.atraso_max,
+    topDevedores: top.slice(0,5).map(c=>({ nome:c.nome, saldo:c.saldo, atrasoMax:c.atraso_max })),
+  };
 }
 
 // ── ABA "Clientes Ativos sem Compra (60+ dias)" ─────────────────────────
@@ -5703,7 +5776,7 @@ function renderClientesSemCompra(){
     if (sub) sub.textContent = motivoEtapaAusente('clientesSemCompra60');
     document.getElementById('sc-kpis').innerHTML = '';
     document.getElementById('tClientesSemCompra').innerHTML = '';
-    return;
+    return null;
   }
   const clientes = scClientesNoEscopo(dados);
   const agg = scAgregar(clientes);
@@ -5718,6 +5791,17 @@ function renderClientesSemCompra(){
 
   const cabecalho = `<thead><tr><th>Gerente / Supervisor / Vendedor / Cliente</th><th class="tv">Clientes</th><th class="tv">Média dias sem compra</th><th>Última compra</th></tr></thead>`;
   document.getElementById('tClientesSemCompra').innerHTML = cabecalho + `<tbody>${renderScCascata(clientes, dados.categorias_por_cliente || {})}</tbody>`;
+
+  // Aditivo p/ Apresentação Executiva — agregado por Gerente, a partir da
+  // mesma lista de clientes já filtrada pelo escopo acima.
+  const porGerente = {};
+  clientes.forEach(c=>{ const g = c.gerente||'(sem gerente)'; (porGerente[g]||(porGerente[g]=[])).push(c); });
+  const gerentes = Object.keys(porGerente).map(g=>({ nome:g, ...scAgregar(porGerente[g]) })).sort((a,b)=>b.clientes-a.clientes);
+  return {
+    geradoEm: dados.gerado_em, clientes: agg.clientes, mediaDias: agg.mediaDias,
+    maiorTempo: clientes.length ? Math.max(...clientes.map(c=>c.dias_sem_compra)) : null,
+    gerentes,
+  };
 }
 
 function renderEstoque(){
@@ -5854,7 +5938,7 @@ function renderPagamento(){
   const d = curPeriod();
   const prevKey = PREV_OF[ST.per];
   const prev = prevPeriod();
-  if (!d.pagamento_por_categoria){ document.getElementById('pag-kpis').innerHTML = '<div class="alert">Sem dados de tipo de pagamento para este período.</div>'; return; }
+  if (!d.pagamento_por_categoria){ document.getElementById('pag-kpis').innerHTML = '<div class="alert">Sem dados de tipo de pagamento para este período.</div>'; return null; }
 
   const level = hierLevelActive();
   const names = level ? hierSelectedNames(level) : [];
@@ -5955,6 +6039,13 @@ function renderPagamento(){
   document.getElementById('pagVendSub').textContent = `${vendRows.length} vendedores`;
   document.getElementById('tPagVendNF').innerHTML = buildPagRowsTable(vendRows, 'Danfe', n=>prevEntityFn('vendedor',n,'Danfe'));
   document.getElementById('tPagVendCupom').innerHTML = buildPagRowsTable(vendRows, 'Cupom', n=>prevEntityFn('vendedor',n,'Cupom'));
+
+  // Aditivo p/ Apresentação Executiva — KPIs já calculados acima.
+  return {
+    scopeLabel: level ? `${level[0].toUpperCase()+level.slice(1)}: ${labelJoin(names)}` : null,
+    kpis: kpiDefs.map(k=>({ label:k.lbl, atual:k.cur, anterior:k.prevv })),
+    topGerentes: gerRows.slice(0,5).map(g=>({ nome:g.nome, total: pagTotalTipo(g.entry,'Danfe')+pagTotalTipo(g.entry,'Cupom') })),
+  };
 }
 
 // ── 6F. RISCOS & OPORTUNIDADES (GERAL + POR CATEGORIA) ────────
@@ -5962,13 +6053,21 @@ function renderPagamento(){
 // período (curPeriod()) e do mesmo semestre do ano anterior (PREV_OF) — não
 // há texto fixo por nome de categoria/gerente, então o resultado se recalcula
 // sozinho se o usuário trocar o filtro de Período.
+// roCard/roOportCard devolvem {html, titulo, badge, corpo, valor} em vez de
+// string crua — aditivo p/ Apresentação Executiva poder montar um slide de
+// texto curado sem reprocessar HTML; todo call-site existente que só dava
+// .join("") no resultado passa a fazer .map(x=>x.html).join("") (ver
+// renderRiscoOport/renderRiscoOportCat), e quem só empilha num array
+// (riscos.push(roCard(...))) nem percebe a troca de string→objeto.
 function roCard(cls, badge, titulo, corpo, acao){
-  return `<div class="risk-card ${cls}"><div class="risk-head"><span class="risk-badge">${badge}</span><span class="risk-title">${titulo}</span></div>
+  const html = `<div class="risk-card ${cls}"><div class="risk-head"><span class="risk-badge">${badge}</span><span class="risk-title">${titulo}</span></div>
     <div class="risk-body">${corpo}</div>${acao?`<div class="risk-acao">${acao}</div>`:""}</div>`;
+  return { html, titulo, badge, corpo };
 }
 function roOportCard(titulo, corpo, valor){
-  return `<div class="risk-card bx"><div class="risk-head"><span class="risk-badge">OPORTUNIDADE</span><span class="risk-title">${titulo}</span></div>
+  const html = `<div class="risk-card bx"><div class="risk-head"><span class="risk-badge">OPORTUNIDADE</span><span class="risk-title">${titulo}</span></div>
     <div class="risk-body">${corpo}</div>${valor!=null?`<div class="oport-meta">≈ ${fF(valor)}</div>`:""}</div>`;
+  return { html, titulo, badge:'OPORTUNIDADE', corpo, valor };
 }
 
 // Cascata usada pela oportunidade "replicar crescimento": sem filtro de
@@ -6084,7 +6183,11 @@ function computeOportunidadesGeral(d, prev, level, names){
       const dl = pv && pv.r>0 ? (v.r-pv.r)/pv.r*100 : null;
       return {n,v,pv,dl};
     }).filter(x=>x.dl!=null).sort((a,b)=>b.dl-a.dl);
-    if (deltas.length){
+    // BUG CORRIGIDO: sem o dl>0, quando TODAS as entidades do recorte caíram
+    // vs. o ano anterior, deltas[0] ainda era a "menos pior" (ex.: -39%) e o
+    // card saía como "Replicar o crescimento de X: Crescimento de +-39.3%" —
+    // sinal trocado e sem crescimento nenhum pra replicar.
+    if (deltas.length && deltas[0].dl>0){
       const g = deltas[0];
       oports.push(roOportCard(`Replicar o crescimento de ${g.n} (${casc.label})`,
         `Crescimento de <strong>+${g.dl.toFixed(1)}%</strong> vs. o mesmo semestre do ano anterior (${fF(g.pv.r)} → ${fF(g.v.r)}) — ganho já comprovado neste território, candidato a ter a prática replicada nos demais.`,
@@ -6161,8 +6264,13 @@ function renderRiscoOport(){
   const names = level ? hierSelectedNames(level) : [];
   document.getElementById("riscoGeralNote").innerHTML = level
     ? `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: riscos/oportunidades por Categoria e Estoque são exatos; "Clientes ativos", "Up-sell/Cross-sell por positivação" e "Reativação" não são recortáveis por Gerente/Supervisor/Vendedor neste cubo e ficam omitidos ou substituídos por uma alternativa equivalente.</div>` : "";
-  document.getElementById("riscos-geral-list").innerHTML = computeRiscosGeral(d, prev, est, level, names).join("");
-  document.getElementById("oport-geral-list").innerHTML = computeOportunidadesGeral(d, prev, level, names).join("");
+  const riscos = computeRiscosGeral(d, prev, est, level, names);
+  const oports = computeOportunidadesGeral(d, prev, level, names);
+  document.getElementById("riscos-geral-list").innerHTML = riscos.map(x=>x.html).join("");
+  document.getElementById("oport-geral-list").innerHTML = oports.map(x=>x.html).join("");
+
+  // Aditivo p/ Apresentação Executiva — mesmas listas já calculadas acima.
+  return { scopeLabel: level ? `${level[0].toUpperCase()+level.slice(1)}: ${labelJoin(names)}` : null, riscos, oports };
 }
 
 // Por categoria: 1 risco + 1 oportunidade por categoria, mesma lógica da visão
@@ -6211,8 +6319,19 @@ function renderRiscoOportCat(){
   if (catInfo.level) notes.push(`Recortado por ${catInfo.level} — <strong>${labelJoin(catInfo.names)}</strong>: receita/margem exatos (cubo hierárquico); positivação por categoria não é recortável por Gerente/Supervisor/Vendedor neste cubo.`);
   document.getElementById("riscoCatNote").innerHTML = notes.length ? `<div class="alert">⚠ ${notes.join(" ")}</div>` : "";
   const cats = catInfo.rows.filter(([,v])=>v.r>0).sort((a,b)=>b[1].r-a[1].r);
-  document.getElementById("riscos-cat-list").innerHTML = cats.map(([n,v])=>computeRiscoCategoria(n,v, categoriaValueFor(prev, catInfo.level, catInfo.names, n), d.margem_geral)).join("");
-  document.getElementById("oport-cat-list").innerHTML = cats.map(([n,v])=>computeOportCategoria(n,v,d,d.margem_geral)).join("");
+  const riscosCat = cats.map(([n,v])=>computeRiscoCategoria(n,v, categoriaValueFor(prev, catInfo.level, catInfo.names, n), d.margem_geral));
+  const oportsCat = cats.map(([n,v])=>computeOportCategoria(n,v,d,d.margem_geral));
+  document.getElementById("riscos-cat-list").innerHTML = riscosCat.map(x=>x.html).join("");
+  document.getElementById("oport-cat-list").innerHTML = oportsCat.map(x=>x.html).join("");
+
+  // Aditivo p/ Apresentação Executiva — descarta "sem risco crítico
+  // identificado"/"sustentar posição atual" (badge BAIXO): não interessa como
+  // slide de alerta executivo, só os riscos/oportunidades de verdade.
+  return {
+    scopeLabel: catInfo.level ? `${catInfo.level[0].toUpperCase()+catInfo.level.slice(1)}: ${labelJoin(catInfo.names)}` : null,
+    riscos: riscosCat.filter(x=>x.badge!=='BAIXO'),
+    oports: oportsCat,
+  };
 }
 
 // ── 6H. ANÁLISE EM CASCATA (Categoria > Grupo > Fornecedor > Produto) ──────
