@@ -488,3 +488,26 @@ tbody tr:last-child td{border-bottom:none}
   cursor: not-allowed;
   background: rgba(255,255,255,0.03);
 }
+
+/* ══ DASHBOARD EXECUTIVO — upgrade de layout (aditivo; nenhuma regra acima foi
+   tocada) ══════════════════════════════════════════════════════════════ */
+.dash-verdict{display:flex;align-items:flex-start;gap:16px;padding:20px 22px;border-radius:var(--r2);background:var(--bg1);border:1px solid var(--bdr);box-shadow:var(--sha);margin-bottom:16px;flex-wrap:wrap}
+.dash-verdict-badge{flex-shrink:0;padding:8px 16px;border-radius:999px;font-size:12px;font-weight:800;text-transform:uppercase;letter-spacing:.4px;white-space:nowrap}
+.dash-verdict-badge.g{background:rgba(34,135,90,.14);color:var(--up)}
+.dash-verdict-badge.a{background:rgba(163,118,58,.14);color:var(--amb)}
+.dash-verdict-badge.r{background:rgba(179,38,30,.12);color:var(--dn)}
+.dash-verdict-text-wrap{flex:1;min-width:240px}
+.dash-verdict-txt{font-size:15px;font-weight:600;color:var(--t1);line-height:1.45}
+.dash-verdict-meta{font-size:11px;color:var(--t3);margin-top:5px;font-weight:500}
+
+.dash-toc{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:24px}
+.dash-toc a{font-size:11.5px;font-weight:700;color:var(--t2);background:var(--bg2);border:1px solid var(--bdr);border-radius:999px;padding:6px 14px;text-decoration:none;transition:.15s}
+.dash-toc a:hover{background:var(--bg3);color:var(--t1);border-color:var(--bdr2)}
+
+.dash-chapter{display:flex;align-items:center;gap:12px;margin-top:32px;margin-bottom:14px;scroll-margin-top:14px}
+.dash-chapter-num{flex-shrink:0;width:30px;height:30px;border-radius:50%;background:var(--acc);color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800}
+
+#dash-kpis-hero .kpi-val{font-size:28px}
+#dash-kpis-hero .kpi:first-child{background:linear-gradient(165deg,var(--bg1),var(--bg2))}
+#dash-kpis-hero .kpi:first-child .kpi-val{font-size:38px;color:var(--acc)}
+#dash-kpis-hero .kpi:first-child .kpi-lbl{color:var(--acc)}

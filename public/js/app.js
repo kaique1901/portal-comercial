@@ -819,8 +819,14 @@ function buildYearPeriod(ano){
     Object.values(m).forEach(porCat => Object.values(porCat).forEach(cods => cods.forEach(c => codigosCliente.add(c))));
   });
   const nomesVend = new Set([...Object.keys(a.full_vendedores||{}), ...Object.keys(b.full_vendedores||{})]);
+  const por_mes = Object.assign({}, a.por_mes, b.por_mes);
+  // BUG CORRIGIDO: o rótulo dizia "Ano completo" sempre que os DOIS semestres
+  // existiam em REAL_DATA — mas o semestre em curso pode existir com só
+  // parte dos meses (ex.: 2026_2 criado pelo ETL em julho, só tem Jul-Out em
+  // outubro). O certo é checar se os 12 MESES estão mesmo presentes.
+  const anoCompleto = Object.keys(por_mes).length >= 12;
   const out = {
-    label: h1 && h2 ? `${ano} - Ano completo` : `${ano} - Acumulado até ${MESES_NOME[new Date().getMonth()+1]}`,
+    label: anoCompleto ? `${ano} - Ano completo` : `${ano} - Acumulado até ${MESES_NOME[new Date().getMonth()+1]}`,
     receita, custo, qtde,
     peso: (a.peso||0) + (b.peso||0),
     linhas: (a.linhas||0) + (b.linhas||0),
@@ -832,9 +838,16 @@ function buildYearPeriod(ano){
     n_ger: new Set([...Object.keys(a.por_gerente||{}), ...Object.keys(b.por_gerente||{})]).size,
     n_cat: new Set([...Object.keys(a.por_categoria||{}), ...Object.keys(b.por_categoria||{})]).size,
     n_grp: new Set([...Object.keys(a.por_grupo||{}), ...Object.keys(b.por_grupo||{})]).size,
-    por_mes: Object.assign({}, a.por_mes, b.por_mes),
+    por_mes,
+    // Aditivo — necessário pra restringir "Clientes Ativos" do ano anterior
+    // aos mesmos meses do ano em curso (ver anoRestritoAosMeses) sem recalcular
+    // nada: mesma união de códigos que já alimenta n_cli acima, só exposta.
+    por_mes_categoria_clientes_cod: Object.assign({}, a.por_mes_categoria_clientes_cod, b.por_mes_categoria_clientes_cod),
     por_dia: Object.assign({}, a.por_dia, b.por_dia),
     por_dia_categoria: Object.assign({}, a.por_dia_categoria, b.por_dia_categoria),
+    // Mesmo racional de por_mes_categoria_clientes_cod acima, só que por dia
+    // exato — chaves YYYY-MM-DD nunca colidem entre os 2 semestres do ano.
+    por_dia_categoria_clientes_cod: Object.assign({}, a.por_dia_categoria_clientes_cod, b.por_dia_categoria_clientes_cod),
     por_categoria: somaDict(a.por_categoria, b.por_categoria),
     por_grupo: somaDictAninhado(a.por_grupo, b.por_grupo),
     por_gerente: somaDict(a.por_gerente, b.por_gerente),
@@ -851,6 +864,32 @@ function buildYearPeriod(ano){
   out.margem_geral = receita>0 ? +(100*(1-custo/receita)).toFixed(2) : 0;
   YEAR_CACHE[ano] = out;
   return out;
+}
+// BUG CORRIGIDO (Visão Geral/Dashboard): "ano em curso" (ex.: Jan-Out) era
+// comparado contra o "ano anterior" INTEIRO (Jan-Dez) — a diferença de ~2
+// meses inflava artificialmente toda queda/alta de Receita, Margem, Cash
+// Margem, Ticket, Clientes e Vendedores Ativos (confirmado: explicava
+// sozinha a maior parte do "-9,3%" que aparecia nessas duas abas). Esta
+// função restringe um ano COMPLETO (buildYearPeriod) aos MESMOS números de
+// mês de outro ano, pra comparar sempre "mesma quantidade de meses" — nunca
+// recalcula nada que o cubo não já tivesse: só soma por_mes/
+// por_mes_categoria_clientes_cod/realizado_por_mes dos meses pedidos, os
+// mesmos 3 cubos mensais que o restante do painel já usa (Objetivos,
+// Positivação, Rankings). mesesRef: array de números de mês (1-12).
+function anoRestritoAosMeses(period, mesesRef){
+  if (!period) return null;
+  let r=0, c=0, q=0, nPedidos=0;
+  const codigosCliente = new Set(), nomesVend = new Set();
+  mesesRef.forEach(mesNum=>{
+    const mes = String(mesNum);
+    const mp = period.por_mes[mes];
+    if (mp){ r+=mp.r||0; c+=mp.c||0; q+=mp.q||0; nPedidos+=mp.pedidos||0; }
+    const mcc = period.por_mes_categoria_clientes_cod && period.por_mes_categoria_clientes_cod[mes];
+    if (mcc) Object.values(mcc).forEach(cods=>cods.forEach(cod=>codigosCliente.add(cod)));
+    const vendMes = period.realizado_por_mes && period.realizado_por_mes[mes] && period.realizado_por_mes[mes].vendedor;
+    if (vendMes) Object.keys(vendMes).forEach(nome=>nomesVend.add(nome));
+  });
+  return { r, c, q, n_pedidos: nPedidos, ticket_pedido: nPedidos>0 ? round2c(r/nPedidos) : 0, n_cli: codigosCliente.size, n_vend: nomesVend.size };
 }
 
 // Abre no semestre do mês corrente (julho/2026 → "2026_2"), caindo no mais recente
@@ -988,6 +1027,11 @@ function mesclarRecorte(p, rec){
     // o vazamento de escopo que se quer evitar.
     por_mes_categoria_clientes_cod: rec.por_mes_categoria_clientes_cod || {},
     por_mes_categoria_clientes: rec.por_mes_categoria_clientes || {},
+    // Mesmo racional da Positivação mensal acima (comentário "POSITIVAÇÃO")
+    // — sem isto, um recorte ativo (Gerente/Supervisor/etc.) manteria a
+    // Positivação por DIA do cubo da EMPRESA inteira (o /recorte ainda não
+    // calcula este cubo por dia) e vazaria escopo; `|| {}` evita o leak.
+    por_dia_categoria_clientes_cod: rec.por_dia_categoria_clientes_cod || {},
     // FUMO KG: sem isso a aba Meta comparava meta do escopo com realizado da empresa.
     por_mes_fumokg: rec.por_mes_fumokg,
     realizado_fumokg: rec.realizado_fumokg,
@@ -1243,8 +1287,15 @@ function mesesDoAno(ano){
   if (!d) return [];
   return Object.keys(d.por_mes).sort((a,b)=>+a-+b).map(m=>`${ano}-${String(m).padStart(2,'0')}`);
 }
-function anoScopeQuery(ano){
-  const meses = mesesDoAno(ano);
+// Mesmos números de mês de uma lista "YYYY-MM", só que no ano `anoAlvo" —
+// usado pra pedir ao banco o ANO ANTERIOR restrito aos MESMOS meses que o
+// ano corrente já tem (ver nota em anoRestritoAosMeses/renderVisao: sem
+// isso, "ano em curso" virava "ano anterior inteiro" na consulta /recorte).
+function mesesNoAno(mesesYYYYMM, anoAlvo){
+  return mesesYYYYMM.map(ym => `${anoAlvo}-${ym.slice(5,7)}`);
+}
+function anoScopeQuery(ano, mesesOverride){
+  const meses = mesesOverride || mesesDoAno(ano);
   if (!meses.length) return null;
   const p = new URLSearchParams();
   // `periodo` aqui só valida a chave no serviço; com `anomes` a janela vem dos meses.
@@ -1258,14 +1309,20 @@ function anoScopeQuery(ano){
   return p.toString();
 }
 // Recorte do ano já carregado que corresponde EXATAMENTE aos filtros atuais (ou null).
-function anoScopeDados(ano){
-  const k = anoScopeQuery(ano);
+// mesesOverride (opcional): mesma lista "YYYY-MM" passada a ensureAnoScope —
+// precisa bater pra achar a chave certa em ANO_SCOPE (ver mesesNoAno).
+function anoScopeDados(ano, mesesOverride){
+  const k = anoScopeQuery(ano, mesesOverride);
   return (k && ANO_SCOPE[ano] && ANO_SCOPE[ano].key === k) ? ANO_SCOPE[ano].dados : null;
 }
 // Dispara a consulta se necessário; ao chegar, re-renderiza a aba (idempotente).
-function ensureAnoScope(ano){
+// mesesOverride (opcional, "YYYY-MM"[]): usado pra pedir o ANO ANTERIOR só
+// nos MESMOS meses do ano corrente (ver mesesNoAno/renderVisao) — sem isso,
+// o ano anterior sempre vinha inteiro (Jan-Dez), mesmo com o ano corrente
+// ainda em andamento (Jan-Out), inflando a queda/alta aparente do delta.
+function ensureAnoScope(ano, mesesOverride){
   if (filtrosDoAno() === 0){ delete ANO_SCOPE[ano]; delete anoScopePending[ano]; return; }
-  const key = anoScopeQuery(ano);
+  const key = anoScopeQuery(ano, mesesOverride);
   if (!key) return;
   if ((ANO_SCOPE[ano] && ANO_SCOPE[ano].key === key) || anoScopePending[ano] === key) return;
   if (anoScopeFalhou[ano] === key) return;   // já falhou nesta combinação — só retenta ao recarregar
@@ -1276,14 +1333,71 @@ function ensureAnoScope(ano){
       if (j && j.error) throw new Error(j.error);
       ANO_SCOPE[ano] = { key, dados: j };
       anoScopeErro = null; delete anoScopeFalhou[ano];
-      if (anoScopePending[ano] === key){ delete anoScopePending[ano]; renderVisao(); }
+      // renderDashboard() reaproveita o retorno de renderVisao() (apexExtractVisaoGeral)
+      // pros KPIs-herói — sem chamá-lo aqui, o Dashboard ficava preso no "carregando"
+      // (zerado) depois que este recorte chegava, já que ele só reage ao renderAll().
+      if (anoScopePending[ano] === key){ delete anoScopePending[ano]; renderVisao(); if (typeof renderDashboard === 'function') renderDashboard(); }
     })
     .catch(e => {
       console.warn(`[recorte ano ${ano}] falha:`, e.message);
       anoScopeErro = e.message; anoScopeFalhou[ano] = key;
-      if (anoScopePending[ano] === key){ delete anoScopePending[ano]; renderVisao(); }
+      if (anoScopePending[ano] === key){ delete anoScopePending[ano]; renderVisao(); if (typeof renderDashboard === 'function') renderDashboard(); }
     });
 }
+
+// ── RANKINGS: ano anterior restrito ao mesmo nº de meses do semestre atual ──
+// BUG CORRIGIDO: Top 50 (Clientes/Produtos/Vendedores) são pré-agregados por
+// SEMESTRE INTEIRO no cubo do ETL, sem grão de mês. Quando o semestre atual
+// ainda está em andamento (ex.: 2026_2 só tem Jul-Out), comparar contra o Top
+// 50 do semestre anterior INTEIRO (2025_2, Jul-Dez) inflava a queda/alta
+// aparente — mesma família de bug já corrigida em Visão Geral
+// (anoRestritoAosMeses), só que aqui não dá pra "recortar" o cubo
+// pré-agregado localmente: exige uma consulta ao vivo ao /recorte (mesmo
+// endpoint de ensureCliScope/ensureAnoScope), com os MESMOS filtros ativos,
+// pedindo só os meses do ano anterior equivalentes aos que o semestre atual
+// já tem. Fica mais lento que o cubo puro (alguns segundos) — aceito
+// deliberadamente pelo usuário em troca de números corretos.
+const RANK_SCOPE = {};        // { [periodoAnteriorKey]: { key, dados } }
+const rankScopePending = {};
+const rankScopeFalhou = {};
+let rankScopeErro = null;
+function rankScopeQuery(periodoAnteriorKey, mesesYYYYMM){
+  if (!mesesYYYYMM || !mesesYYYYMM.length) return null;
+  const p = new URLSearchParams();
+  p.set('periodo', periodoAnteriorKey);
+  const add = (k, arr) => { if (arr && arr.length) p.set(k, arr.join('|')); };
+  add('cli', cliCodesFromST());
+  add('ger', ST.ger); add('sup', ST.sup); add('vend', ST.vend);
+  add('cat', ST.cat); add('grp', ST.grp);
+  add('canal', ST.canal); add('status', ST.status);
+  p.set('anomes', mesesYYYYMM.join('|'));
+  return p.toString();
+}
+function rankScopeDados(periodoAnteriorKey, mesesYYYYMM){
+  const k = rankScopeQuery(periodoAnteriorKey, mesesYYYYMM);
+  return (k && RANK_SCOPE[periodoAnteriorKey] && RANK_SCOPE[periodoAnteriorKey].key === k) ? RANK_SCOPE[periodoAnteriorKey].dados : null;
+}
+function ensureRankScope(periodoAnteriorKey, mesesYYYYMM){
+  const key = rankScopeQuery(periodoAnteriorKey, mesesYYYYMM);
+  if (!key) return;
+  if ((RANK_SCOPE[periodoAnteriorKey] && RANK_SCOPE[periodoAnteriorKey].key === key) || rankScopePending[periodoAnteriorKey] === key) return;
+  if (rankScopeFalhou[periodoAnteriorKey] === key) return;
+  rankScopePending[periodoAnteriorKey] = key;
+  fetch(`${API_BASE_URL}/recorte?${key}`)
+    .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+    .then(j => {
+      if (j && j.error) throw new Error(j.error);
+      RANK_SCOPE[periodoAnteriorKey] = { key, dados: j };
+      rankScopeErro = null; delete rankScopeFalhou[periodoAnteriorKey];
+      if (rankScopePending[periodoAnteriorKey] === key){ delete rankScopePending[periodoAnteriorKey]; renderRank(); if (typeof renderDashboard === 'function') renderDashboard(); }
+    })
+    .catch(e => {
+      console.warn(`[recorte rank ${periodoAnteriorKey}] falha:`, e.message);
+      rankScopeErro = e.message; rankScopeFalhou[periodoAnteriorKey] = key;
+      if (rankScopePending[periodoAnteriorKey] === key){ delete rankScopePending[periodoAnteriorKey]; renderRank(); if (typeof renderDashboard === 'function') renderDashboard(); }
+    });
+}
+
 // Rótulo do recorte ativo, do filtro mais específico para o mais amplo.
 function recorteLabel(){
   const partes = [];
@@ -1925,6 +2039,13 @@ function renderAll(){
   // Cliente selecionado → garante o recorte real vindo da API (re-renderiza ao chegar).
   ensureCliScope();
   renderVisao(); renderComp(); renderMargemCash(); renderObjetivos(); renderMetasExtra(); renderDias(); renderDowCascata(); renderRank(); renderMix(); renderAbcd(); renderPlanos(); renderPlanosVendedores(); renderEstoque(); renderProdutosParadosVend(); renderProdutosLetraP(); renderPagamento(); renderInadimplencia(); renderClientesSemCompra(); renderRiscoOport(); renderRiscoOportCat(); renderCascata(); renderQual();
+  // Resultados Diários (public/js/diario.js): mesma fonte de dado de Sazonalidade
+  // (por_dia/por_dia_categoria), só não agrega por dia da semana.
+  if (typeof renderDiario === 'function') renderDiario();
+  // Dashboard (public/js/dashboard.js): só leitura, roda por último pra
+  // reaproveitar os extractors da Apresentação Executiva sem interferir em
+  // nenhuma das abas acima.
+  if (typeof renderDashboard === 'function') renderDashboard();
 }
 
 // O mês selecionado é o mês CORRENTE? Nesse caso o realizado é parcial (só os dias
@@ -1979,6 +2100,12 @@ function renderVisao(){
     return null;
   }
   const prev = buildYearPeriod(ano - 1);
+  // Meses que o ano CORRENTE realmente tem (ex.: Jan-Out, se ainda não fechou
+  // o ano) — usados abaixo pra restringir o ANO ANTERIOR ao mesmo recorte,
+  // nunca o ano anterior inteiro (ver anoRestritoAosMeses/mesesNoAno).
+  const mesesAnoAtualYYYYMM = mesesDoAno(ano);
+  const mesesAtuaisNum = Object.keys(d.por_mes).map(Number);
+  const mesesPrevRestrito = mesesNoAno(mesesAnoAtualYYYYMM, ano - 1);
   // TODOS os filtros da barra lateral valem aqui — inclusive os que o cubo não cruza
   // (Canal/Inadimplente/Status/Cliente e Grupo+Hierarquia). O número exato vem do
   // RECORTE DO ANO (uma consulta ao banco cobrindo os meses do ano inteiro, ver
@@ -1993,21 +2120,29 @@ function renderVisao(){
   // as duas consultas cobrem 12 meses cada e, disparadas juntas com as do recorte
   // por semestre, esgotavam o pool do banco ("Connection terminated due to connection
   // timeout", HTTP 500). Em série, o que está na tela vem primeiro.
-  if (comFiltro && prev && recAno) ensureAnoScope(ano - 1);
-  const recPrev = (comFiltro && prev) ? anoScopeDados(ano - 1) : null;
+  // BUG CORRIGIDO: o ano anterior era pedido INTEIRO (mesesDoAno(ano-1), que dá
+  // Jan-Dez pra um ano já fechado) mesmo quando o ano corrente só tinha, por
+  // exemplo, Jan-Out — comparando 10 meses contra 12. Agora pede exatamente os
+  // MESMOS meses do ano corrente (mesesPrevRestrito), um ano antes.
+  if (comFiltro && prev && recAno) ensureAnoScope(ano - 1, mesesPrevRestrito);
+  const recPrev = (comFiltro && prev) ? anoScopeDados(ano - 1, mesesPrevRestrito) : null;
   // mesclarRecorte substitui no período do ano só o que o recorte cobre — assim
   // por_mes/por_categoria/por_gerente/por_grupo passam a ser os do escopo, e os
   // helpers de cascata reconhecem o objeto pelo `_recorte`.
   const dEff = comFiltro ? mesclarRecorte(d, recAno || recorteVazio()) : d;
+  // Mesma correção acima, pro caminho SEM filtro de hierarquia: em vez do ano
+  // anterior inteiro (prev, Jan-Dez), restringe aos mesmos meses do ano
+  // corrente (mesesAtuaisNum) — ver anoRestritoAosMeses.
+  const prevRestrito = (!comFiltro && prev) ? anoRestritoAosMeses(prev, mesesAtuaisNum) : null;
   // Sem o MESMO recorte no ano anterior, o delta compararia o escopo filtrado contra
   // a empresa inteira — então fica "sem base" até a segunda consulta voltar.
-  const prevEff2 = !prev ? null : (comFiltro ? (recPrev ? mesclarRecorte(prev, recPrev) : null) : prev);
+  const prevEff2 = !prev ? null : (comFiltro ? (recPrev ? mesclarRecorte(prev, recPrev) : null) : prevRestrito);
   const eff = comFiltro
     ? {r:dEff.receita, c:dEff.custo, q:dEff.qtde, label:recorteLabel(), monthNote:null, carregando:!recAno}
     : effectiveFor(d, null);
   const prevEff = !prevEff2 ? null
     : (comFiltro ? {r:prevEff2.receita, c:prevEff2.custo, q:prevEff2.qtde, label:recorteLabel()}
-                 : effectiveFor(prev, null));
+                 : {r:prevRestrito.r, c:prevRestrito.c, q:prevRestrito.q});
 
   document.getElementById("vg-sub").textContent = eff.label ? `${d.label} · recortado por ${eff.label}` : d.label;
   document.getElementById("vg-meta").textContent = `${fN(dEff.linhas)} linhas · ${fN(dEff.n_pedidos)} pedidos`;
@@ -2039,13 +2174,13 @@ function renderVisao(){
     <div class="kpi ${k.cls}"><div class="kpi-stripe"></div>
       <div class="kpi-lbl">${k.lbl}</div><div class="kpi-val">${k.val}</div>
       ${k.delta?`<span class="kpi-delta ${k.delta.c}">${k.delta.s}</span>`:''}
-      <div class="kpi-note">${k.note || (prevEff?'vs. ano anterior completo':'sem base comparável')}</div>
+      <div class="kpi-note">${k.note || (prevEff?'vs. mesmos meses do ano anterior':'sem base comparável')}</div>
     </div>`).join("");
 
   // Rótulo comum aos 4 cards: o que está sendo mostrado ali.
   const notaRecorte = comFiltro
     ? (recAno ? `Recorte: ${recorteLabel()}` : 'Consultando o recorte no banco…')
-    : `${ano} — ano completo`;
+    : d.label;
 
   // Receita por Mês: eixo sempre com os meses que o ano tem no cubo (não some mês
   // enquanto o recorte carrega); valores do escopo.
@@ -2152,9 +2287,11 @@ function renderComp(){
   }).join("");
 
   const compCharts = ["cCompMes","cCompMargem","cCompCash","cCompCat"];
+  let mesesReceita = []; // hoisted (aditivo p/ Dashboard/Apresentação Executiva, mesma série do gráfico cCompMes)
   if (prev){
     const meses = Object.keys(d.por_mes).sort((a,b)=>+a-+b);
     const mesLbl = meses.map(m=>MESES_NOME[m]);
+    mesesReceita = meses.map(m=>({ label:MESES_NOME[m], atual: d.por_mes[m]?d.por_mes[m].r:null, anterior: prev.por_mes[m]?prev.por_mes[m].r:null }));
     mkChart("cCompMes",{type:"line",data:{labels:mesLbl,datasets:[
       {label:d.label,data:meses.map(m=>d.por_mes[m]?d.por_mes[m].r:null),borderColor:C.acc,backgroundColor:C.acc+"22",tension:.3,fill:true},
       {label:prev.label,data:meses.map(m=>prev.por_mes[m]?prev.por_mes[m].r:null),borderColor:C.t2,backgroundColor:"transparent",borderDash:[4,4],tension:.3}
@@ -2176,11 +2313,12 @@ function renderComp(){
     compCharts.forEach(id=>{ if (charts[id]) { charts[id].destroy(); delete charts[id]; } });
   }
 
-  // Aditivo p/ Apresentação Executiva — mesmos cards/séries já montados acima.
+  // Aditivo p/ Apresentação Executiva/Dashboard — mesmos cards/séries já montados acima.
   return {
     periodoTxt, prevLabel,
     linhas: rows.map(r=>({ label:r.lbl, atual:r.a, anterior:r.b, fmt:r.f===fPct?'pct':(r.f===fN?'n':(r.f===fF?'f':'m')) })),
     categorias: prev ? Object.entries(d.por_categoria).sort((a,b)=>b[1].r-a[1].r).map(([nome,v])=>({ nome, r:v.r, prevR: prev.por_categoria[nome]?prev.por_categoria[nome].r:null })) : [],
+    mesesReceita,
   };
 }
 function round2c(v){ return Math.round((v||0)*100)/100; }
@@ -3278,11 +3416,17 @@ function buildCategoriaTable(d, prev, meses, level, names){
     const trend = perMes.reduce((s,pm)=>s+tendencia((pm.catAgg[cat]&&pm.catAgg[cat].r)||0, d, pm.mes),0);
     const trendC = perMes.reduce((s,pm)=>s+tendencia((pm.catAgg[cat]&&pm.catAgg[cat].c)||0, d, pm.mes),0);
     const prevR = pagg?pagg.r:null, prevC = pagg?pagg.c:null;
+    const metaVal = metaCatSel[cat]||0, metaCash = metaCashCatSel[cat]||0;
+    const prevMargem = (prevR!=null && prevR>0) ? 100*(1-prevC/prevR) : null;
     return {
-      nome: cat, meta: metaCatSel[cat]||0, real: agg.r, trend, prevReal: prevR,
-      metaCash: metaCashCatSel[cat]||0, cash: agg.r-agg.c, trendCash: trend-trendC,
+      nome: cat, meta: metaVal, real: agg.r, trend, prevReal: prevR,
+      metaCash, cash: agg.r-agg.c, trendCash: trend-trendC,
       prevCash: (prevR!=null&&prevC!=null)?(prevR-prevC):null,
       margem: agg.r>0?100*(1-agg.c/agg.r):null,
+      // Aditivo (mesma fórmula de catRow() acima, metaMargemPct/prevMargem) —
+      // p/ Apresentação Executiva completar a tabela "Margem % por Categoria"
+      // com Meta Margem %/Margem % Ano Anterior, que faltavam em catRowsData.
+      metaMargemCat: metaVal>0 ? metaCash/metaVal*100 : null, prevMargem,
       nCliCat: positivacaoDisponivel?(nCliCatSel[cat]||0):null, prevNCliCat: positivacaoDisponivel?(prevNCliCatSel[cat]||0):null,
       estoque: estoqueCatFor(cat),
     };
@@ -3805,11 +3949,13 @@ function renderMetasExtra(){
   document.getElementById('tMetaExtraVend').innerHTML = metaExtraTable(vendRows, n=>metaExtraLinha(d, prev, prevAvail, 'vendedor', n, mesKey), null, 'Clique num supervisor (ou gerente) acima para ver os vendedores.');
 
   // Aditivo p/ Apresentação Executiva — expõe os totais já calculados acima.
+  // prevMeta: metaExtraSomar(prev, mesKey) (acima, `prevSoma`) já soma a Meta
+  // de cada indicador no ano anterior — só faltava devolver o valor.
   return {
     scopeLabel: scope?scope.label:null,
-    kg:  { meta:totalMetaKg, real:totalRealKg, tend:tendKg, prevReal:prevSoma?prevSoma.realKg:null, prevTend:prevTendKg },
-    papel:{ meta:totalMetaPapel, real:totalRealPapel, tend:tendPapel, prevReal:prevSoma?prevSoma.realPapel:null, prevTend:prevTendPapel },
-    estrategico:{ meta:totalMetaEst, real:totalRealEst, tend:tendEst, prevReal:prevSoma?prevSoma.realEst:null, prevTend:prevTendEst },
+    kg:  { meta:totalMetaKg, real:totalRealKg, tend:tendKg, prevReal:prevSoma?prevSoma.realKg:null, prevTend:prevTendKg, prevMeta:prevSoma?prevSoma.metaKg:null },
+    papel:{ meta:totalMetaPapel, real:totalRealPapel, tend:tendPapel, prevReal:prevSoma?prevSoma.realPapel:null, prevTend:prevTendPapel, prevMeta:prevSoma?prevSoma.metaPapel:null },
+    estrategico:{ meta:totalMetaEst, real:totalRealEst, tend:tendEst, prevReal:prevSoma?prevSoma.realEst:null, prevTend:prevTendEst, prevMeta:prevSoma?prevSoma.metaEst:null },
   };
 }
 
@@ -5038,17 +5184,34 @@ function toggleVendPlano(nome){
 function renderRank(){
   const d = curPeriod();
   const prevKey = PREV_OF[ST.per];
-  const prev = prevPeriod();
+  const prevRaw = prevPeriod();
   const level = hierLevelActive();
   const names = level ? hierSelectedNames(level) : [];
+
+  // Restringe o ANO ANTERIOR ao mesmo nº de meses que o semestre atual já
+  // tem (ver nota de metodologia acima de rankScopeQuery) — só dispara a
+  // consulta ao vivo quando o semestre atual está mesmo incompleto (<6
+  // meses); semestre já fechado não precisa, o cubo puro já bate.
+  const mesesAtuaisNum = Object.keys(d.por_mes || {}).map(Number).sort((a,b)=>a-b);
+  let prev = prevRaw, rankCarregando = false;
+  if (prevKey && mesesAtuaisNum.length && mesesAtuaisNum.length < 6){
+    const anoAnterior = +prevKey.split('_')[0];
+    const mesesPrevYYYYMM = mesesAtuaisNum.map(m => `${anoAnterior}-${String(m).padStart(2,'0')}`);
+    ensureRankScope(prevKey, mesesPrevYYYYMM);
+    const recPrev = rankScopeDados(prevKey, mesesPrevYYYYMM);
+    prev = recPrev ? mesclarRecorte(prevRaw || recorteVazio(), recPrev) : null;
+    rankCarregando = !recPrev;
+  }
 
   // Com filtro de Gerente/Supervisor/Vendedor ativo, usa o cubo hierárquico (Top 50
   // por entidade, dados reais) em vez do Top 50 global — assim a tabela reflete quem
   // está selecionado, não a empresa inteira.
   const cliBase  = topClientesFonte(d, level, names);
   const prodBase = topProdutosFonte(d, level, names);
-  document.getElementById("rankHierNote").innerHTML = level
-    ? `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: listas calculadas a partir do Top 50 real de cada entidade (cubo hierárquico), não do Top 50 da empresa inteira.</div>` : "";
+  document.getElementById("rankHierNote").innerHTML = (level
+    ? `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: listas calculadas a partir do Top 50 real de cada entidade (cubo hierárquico), não do Top 50 da empresa inteira.</div>` : "")
+    + (rankCarregando ? `<div class="alert">⏳ Consultando o semestre anterior restrito aos mesmos meses do atual — os comparativos "Δ vs ano ant." aparecem em alguns segundos.</div>` : "")
+    + (rankScopeErro && rankCarregando ? `<div class="alert">⚠ Falha ao consultar o recorte do semestre anterior (<strong>${rankScopeErro}</strong>) — os comparativos ficam sem base até recarregar a página.</div>` : "");
 
   const cli = filtrarClientes(cliBase).slice(0,50);
   document.getElementById("tTopCli").innerHTML = tblRank(cli,"nome",

@@ -158,6 +158,12 @@ class DashboardETLService {
       // dia no JSON se sobrescreviam e perdiam receita. ::date resolve na origem.
       const porDia = await q(`SELECT DataPed::date dia, SUM(Total) r, SUM(customedio) c FROM tmp_base_vendas GROUP BY DataPed::date ORDER BY 1`);
       const porDiaCat = await q(`SELECT DataPed::date dia, categoria, SUM(Total) r, SUM(customedio) c FROM tmp_base_vendas WHERE categoria IS NOT NULL GROUP BY DataPed::date, categoria ORDER BY 1`);
+      // Códigos de cliente distintos por (dia, categoria) — mesma técnica de
+      // porMesCatCliCod (array_agg DISTINCT CodCli), só trocando o GROUP BY de
+      // Mes para DataPed::date — permite Positivação (clientes atendidos)
+      // GERAL e por Categoria no grão de DIA EXATO (aba Resultados Diários),
+      // não só por mês civil.
+      const porDiaCatCliCod = await q(`SELECT DataPed::date dia, categoria, array_agg(DISTINCT CodCli) codigos FROM tmp_base_vendas WHERE categoria IS NOT NULL GROUP BY DataPed::date, categoria ORDER BY 1`);
       const porCanal = await q(`SELECT canal_vendas, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq, COUNT(DISTINCT CodCli) n_clientes FROM tmp_base_vendas WHERE canal_vendas IS NOT NULL GROUP BY canal_vendas`);
       const porInadimplente = await q(`SELECT inadimplente, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq, COUNT(DISTINCT CodCli) n_clientes FROM tmp_base_vendas GROUP BY inadimplente`);
       const porStatus = await q(`SELECT status_cliente, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq, COUNT(DISTINCT CodCli) n_clientes FROM tmp_base_vendas GROUP BY status_cliente`);
@@ -374,7 +380,7 @@ class DashboardETLService {
       await client.query('COMMIT');
 
       return this._montarJson(periodo, {
-        resumo, porMes, porGer, porSup, porCat, porGrp, topVend, topCli, topProd, porDia, porDiaCat,
+        resumo, porMes, porGer, porSup, porCat, porGrp, topVend, topCli, topProd, porDia, porDiaCat, porDiaCatCliCod,
         porGerMes, porSupMes, porVendMes,
         porMesCli, porMesCatCli, porMesCatCliCod, porMesFumo, porMesFumoTotal, realFumoGer, realFumoSup, realFumoVend, fullVend, qual,
         topCliCash, topCliCashCat, topCliCashVend, topProdCash, topProdCashVend, topVendCash,
@@ -690,6 +696,15 @@ class DashboardETLService {
       const m = String(row.mes);
       (por_mes_categoria_clientes_cod[m] = por_mes_categoria_clientes_cod[m] || {})[row.categoria] = (row.codigos || []).map(c => String(c));
     }
+    // por_dia_categoria_clientes_cod[dia][categoria] = [códigos de cliente] —
+    // mesma estrutura de por_mes_categoria_clientes_cod, só que por DIA EXATO
+    // (YYYY-MM-DD) em vez de mês civil — usado pela aba Resultados Diários
+    // pra Positivação (clientes atendidos) geral e por categoria, dia a dia.
+    const por_dia_categoria_clientes_cod = {};
+    for (const row of d.porDiaCatCliCod || []) {
+      const dia = isoDay(row.dia);
+      (por_dia_categoria_clientes_cod[dia] = por_dia_categoria_clientes_cod[dia] || {})[row.categoria] = (row.codigos || []).map(c => String(c));
+    }
     const por_mes_fumokg = {}; for (const row of d.porMesFumo) por_mes_fumokg[String(row.mes)] = round2(num(row.kg));
     // total de fumo sem a restrição de meta (por_mes_fumokg é o comparável à meta)
     const por_mes_fumokg_total = {}; for (const row of (d.porMesFumoTotal||[])) por_mes_fumokg_total[String(row.mes)] = round2(num(row.kg));
@@ -891,7 +906,7 @@ class DashboardETLService {
       n_ger: parseInt(d.resumo.n_ger, 10), n_prod: parseInt(d.resumo.n_prod, 10), n_cat: parseInt(d.resumo.n_cat, 10),
       n_grp: parseInt(d.resumo.n_grp, 10), n_pedidos: nPedidos, ticket_pedido: nPedidos > 0 ? round2(receita / nPedidos) : 0,
       por_mes, por_gerente, por_supervisor, por_categoria, por_grupo,
-      top_vendedores, top_clientes, top_produtos, por_dia, por_dia_categoria,
+      top_vendedores, top_clientes, top_produtos, por_dia, por_dia_categoria, por_dia_categoria_clientes_cod,
       por_mes_clientes, por_mes_categoria_clientes, por_mes_categoria_clientes_cod, por_mes_fumokg, por_mes_fumokg_total, realizado_fumokg, full_vendedores, realizado_por_mes, qualidade,
       top_clientes_cash, top_clientes_cash_detalhe, top_produtos_cash, top_produtos_cash_detalhe, top_vendedores_cash,
       top_clientes_margem, top_clientes_margem_detalhe, top_produtos_margem, top_produtos_margem_detalhe, top_vendedores_margem,

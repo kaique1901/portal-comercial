@@ -107,7 +107,8 @@
 
     <div class="sb-nav">
       <div style="font-size:9px;text-transform:uppercase;letter-spacing:1.2px;color:var(--t3);padding:8px 8px 5px;font-weight:700">Módulos</div>
-      <div class="nav-item on"  data-mod="m-visao"   onclick="showMod('m-visao',this)"><span class="nav-ico">▦</span><span class="nav-txt">Visão Geral</span></div>
+      <div class="nav-item on"  data-mod="m-dashboard" onclick="showMod('m-dashboard',this)"><span class="nav-ico">◆</span><span class="nav-txt">DashBoard</span></div>
+      <div class="nav-item"     data-mod="m-visao"   onclick="showMod('m-visao',this)"><span class="nav-ico">▦</span><span class="nav-txt">Visão Geral</span></div>
       <div class="nav-item"     data-mod="m-comp"    onclick="showMod('m-comp',this)"><span class="nav-ico">⇆</span><span class="nav-txt">Comparativos</span></div>
       <div class="nav-item"     data-mod="m-obj"     onclick="showMod('m-obj',this)"><span class="nav-ico">◉</span><span class="nav-txt">Acompanhamento Objetivos</span></div>
       <div class="nav-item"     data-mod="m-mc"      onclick="showMod('m-mc',this)"><span class="nav-ico">◎</span><span class="nav-txt">Margem &amp; Cash Margem</span></div>
@@ -117,6 +118,7 @@
       <div class="nav-item"     data-mod="m-cascata" onclick="showMod('m-cascata',this)"><span class="nav-ico">⛛</span><span class="nav-txt">Análise em Cascata</span></div>
       <div class="nav-item"     data-mod="m-dias"    onclick="showMod('m-dias',this)"><span class="nav-ico">∿</span><span class="nav-txt">Sazonalidade (Dia da Semana)</span></div>
       <div class="nav-item"     data-mod="m-dow-casc" onclick="showMod('m-dow-casc',this)"><span class="nav-ico">⊟</span><span class="nav-txt">Vendas por Dia da Semana</span></div>
+      <div class="nav-item"     data-mod="m-diario"  onclick="showMod('m-diario',this)"><span class="nav-ico">◷</span><span class="nav-txt">Resultados Diários</span></div>
       <div class="nav-item"     data-mod="m-rank"    onclick="showMod('m-rank',this)"><span class="nav-ico">▲</span><span class="nav-txt">Rankings</span></div>
       <div class="nav-item"     data-mod="m-mix"     onclick="showMod('m-mix',this)"><span class="nav-ico">◈</span><span class="nav-txt">Mix &amp; Positivação</span></div>
       <div class="nav-item"     data-mod="m-abcd"    onclick="showMod('m-abcd',this)"><span class="nav-ico">◐</span><span class="nav-txt">Clientes de A a I</span></div>
@@ -154,7 +156,7 @@
 <div id="topbar">
   <div class="top-left">
     <button class="mob-btn" onclick="document.getElementById('sb').classList.toggle('open')">☰</button>
-    <span class="top-section" id="topSection">Visão Geral</span>
+    <span class="top-section" id="topSection">DashBoard</span>
   </div>
   <div class="top-right">
     <button class="theme-tog" id="logoutBtn" onclick="window.doLogout()" title="Sair (Logout)" style="margin-right:10px; font-size:14px; width:auto; padding:0 10px;">Sair</button>
@@ -165,8 +167,80 @@
 
 <main id="main">
 
+<!-- 0. DASHBOARD EXECUTIVO (tela inicial) -->
+<div class="mod on" id="m-dashboard">
+  <div class="mod-header">
+    <div><div class="mod-title">Dashboard Executivo</div><div class="mod-sub" id="dash-sub">—</div></div>
+    <span class="mod-meta" id="dash-meta">—</span>
+  </div>
+
+  <!-- Veredito executivo: 1ª coisa que a tela mostra — status + frase, sem precisar rolar -->
+  <div class="dash-verdict" id="dash-veredito"></div>
+
+  <!-- Índice rápido — navegação por âncora (scroll-behavior:smooth já é global) -->
+  <nav class="dash-toc">
+    <a href="#dash-ch-1">1. Visão Geral &amp; Metas</a>
+    <a href="#dash-ch-2">2. Categoria &amp; Gerente</a>
+    <a href="#dash-ch-3">3. Carteira de Clientes</a>
+    <a href="#dash-ch-4">4. Riscos &amp; Alertas</a>
+    <a href="#dash-ch-5">5. Destaques</a>
+  </nav>
+
+  <!-- ═══ 1. VISÃO GERAL & DESEMPENHO VS. META ═══ -->
+  <div class="dash-chapter" id="dash-ch-1"><span class="dash-chapter-num">1</span><div><div class="mod-title" style="font-size:18px">Visão Geral &amp; Desempenho vs. Meta</div><div class="mod-sub">Os números que respondem "como estamos" em até 5 segundos — receita, margem e meta do período</div></div></div>
+  <div class="kpi-grid" id="dash-kpis-hero"></div>
+
+  <div class="mod-header" style="margin-top:20px;padding-top:0"><div><div class="mod-title" style="font-size:14px;color:var(--t2)">Meta x Realizado x Tendência — Geral</div><div class="mod-sub">Mesmo cubo da aba Acompanhamento Objetivos</div></div></div>
+  <div class="kpi-grid" id="dash-kpis-meta"></div>
+
+  <div class="row2">
+    <div class="card"><div class="card-h"><div><div class="card-title">Receita por Mês — Atual vs. Ano Anterior</div><div class="card-sub" id="dashMesNote"></div></div></div><canvas id="cDashMes" height="170"></canvas></div>
+    <div class="card"><div class="card-h"><div><div class="card-title">Mix por Categoria</div></div></div><canvas id="cDashCat" height="170"></canvas></div>
+  </div>
+
+  <!-- ═══ 2. DETALHAMENTO: CATEGORIA & GERENTE ═══ -->
+  <div class="dash-chapter" id="dash-ch-2"><span class="dash-chapter-num">2</span><div><div class="mod-title" style="font-size:18px">Desempenho por Categoria &amp; Gerente</div><div class="mod-sub">De "como estamos" para "onde" — detalhamento por categoria de produto e por gerente de vendas</div></div></div>
+  <div class="mod-header" style="padding-top:0"><div><div class="mod-title" style="font-size:14px;color:var(--t2)">Por Categoria</div><div class="mod-sub">Meta, realizado, tendência, margem, positivação e estoque — mesma fonte da aba Acompanhamento Objetivos</div></div></div>
+  <div id="dash-cat-tables"></div>
+
+  <div class="mod-header" style="margin-top:20px;padding-top:0"><div><div class="mod-title" style="font-size:14px;color:var(--t2)">Por Gerente</div><div class="mod-sub">Meta x Realizado x % Atingimento — mesma fonte da tabela "Meta x Realizado por Gerente" em Acompanhamento Objetivos</div></div></div>
+  <div id="dash-gerentes"></div>
+
+  <!-- ═══ 3. CARTEIRA DE CLIENTES ═══ -->
+  <div class="dash-chapter" id="dash-ch-3"><span class="dash-chapter-num">3</span><div><div class="mod-title" style="font-size:18px">Carteira de Clientes</div><div class="mod-sub">Concentração de receita por grupo (A–I), últimos 90 dias — mesma fonte da aba Clientes de A a I</div></div></div>
+  <div class="kpi-grid" id="dash-abcd-kpis"></div>
+  <div id="dash-abcd-table"></div>
+
+  <!-- ═══ 4. RISCOS, OPORTUNIDADES & ALERTAS ═══ -->
+  <div class="dash-chapter" id="dash-ch-4"><span class="dash-chapter-num">4</span><div><div class="mod-title" style="font-size:18px">Riscos, Oportunidades &amp; Alertas Operacionais</div><div class="mod-sub">O que exige atenção e ação — pipeline completo de riscos/oportunidades + indicadores operacionais de monitoramento</div></div></div>
+  <div class="mod-sub" id="dash-ro-sub" style="margin-bottom:10px">Lista completa — mesma fonte da aba Riscos &amp; Oportunidades</div>
+  <div class="row2">
+    <div>
+      <div class="ro-header riscos">▼ Riscos Identificados</div>
+      <div class="risk-grid" id="dash-riscos-list" style="grid-template-columns:1fr"></div>
+    </div>
+    <div>
+      <div class="ro-header oport">▲ Oportunidades Prioritárias</div>
+      <div class="risk-grid" id="dash-oport-list" style="grid-template-columns:1fr"></div>
+    </div>
+  </div>
+
+  <div class="mod-header" style="margin-top:20px;padding-top:0"><div><div class="mod-title" style="font-size:14px;color:var(--t2)">Alertas Operacionais</div></div></div>
+  <div class="kpi-grid" id="dash-alertas"></div>
+
+  <!-- ═══ 5. DESTAQUES (RANKINGS) ═══ -->
+  <div class="dash-chapter" id="dash-ch-5"><span class="dash-chapter-num">5</span><div><div class="mod-title" style="font-size:18px">Destaques</div><div class="mod-sub">Quem mais contribui e quem precisa de atenção — rankings de clientes, vendedores e margens</div></div></div>
+  <div class="row2">
+    <div class="card"><div class="card-h"><div><div class="card-title">Top 5 Clientes por Receita</div></div></div><div class="tbl-wrap"><table id="tDashRankCli"></table></div></div>
+    <div class="card"><div class="card-h"><div><div class="card-title">Top 5 Vendedores por Receita</div></div></div><div class="tbl-wrap"><table id="tDashRankVend"></table></div></div>
+  </div>
+  <div id="dash-rank-ofensores" style="margin-top:14px"></div>
+
+  <div id="dash-footer" style="font-size:11px;color:var(--t3);margin-top:18px;padding-top:14px;border-top:1px solid var(--bdr)"></div>
+</div>
+
 <!-- 1. VISÃO GERAL -->
-<div class="mod on" id="m-visao">
+<div class="mod" id="m-visao">
   <div class="alert">⚠ <div>Dados 100% reais servidos pela <strong>API</strong> (agregação direta do banco PostgreSQL). Os recortes por Top 50 de cada dimensão são pré-agregados na API; combinar dimensões diferentes usa a dimensão mais específica.</div></div>
   <div class="mod-header">
     <div><div class="mod-title">Visão Geral Executiva</div><div class="mod-sub" id="vg-sub">—</div></div>
@@ -301,6 +375,51 @@
 </div>
 
 <!-- (Módulo "Motivos da Variação" removido a pedido) -->
+
+<!-- 3E. RESULTADOS DIÁRIOS — série por data exata (não agregada por dia da semana) -->
+<div class="mod" id="m-diario">
+  <div class="mod-header">
+    <div><div class="mod-title">Resultados Diários</div><div class="mod-sub" id="diarioSub">—</div></div>
+    <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+      <div><label style="font-size:10px;color:var(--t3);margin-right:6px;display:block">Janela</label>
+        <select class="fsel" id="fDiarioBase" onchange="onDiarioBaseChange(this.value)">
+          <option value="mes">Mês vigente</option>
+          <option value="90dias">Últimos 90 dias (sempre até hoje)</option>
+          <option value="semestre">Semestre anterior (fechado)</option>
+          <option value="custom">Personalizado (qualquer período)</option>
+        </select>
+      </div>
+      <div id="diarioSubFiltroWrap"></div>
+    </div>
+  </div>
+  <div class="alert">⚠ Diferente da aba <strong>Sazonalidade</strong> (que agrega por dia da semana), aqui cada <strong>data exata</strong> aparece isolada — para enxergar picos, quedas e o ritmo dia a dia, não o padrão médio. Mesma fonte de dado (data real do pedido, <code>por_dia</code>/<code>por_dia_categoria</code>). Padrão é o <strong>Mês vigente</strong> (período menor, foco no que está em curso); escolha <strong>Personalizado</strong> para pedir qualquer intervalo maior (inclusive cruzando vários semestres). <strong>O comparativo "vs. Ano Anterior" de 1 dia isolado usa o mesmo DIA DA SEMANA mais próximo da mesma época do ano anterior</strong> (não a data crua) — comparar uma Segunda-feira com o que caiu no calendário exatamente 1 ano antes às vezes cai num Domingo, distorcendo o delta para uma empresa que quase não vende aos domingos; já o <strong>resumo por Categoria</strong> soma a janela inteira, onde a data crua é o critério certo (mesmo usado no modo "datas exatas" de Acompanhamento Objetivos). <strong>"Hoje" sempre aparece separado, em andamento</strong>, sem comparação — o ETL roda em ciclos, então o valor do dia corrente é sempre parcial, nunca o fechamento real do dia. <strong>Positivação (clientes distintos) agora existe por DIA EXATO no cubo</strong> — é exata ao intervalo exibido, sem arredondar para mês civil, e fica indisponível com filtro de Gerente/Supervisor/Vendedor/Cliente/Canal/Status/Grupo ativo (só existe nível empresa nesta leitura direta do cubo). <strong>Nº de Pedidos por dia não está disponível</strong>: o cubo do ETL soma Receita/Custo por data, mas não conta pedidos nesse grão (só no total do período, ver aba Visão Geral) — não inventamos esse número aqui. A série diária (gráfico/tabelas de Receita) só é recortável por <strong>Gerente</strong> (não por Supervisor/Vendedor) — é o único nível hierárquico com cubo diário exato.</div>
+  <div id="diarioHierNote"></div>
+  <div id="diarioCatNote"></div>
+
+  <div class="kpi-grid" id="diario-kpis-hoje"></div>
+
+  <div class="row2">
+    <div class="card"><div class="card-h"><div><div class="card-title">Melhor dia do período</div><div class="card-sub">Maior Receita entre os dias com venda registrada</div></div></div><div id="diario-melhor-dia"></div></div>
+    <div class="card"><div class="card-h"><div><div class="card-title">Pior dia do período</div><div class="card-sub">Menor Receita entre os dias com venda registrada</div></div></div><div id="diario-pior-dia"></div></div>
+  </div>
+
+  <div class="mod-header" style="margin-top:22px;padding-top:0"><div><div class="mod-title" style="font-size:16px">Positivação</div><div class="mod-sub">Clientes distintos — grão de dia exato, nível empresa</div></div></div>
+  <div class="kpi-grid" id="diario-positivacao"></div>
+
+  <div class="mod-header" style="margin-top:22px;padding-top:0"><div><div class="mod-title" style="font-size:16px">Receita por Categoria no Período</div><div class="mod-sub">Soma de toda a janela selecionada — mesma fonte de dado, nunca recalculado</div></div></div>
+  <div class="row2">
+    <div class="card"><div class="card-h"><div><div class="card-title">Mix por Categoria</div></div></div><canvas id="cDiarioCat" height="170"></canvas></div>
+    <div class="card"><div class="card-h"><div><div class="card-title">Receita, Cash Margem, Margem % e Positivação por Categoria</div></div></div><div class="tbl-wrap"><table id="diario-cat-table"></table></div></div>
+  </div>
+
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Venda por Dia × Categoria</div><div class="card-sub" id="diarioCatDiaSub">—</div></div></div><div class="tbl-wrap"><table id="tDiarioCatDia"></table></div></div></div>
+
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Clientes Atendidos (Positivação) por Dia × Categoria</div><div class="card-sub" id="diarioPosCatDiaSub">—</div></div></div><div class="tbl-wrap"><table id="tDiarioPosCatDia"></table></div></div></div>
+
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Receita por Dia</div><div class="card-sub">Linha fina = receita do dia · linha grossa = média móvel de 7 dias</div></div></div><canvas id="cDiario" height="160"></canvas></div></div>
+
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Dias mais recentes</div><div class="card-sub" id="diarioTabelaSub">—</div></div></div><div class="tbl-wrap"><table id="tDiario"></table></div></div></div>
+</div>
 
 <!-- 4. RANKINGS -->
 <div class="mod" id="m-rank">
@@ -532,5 +651,7 @@
 <script src="js/pptxgen.bundle.js"></script>
 <script src="js/app.js"></script>
 <script src="js/apresentacao.js"></script>
+<script src="js/diario.js"></script>
+<script src="js/dashboard.js"></script>
 </body>
 </html>
