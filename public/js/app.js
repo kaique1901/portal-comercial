@@ -6758,11 +6758,21 @@ let authSession = null;
 window.__authSession = () => authSession;
 window.__escopo = (sess) => escopoPermitido(sess);
 
+// Único admin do painel: o "gerente" DIRETORIA (cifalcomercial.gerente.codgerente = 28).
+// Ele loga pelo mesmo /Roteiro/gerente/login (CPF + token) e volta sem supervisores,
+// então como 'gerente' cairia em travaSemEscopo. Como 'admin' nenhuma trava se aplica
+// (escopoPermitido/applyAccessLock/secureFallback só agem em gerente/supervisor) e o
+// painel mostra a empresa inteira.
+const ADMIN_COD_GERENTE = '28';
+const isAdminSession = (sess) => String(pickCI(sess, 'codgerente', 'codger')) === ADMIN_COD_GERENTE;
+
 function checkAuth() {
   const saved = localStorage.getItem('portalAuth');
   if (saved) {
     try {
       authSession = JSON.parse(saved);
+      // Sessão da DIRETORIA salva antes desta regra existir ainda está como 'gerente'.
+      if (authSession && authSession.role === 'gerente' && isAdminSession(authSession)) authSession.role = 'admin';
       document.getElementById('login-overlay').style.display = 'none';
       return true;
     } catch(e){}
@@ -6873,6 +6883,8 @@ function persistAuthSession(){
 // Carrega a carteira na sessão (login novo ou sessão restaurada sem clientes).
 async function ensureCarteira(){
   if (!authSession) return;
+  // Admin não tem carteira própria: o filtro Cliente usa o top do cubo da empresa.
+  if (authSession.role === 'admin') return;
   if (Array.isArray(authSession.clientes) && authSession.clientes.length) return;
   try {
     const token = await getBaseToken();
@@ -6893,7 +6905,9 @@ async function ensureCarteira(){
 }
 
 window.doLogin = async function() {
-  const role = document.getElementById('loginRole').value; // 'supervisor' ou 'gerente'
+  const role = document.getElementById('loginRole').value; // 'supervisor', 'gerente' ou 'diretoria'
+  // Diretoria não tem rota própria na API da Cifal: é um gerente (cod 28).
+  const rotaLogin = role === 'diretoria' ? 'gerente' : role;
   const user = document.getElementById('loginUser').value;
   const pass = document.getElementById('loginPass').value;
   const btn = document.getElementById('loginBtn');
@@ -6918,7 +6932,7 @@ window.doLogin = async function() {
     if (!token) throw new Error("Token não retornado pela API.");
 
     // 2. Chamar a rota de elevação de cargo usando o Token
-    const res = await fetch(`https://apis.cifaldistribuidora.com.br:8001/Roteiro/${role}/login`, {
+    const res = await fetch(`https://apis.cifaldistribuidora.com.br:8001/Roteiro/${rotaLogin}/login`, {
       method: 'POST',
       headers: { 
         'Content-Type': 'application/json',
@@ -6929,7 +6943,10 @@ window.doLogin = async function() {
     
     if (!res.ok) throw new Error("Usuário ou senha inválidos.");
     const data = await res.json();
-    data.role = role;
+    const admin = rotaLogin === 'gerente' && isAdminSession(data);
+    // "Diretoria" escolhido com credencial de outro gerente: não vira gerente comum.
+    if (role === 'diretoria' && !admin) throw new Error("Usuário ou senha inválidos.");
+    data.role = admin ? 'admin' : role;
 
     // Sucesso! Salvar na sessão. A carteira de clientes é carregada por
     // ensureCarteira() dentro de loadAndInit (mesmo caminho da sessão restaurada).
