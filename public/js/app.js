@@ -1032,6 +1032,12 @@ function mesclarRecorte(p, rec){
     // Positivação por DIA do cubo da EMPRESA inteira (o /recorte ainda não
     // calcula este cubo por dia) e vazaria escopo; `|| {}` evita o leak.
     por_dia_categoria_clientes_cod: rec.por_dia_categoria_clientes_cod || {},
+    // Mesmo racional: sem isto, um recorte ativo manteria a cascata Categoria→
+    // Mês→Produto "Todos os Clientes" da EMPRESA inteira em vez do recorte.
+    mix_mes_categoria_produto: rec.mix_mes_categoria_produto || {},
+    // Mesmo racional: sem isto, um recorte ativo manteria a cascata por
+    // Cliente→Categoria→Mês da EMPRESA inteira em vez do recorte.
+    mix_cliente_categoria_mes: rec.mix_cliente_categoria_mes || {},
     // FUMO KG: sem isso a aba Meta comparava meta do escopo com realizado da empresa.
     por_mes_fumokg: rec.por_mes_fumokg,
     realizado_fumokg: rec.realizado_fumokg,
@@ -2214,7 +2220,14 @@ function renderVisao(){
   mkChart("cVgGrp",{type:"bar",data:{labels:grps.map(g=>g[0]),datasets:[{data:grps.map(g=>g[1].r),backgroundColor:C.acc2+"cc",borderRadius:4}]},
     options:{indexAxis:"y",responsive:true,plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>" "+fF(c.raw)}}},scales:{x:{ticks:{callback:v=>fM(v)}}}}});
 
-  // Aditivo p/ Apresentação Executiva — expõe os números já calculados acima.
+  // Aditivo p/ Apresentação Executiva e Dashboard — expõe os números já
+  // calculados acima. `avisos` (BUG CORRIGIDO): os valores desta função ficam
+  // zerados enquanto o recorte do ano está em voo OU falhou (ex.: timeout de
+  // conexão com o banco) — a aba nativa Visão Geral já avisava isso (`banners`
+  // acima, escritos em #vg-kpis), mas quem consome só o RETURN desta função
+  // (apexExtractVisaoGeral -> Dashboard/Apresentação Executiva) não tinha
+  // como saber e mostrava R$ 0 em silêncio, sem nenhuma explicação. Agora os
+  // mesmos avisos (idêntico texto/condição) também saem daqui.
   return {
     label: d.label, escopoLabel: eff.label||null,
     r: eff.r, prevR: prevEff?prevEff.r:null, effMargem, prevMargem, cashMargem, prevCashMargem,
@@ -2224,6 +2237,7 @@ function renderVisao(){
     categorias: cats.map(c=>({ nome:c[0], r:c[1].r })),
     gerentes: gers.map(g=>({ nome:g[0], r:g[1].r })),
     grupos: grps.map(g=>({ nome:g[0], r:g[1].r })),
+    avisos: banners,
   };
 }
 
@@ -2842,7 +2856,7 @@ function renderMargemCash(){
     prodList = topProdutosFonte(d, level, names).slice().sort((a,b)=>(b.r-b.c)-(a.r-a.c));
     cliListM = topClientesFonte(d, level, names).slice().sort((a,b)=>b.m-a.m);
     prodListM = topProdutosFonte(d, level, names).slice().sort((a,b)=>b.m-a.m);
-    document.getElementById("cashHierNote").innerHTML = `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: Cliente/Produto usam o Top 50 por Receita daquele recorte, reordenado por Cash Margem ou por Margem % (aproximação — o recorte pode não conter o cliente/produto de maior margem/cash margem da empresa como um todo).${mesTopNoteHier}</div>`;
+    document.getElementById("cashHierNote").innerHTML = `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: Top 50 por Cash Margem/Margem % calculado sobre todos os clientes/produtos daquele recorte (cubo hierárquico).${mesTopNoteHier}</div>`;
   } else {
     // Sem filtro de hierarquia: Top 50 respeita o filtro de Mês via os cubos
     // mensais dedicados (top_clientes_cash_por_mes etc.) — antes sempre
@@ -4665,13 +4679,13 @@ function renderPlanoMesVigente(){
 // livremente, é template determinístico sobre os agregados já calculados.
 // ── Perfil de compra por CLIENTE (categorias + produtos), pra alimentar as
 // oportunidades de cross-sell do Plano de Ação. Candidatos = mesmo pool de
-// mix_cascata_detalhe/hier_top_clientes.vendedor (Top 50 de cada vendedor) —
-// não é a carteira inteira, mas cobre quem já é relevante o bastante pra
-// aparecer no Top 50 de algum vendedor. Construído 1x por render (não por
-// categoria) porque é usado por TODAS as categorias do plano.
+// mix_cascata_detalhe/hier_top_clientes_vendedor_top50 (Top 50 de cada
+// vendedor) — não é a carteira inteira, mas cobre quem já é relevante o
+// bastante pra aparecer no Top 50 de algum vendedor. Construído 1x por
+// render (não por categoria) porque é usado por TODAS as categorias do plano.
 function buildClientProfileIndex(d){
   const detalhe = d.mix_cascata_detalhe || {};
-  const hierTopVend = (d.hier_top_clientes && d.hier_top_clientes.vendedor) || {};
+  const hierTopVend = d.hier_top_clientes_vendedor_top50 || {};
   const perfil = {};
   Object.keys(hierTopVend).forEach(vend=>{
     const sup = supervisorDoVendedor(d, vend);
@@ -5098,7 +5112,7 @@ function buildVendedorPlano(v, idx, mediaEmpresa, limiarAlvo, d, ano){
   const catsOrdenadas = Object.entries(catBreak).sort((a,b)=>b[1].r-a[1].r);
   const catForte = catsOrdenadas[0] || null;
   const catFraca = catsOrdenadas.length > 1 ? catsOrdenadas[catsOrdenadas.length-1] : null;
-  const clientes = (d.hier_top_clientes && d.hier_top_clientes.vendedor && d.hier_top_clientes.vendedor[v.nome]) || [];
+  const clientes = (d.hier_top_clientes_vendedor_top50 && d.hier_top_clientes_vendedor_top50[v.nome]) || [];
   const nClientes = clientes.length;
   const consolidando = limiarAlvo === LIMIAR_VEND_2; // grupo 2 = já supera 150k, foco em consolidar 200k
 
@@ -5209,7 +5223,7 @@ function renderRank(){
   const cliBase  = topClientesFonte(d, level, names);
   const prodBase = topProdutosFonte(d, level, names);
   document.getElementById("rankHierNote").innerHTML = (level
-    ? `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: listas calculadas a partir do Top 50 real de cada entidade (cubo hierárquico), não do Top 50 da empresa inteira.</div>` : "")
+    ? `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: Top 50 calculado sobre todos os clientes/produtos daquele recorte (cubo hierárquico), não do Top 50 da empresa inteira.</div>` : "")
     + (rankCarregando ? `<div class="alert">⏳ Consultando o semestre anterior restrito aos mesmos meses do atual — os comparativos "Δ vs ano ant." aparecem em alguns segundos.</div>` : "")
     + (rankScopeErro && rankCarregando ? `<div class="alert">⚠ Falha ao consultar o recorte do semestre anterior (<strong>${rankScopeErro}</strong>) — os comparativos ficam sem base até recarregar a página.</div>` : "");
 
@@ -5276,25 +5290,54 @@ function ensureMixCascata(periodo){
     });
 }
 
+// Meses ativos do cliente no ANO CIVIL inteiro (os 2 semestres), não só no
+// período/mês filtrado no topo — soma meses_ativos_por_cliente (aditivo do
+// ETL, sem corte de Top 50) dos 2 semestres do ano; null se nenhum dos 2
+// tiver o campo (cache antigo, antes desta mudança — cai no fallback do
+// chamador). Denominador correspondente: mesesDoAno(ano).length (só os
+// meses que o cubo realmente tem, ex.: 10 em vez de 12 num ano em curso).
+function clienteMesesAtivosNoAno(codigo, ano){
+  let total = 0, any = false;
+  [1,2].forEach(sem=>{
+    const p = window.REAL_DATA && REAL_DATA[`${ano}_${sem}`];
+    const v = p && p.meses_ativos_por_cliente && p.meses_ativos_por_cliente[codigo];
+    if (v!=null){ total += v; any = true; }
+  });
+  return any ? total : null;
+}
 function renderMix(){
   ensureMixCascata(ST.per);
   const d = curPeriod();
   const prevKey = PREV_OF[ST.per];
   const prev = prevPeriod();
   const nMeses = Object.keys(d.por_mes).length;
+  const anoRef = parseInt(ST.per.split('_')[0], 10);
+  const mesesAnoRef = mesesDoAno(anoRef).length || nMeses;
   const level = hierLevelActive();
   const names = level ? hierSelectedNames(level) : [];
   const base = topClientesFonte(d, level, names);
   document.getElementById("mixHierNote").innerHTML = level
-    ? `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: Top 50 real de cada entidade. "Categorias distintas"/"Meses ativos" continuam refletindo o comportamento total do cliente (com todos os vendedores), não só este recorte.</div>` : "";
-  const rows = filtrarClientes(base).slice(0,25);
-  document.getElementById("tMix").innerHTML = `<thead><tr><th>Cliente</th><th class="tv">Receita</th><th class="tv">Δ vs ano ant.</th><th class="tv">Categorias distintas</th><th class="tv">Meses ativos</th><th class="tv">Positivação</th></tr></thead><tbody>${
+    ? `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: todos os clientes do recorte (sem corte de Top 50). "Categorias distintas"/"Meses ativos" e o detalhe por Categoria/Mês (clique no cliente) continuam refletindo o comportamento total do cliente (com todos os vendedores), não só este recorte.</div>` : "";
+  const rows = filtrarClientes(base);
+  document.getElementById("tMix").innerHTML = `<thead><tr><th>Cliente</th><th class="tv">Receita</th><th class="tv">Δ vs ano ant.</th><th class="tv">Categorias distintas</th><th class="tv">Meses ativos (ano)</th><th class="tv">Positivação</th></tr></thead><tbody>${
     rows.map(r=>{
-      const pos = Math.round(r.meses_ativos/nMeses*100);
+      const mesesAtivosAno = clienteMesesAtivosNoAno(r.codigo, anoRef);
+      const mesesAtivosExibir = mesesAtivosAno!=null ? mesesAtivosAno : r.meses_ativos;
+      const totalMesesExibir = mesesAtivosAno!=null ? mesesAnoRef : nMeses;
+      const pos = totalMesesExibir>0 ? Math.round(mesesAtivosExibir/totalMesesExibir*100) : 0;
       const pv = prevLookupList(prev,"top_clientes","nome",r.nome);
-      return `<tr><td class="tn">${r.nome}</td><td class="tv">${fF(r.r)}</td><td class="tv">${deltaPillSmall(r.r,pv)}</td><td class="tv">${r.categorias} de ${d.n_cat}</td><td class="tv">${r.meses_ativos} de ${nMeses}</td>
+      const kCli = 'MIXTOPCLI|||'+r.codigo;
+      const expCli = mixTopCliExpanded.has(kCli);
+      let linha = `<tr><td class="tn">${mixTopCliToggle(kCli,expCli)}${escAttr(r.nome)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${deltaPillSmall(r.r,pv)}</td><td class="tv">${r.categorias} de ${d.n_cat}</td><td class="tv">${mesesAtivosExibir} de ${totalMesesExibir}</td>
         <td class="tv"><div class="bar-row"><div class="bar-bg"><div class="bar-fg" style="width:${pos}%"></div></div><div class="bar-pct">${pos}%</div></div></td></tr>`;
+      if (expCli) linha += renderMixTopCliDetalhe(r.codigo, kCli);
+      return linha;
     }).join("")}</tbody>`;
+
+  const tMixCatMesProdEl = document.getElementById("tMixCatMesProd");
+  if (tMixCatMesProdEl){
+    tMixCatMesProdEl.innerHTML = `<thead><tr><th>Categoria / Mês / Produto</th><th class="tv">Faturamento</th></tr></thead><tbody>${renderMixCategoriaMesProduto(d)}</tbody>`;
+  }
 
   const tMixCascataEl = document.getElementById("tMixCascata");
   if (tMixCascataEl) {
@@ -5316,12 +5359,141 @@ function renderMix(){
     })),
   };
 }
+// ── Cascata por Cliente (tabela acima, TODOS os clientes): Categoria → Mês,
+// só faturamento, sem nível de Produto (ver mix_cliente_categoria_mes no ETL
+// — produto é coberto, para a empresa inteira, pela cascata "Categoria →
+// Produto → Mês" abaixo). Propósito: analisar, para um cliente já visível na
+// tabela, o ritmo/espaçamento de compra dentro de cada categoria (meses com e
+// sem compra lado a lado). Set de expansão PRÓPRIO (path key "MIXTOPCLI|||"),
+// pra não colidir com o Mix em Cascata.
+let mixTopCliExpanded = new Set();
+function toggleMixTopCli(pathKey){
+  if (mixTopCliExpanded.has(pathKey)) mixTopCliExpanded.delete(pathKey); else mixTopCliExpanded.add(pathKey);
+  renderMix();
+}
+function mixTopCliToggle(key, expanded){
+  return `<span class="casc-toggle" onclick="toggleMixTopCli('${key.replace(/'/g,"\\'")}')">${expanded?'−':'+'}</span>`;
+}
+// CLI_SCOPE (recorte da aba) só traz os MESES MARCADOS no painel lateral (por
+// padrão, só o mês corrente) — ver recorteQuery/cliScopeKey. Sem isto, com um
+// filtro de hierarquia/categoria ativo, a cascata "mês a mês" mostrava só 1 mês
+// em vez do semestre inteiro. Reaproveita o MESMO recorte do ano civil que a
+// Visão Geral já busca (ensureAnoScope/anoScopeDados), que ignora o filtro de
+// Mês por construção — dispara a consulta se precisar (idempotente).
+function mixAnoDados(){
+  if (filtrosDoAno() === 0) return null;
+  const anoRef = parseInt(ST.per.split('_')[0], 10);
+  ensureAnoScope(anoRef);
+  return anoScopeDados(anoRef);
+}
+function mixAnoCarregando(){
+  if (filtrosDoAno() === 0) return false;
+  const anoRef = parseInt(ST.per.split('_')[0], 10);
+  const key = anoScopeQuery(anoRef);
+  return !!(key && anoScopePending[anoRef] === key);
+}
+function renderMixTopCliDetalhe(codigo, prefix){
+  const d = curPeriod();
+  // Cliente → Categoria → Mês, TODOS os clientes (sem corte de Top 50), só
+  // faturamento — sem nível de Produto (ver nota em mix_cliente_categoria_mes/
+  // mixCliCatMes no ETL: incluir Produto aqui faria o payload saltar de ~250
+  // mil para ~650-700 mil linhas/semestre). Produto por categoria é coberto,
+  // para a empresa inteira, pela cascata "Categoria → Produto → Mês" abaixo.
+  const anoDados = mixAnoDados();
+  const fonte = (anoDados && anoDados.mix_cliente_categoria_mes) || d.mix_cliente_categoria_mes || {};
+  const porCat = fonte[codigo] || {};
+  const catNames = Object.keys(porCat);
+  if (!catNames.length){
+    const msg = mixAnoCarregando()
+      ? '⏳ Carregando detalhe do ano completo...'
+      : 'Sem dado de Categoria/Mês disponível para este cliente no período.';
+    return `<tr><td colspan="5" style="padding-left:18px;color:var(--t3);font-size:12px">${msg}</td><td class="tv">—</td></tr>`;
+  }
+  let html = '';
+  catNames.sort((a,b)=>porCat[b].r-porCat[a].r).forEach(cat=>{
+    const kCat = prefix+'|||'+cat;
+    const expCat = mixTopCliExpanded.has(kCat);
+    html += `<tr class="casc-lvl1"><td colspan="5" style="padding-left:18px">${mixTopCliToggle(kCat,expCat)}${escAttr(cat)}</td><td class="tv">${fF(porCat[cat].r)}</td></tr>`;
+    if (!expCat) return;
+    Object.keys(porCat[cat].porMes).map(Number).sort((a,b)=>a-b).forEach(mes=>{
+      const valorMes = porCat[cat].porMes[String(mes)];
+      html += `<tr class="casc-info"><td colspan="5" style="padding-left:36px">${MESES_NOME[mes]}</td><td class="tv">${fF(valorMes)}</td></tr>`;
+    });
+  });
+  return html;
+}
+
+// ── Categoria → Produto → Mês, AGREGADO de TODOS os clientes (não só o Top
+// 25/50) — mix_mes_categoria_produto (do ETL/recorte), formato
+// {mes:{categoria:[produtos]}}, repivotado por Produto (não por Mês) dentro
+// de cada categoria — pedido explícito do usuário: abrir a categoria, ver os
+// produtos vendidos nela e, dentro de cada produto, o mês a mês. Só
+// faturamento. Set de expansão PRÓPRIO ("MIXALLCAT|||"), independente do
+// MIXTOPCLI (por cliente) e do MIXC (Mix em Cascata, por Supervisor/Vendedor).
+let mixAllCatExpanded = new Set();
+function toggleMixAllCat(pathKey){
+  if (mixAllCatExpanded.has(pathKey)) mixAllCatExpanded.delete(pathKey); else mixAllCatExpanded.add(pathKey);
+  renderMix();
+}
+function mixAllCatToggle(key, expanded){
+  return `<span class="casc-toggle" onclick="toggleMixAllCat('${key.replace(/'/g,"\\'")}')">${expanded?'−':'+'}</span>`;
+}
+// Inverte {mes:{categoria:[{codigo,nome,r}]}} para
+// {categoria:{total, produtos:{nome:{total, porMes:{mes:valor}}}}}.
+function mixPivotCategoriaProdutoMes(dadosPorMes){
+  const porCat = {};
+  Object.keys(dadosPorMes||{}).forEach(mes=>{
+    const cats = dadosPorMes[mes] || {};
+    Object.keys(cats).forEach(cat=>{
+      const nodeCat = porCat[cat] || (porCat[cat] = { total:0, produtos:{} });
+      (cats[cat]||[]).forEach(p=>{
+        const v = p.r||0;
+        nodeCat.total += v;
+        const nodeProd = nodeCat.produtos[p.nome] || (nodeCat.produtos[p.nome] = { total:0, porMes:{} });
+        nodeProd.total += v;
+        nodeProd.porMes[mes] = (nodeProd.porMes[mes]||0) + v;
+      });
+    });
+  });
+  return porCat;
+}
+function renderMixCategoriaMesProduto(d){
+  const anoDados = mixAnoDados();
+  const fonte = (anoDados && anoDados.mix_mes_categoria_produto) || d.mix_mes_categoria_produto || {};
+  const porCat = mixPivotCategoriaProdutoMes(fonte);
+  const catNames = Object.keys(porCat);
+  if (!catNames.length) {
+    const msg = mixAnoCarregando() ? '⏳ Carregando detalhe do ano completo...' : 'Sem dado disponível para este período/recorte.';
+    return `<tr><td colspan="2" style="text-align:center;color:var(--t3);padding:20px">${msg}</td></tr>`;
+  }
+  let html = '';
+  catNames.sort((a,b)=>porCat[b].total-porCat[a].total).forEach(cat=>{
+    const kCat = 'MIXALLCAT|||'+cat;
+    const expCat = mixAllCatExpanded.has(kCat);
+    html += `<tr class="casc-lvl0"><td>${mixAllCatToggle(kCat,expCat)}${escAttr(cat)}</td><td class="tv">${fF(porCat[cat].total)}</td></tr>`;
+    if (!expCat) return;
+    const produtos = porCat[cat].produtos;
+    Object.keys(produtos).sort((a,b)=>produtos[b].total-produtos[a].total).forEach(nomeProd=>{
+      const kProd = kCat+'|||'+nomeProd;
+      const expProd = mixAllCatExpanded.has(kProd);
+      html += `<tr class="casc-lvl1"><td style="padding-left:18px">${mixAllCatToggle(kProd,expProd)}${escAttr(nomeProd)}</td><td class="tv">${fF(produtos[nomeProd].total)}</td></tr>`;
+      if (!expProd) return;
+      Object.keys(produtos[nomeProd].porMes).map(Number).sort((a,b)=>a-b).forEach(mes=>{
+        const valorMes = produtos[nomeProd].porMes[String(mes)];
+        html += `<tr class="casc-info"><td style="padding-left:36px">${MESES_NOME[mes]}</td><td class="tv">${fF(valorMes)}</td></tr>`;
+      });
+    });
+  });
+  return html;
+}
+
 // ── Mix em Cascata: Supervisor → Vendedor → Cliente → Mês → Categoria →
 // Produtos. Candidatos = os mesmos clientes já no Top 50 de receita de CADA
-// vendedor (hier_top_clientes.vendedor, o mesmo dado que a hierarquia normal
-// do painel usa) — mix_cascata_detalhe (novo, do ETL) dá o detalhe de
-// mês×categoria×produto só para esses códigos. Set de expansão PRÓPRIO, com
-// path key namespaced "MIXC|||" (mesmo racional das outras cascatas do painel).
+// vendedor (hier_top_clientes_vendedor_top50, separado de hier_top_clientes
+// desde que este último deixou de ter corte de Top 50) — mix_cascata_detalhe
+// dá o detalhe de mês×categoria×produto só para esses códigos. Set de
+// expansão PRÓPRIO, com path key namespaced "MIXC|||" (mesmo racional das
+// outras cascatas do painel).
 let mixCascataExpanded = new Set();
 function toggleMixCascata(pathKey){
   if (mixCascataExpanded.has(pathKey)) mixCascataExpanded.delete(pathKey); else mixCascataExpanded.add(pathKey);
@@ -5332,7 +5504,7 @@ function mixCascToggle(key, expanded){
 }
 function renderMixCascata(d){
   const detalhe = d.mix_cascata_detalhe || {};
-  const hierTopVend = (d.hier_top_clientes && d.hier_top_clientes.vendedor) || {};
+  const hierTopVend = d.hier_top_clientes_vendedor_top50 || {};
   const effGer = effectiveGerentes(d), effSup = effectiveSupervisores(d);
   const vendNomes = Object.keys(hierTopVend).filter(v => ST.vend.length===0 || ST.vend.includes(v));
   const porSupervisor = new Map();
@@ -6666,9 +6838,28 @@ function renderCascata(){
   if (!d.cascata){ document.getElementById('tCascata').innerHTML=''; document.getElementById('cascataSub').textContent='Sem dados de cascata para este período.'; return; }
   document.getElementById('cascataSub').textContent = `${d.label}` + (prev?` · comparado a ${prev.label}`:' · sem semestre equivalente no ano anterior para comparar');
 
-  const outrosFiltros = ST.ger.length||ST.sup.length||ST.vend.length||ST.grp.length||ST.cli.length||ST.mes!=null;
-  document.getElementById('cascataFilterNote').innerHTML = outrosFiltros
-    ? `<div class="alert">⚠ Filtro de Gerente/Supervisor/Vendedor/Grupo/Cliente/Mês ativo, mas ignorado nesta aba (cubo só existe fechado por Categoria, nível empresa) — mostrando o semestre inteiro${ST.cat.length?", filtrado pela Categoria selecionada":""}.</div>` : "";
+  // BUG CORRIGIDO: este aviso dizia "ignorado" pra Gerente/Supervisor/Vendedor/
+  // Grupo/Cliente/Mês sempre que qualquer um estivesse ativo — mas d.cascata JÁ
+  // vem recortado nesses casos (curPeriod() -> mesclarRecorte() troca
+  // cascata pelo rec.cascata do /recorte, que já é calculado só sobre as linhas
+  // filtradas — ver DashboardRecorteService.js). O aviso então mentia justamente
+  // quando o recorte funcionava. O único caso REALMENTE não coberto é Mês
+  // sozinho, sem nenhum outro filtro: activeFilterCount() não conta Mês único,
+  // então o /recorte nem chega a ser pedido e o cubo fechado (sem grão mensal)
+  // é que aparece.
+  const mesSel = ST.mes!=null ? MESES_NOME[ST.mes] : null;
+  let cascataFilterNoteHtml = '';
+  if (d._carregando){
+    cascataFilterNoteHtml = `<div class="alert">⏳ Carregando o recorte do filtro ativo…</div>`;
+  } else if (d._recorte){
+    const partes = []; const label = recorteLabel();
+    if (label) partes.push(label);
+    if (mesSel) partes.push("Mês: "+mesSel);
+    if (partes.length) cascataFilterNoteHtml = `<div class="alert">Recortado por <strong>${partes.join(" · ")}</strong> — os números desta cascata já refletem esse filtro.</div>`;
+  } else if (mesSel){
+    cascataFilterNoteHtml = `<div class="alert">⚠ Filtro de Mês ativo, mas ignorado nesta aba isoladamente (o cubo fechado de cascata não tem grão mensal, só Categoria) — mostrando o semestre inteiro${ST.cat.length?", filtrado pela Categoria selecionada":""}. Combine com Gerente/Supervisor/Vendedor/Grupo/Cliente/Canal/Status para recortar o período também.</div>`;
+  }
+  document.getElementById('cascataFilterNote').innerHTML = cascataFilterNoteHtml;
 
   const catNames = Object.keys(d.cascata).filter(n=>ST.cat.length===0||ST.cat.includes(n));
   const isDefault = cascataIsDefaultOrder();
@@ -6691,6 +6882,52 @@ function renderCascata(){
       }
     });
   }
+  // TOTAL GERAL (soma das categorias mostradas, respeitando o filtro de
+  // Categoria) — Faturamento/Qtde/Peso são somas exatas (não há risco de
+  // dupla contagem entre categorias). Clientes (Positivação) é diferente:
+  // um cliente pode comprar em mais de uma categoria, então somar nCli por
+  // categoria pode contar 2x. Sem filtro de Categoria (todas as categorias
+  // entram), o total exato já existe pronto em d.n_cli (mesmo campo que
+  // Visão Geral usa) — uso ele em vez de somar. Com filtro de Categoria
+  // ativo (subconjunto), uso a soma com "≈" (mesma convenção já usada acima
+  // pros nós sintéticos de reordenação).
+  let totalRowHtml = '';
+  if (catNames.length){
+    let totR=0, totC=0, totQ=0, totP=0, totNCli=0;
+    catNames.forEach(n=>{
+      const shaped = cascataShape(d.cascata[n]);
+      if (shaped){ totR+=shaped.r; totC+=shaped.c; totQ+=shaped.q; totP+=shaped.p; totNCli+=shaped.nCli||0; }
+    });
+    const totM = totR>0 ? +(100*(1-totC/totR)).toFixed(2) : 0;
+    const semFiltroCategoria = ST.cat.length===0;
+    const nCliCur = semFiltroCategoria ? (d.n_cli!=null?d.n_cli:totNCli) : totNCli;
+
+    let prevR=null, prevC=null, prevQ=null, prevP=null, prevNCli=null, prevMixN=null;
+    if (prev && prev.cascata){
+      let pr=0,pc=0,pq=0,pp=0,pnc=0, any=0;
+      catNames.forEach(n=>{
+        const ps = cascataShape(prev.cascata[n]);
+        if (ps){ pr+=ps.r; pc+=ps.c; pq+=ps.q; pp+=ps.p; pnc+=ps.nCli||0; any++; }
+      });
+      if (any){
+        prevR=pr; prevC=pc; prevQ=pq; prevP=pp;
+        prevNCli = semFiltroCategoria ? (prev.n_cli!=null?prev.n_cli:pnc) : pnc;
+        prevMixN = any;
+      }
+    }
+    const prevM = prevR!=null ? (prevR>0?+(100*(1-prevC/prevR)).toFixed(2):0) : null;
+    const approxCur = semFiltroCategoria ? '' : '≈ ';
+    const approxPrev = (prev && !semFiltroCategoria) ? '≈ ' : '';
+
+    totalRowHtml = `<tr style="font-weight:700;border-top:2px solid var(--bdr)"><td class="tn">TOTAL GERAL</td>
+      <td class="tv">${prevR!=null?fF(prevR):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${fF(totR)}</td><td class="tv">${cascataPctDelta(totR,prevR)}</td>
+      <td class="tv">${prevQ!=null?fN(prevQ):'—'}</td><td class="tv">${fN(totQ)}</td><td class="tv">${cascataPctDelta(totQ,prevQ)}</td>
+      <td class="tv">${prevP!=null?fN(prevP):'—'}</td><td class="tv">${fN(totP)}</td><td class="tv">${cascataPctDelta(totP,prevP)}</td>
+      <td class="tv">${prevNCli!=null?approxPrev+fN(prevNCli):'—'}</td><td class="tv">${approxCur}${fN(nCliCur)}</td><td class="tv">${cascataPctDelta(nCliCur,prevNCli)}</td>
+      <td class="tv">${prevMixN!=null?fN(prevMixN):'—'}</td><td class="tv">${fN(catNames.length)}</td>
+      <td class="tv">${prevM!=null?margemBadge(prevM):'<span style="color:var(--t3)">—</span>'}</td><td class="tv">${margemBadge(totM)}</td></tr>`;
+  }
+
   document.getElementById('tCascata').innerHTML = `<thead><tr>
     <th>Categoria / ${cascataOrder.map(k=>ordemLbl[k]).join(" / ")}</th>
     <th class="tv">Fat. ano ant.</th><th class="tv">Faturamento</th><th class="tv">Δ%</th>
@@ -6699,7 +6936,7 @@ function renderCascata(){
     <th class="tv">Clientes ano ant.</th><th class="tv">Clientes (Positivação)</th><th class="tv">Δ%</th>
     <th class="tv">Mix ano ant.</th><th class="tv">Mix</th>
     <th class="tv">Margem ano ant.</th><th class="tv">Margem</th>
-    </tr></thead><tbody>${rowsHtml}</tbody>`;
+    </tr></thead><tbody>${rowsHtml}${totalRowHtml}</tbody>`;
 }
 
 // ── 7. QUALIDADE DOS DADOS ────────────────────────────────────

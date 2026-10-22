@@ -175,7 +175,7 @@ class DashboardRecorteService {
     // ("timeout exceeded when trying to connect") com dois usuários simultâneos.
     const client = await db.getClient();
     let tot, porMes, porAnomes, porCat, porGrp, porCli, topProd, porVend;
-    let porDia, porDiaCat, porGer, porSup, fullVend, porMesCli, porMesCatCliCod, pag, janProd, janRange, abcdCli, qual, casc, fumo;
+    let porDia, porDiaCat, porGer, porSup, fullVend, porMesCli, porMesCatCliCod, pag, janProd, janRange, abcdCli, qual, casc, fumo, mesCatProd, mixCliCatMes;
     let cliDetCat, cliDetVend, prodDetVend;
     try {
       await client.query('BEGIN');
@@ -200,17 +200,23 @@ class DashboardRecorteService {
                         FROM tmp_recorte WHERE categoria IS NOT NULL GROUP BY categoria`);
       porGrp = await q(`SELECT Grupo grupo, categoria, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq
                         FROM tmp_recorte WHERE Grupo IS NOT NULL GROUP BY Grupo, categoria`);
+      // Sem LIMIT: Mix & Positivação pediu para abrir para todos os clientes do
+      // recorte, não só o Top 50 (mesma mudança em DashboardETLService.topCli).
       porCli = await q(`SELECT CodCli codigo, Cliente nome, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq,
                                COUNT(DISTINCT Mes) meses_ativos, COUNT(DISTINCT codcateg) categorias
-                        FROM tmp_recorte GROUP BY CodCli, Cliente ORDER BY r DESC LIMIT 50`);
+                        FROM tmp_recorte GROUP BY CodCli, Cliente ORDER BY r DESC`);
       topProd = await q(`SELECT Codigo codigo, Descricao nome, categoria, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq
                          FROM tmp_recorte WHERE Descricao IS NOT NULL GROUP BY Codigo, Descricao, categoria
                          ORDER BY r DESC LIMIT 50`);
-      // CASCATA ("+") das abas Top 50. Sem isto, com filtro de hierarquia ativo a
-      // lista de clientes/produtos vem do recorte mas o detalhe continuava vindo
-      // do cubo — que tem OUTROS clientes — e o "+" sumia na maioria das linhas.
-      // Restrito aos códigos já rankeados, não à base inteira.
-      const codsCli = porCli.map(r => r.codigo).filter(v => v != null);
+      // CASCATA ("+") das abas Cash Margem/Margem % (Top 50). Sem isto, com
+      // filtro de hierarquia ativo a lista de clientes vem do recorte mas o
+      // detalhe continuava vindo do cubo — que tem OUTROS clientes — e o "+"
+      // sumia na maioria das linhas. Restrito ao Top 50 por receita (porCli
+      // já vem ORDER BY r DESC) — NÃO usa a lista inteira do recorte: desde
+      // que Mix & Positivação parou de limitar porCli a 50 (pediu TODOS os
+      // clientes), um recorte amplo (ex.: só Canal/Status) geraria uma lista
+      // de milhares de códigos aqui, inflando a query ANY(ARRAY[...]) abaixo.
+      const codsCli = porCli.slice(0, 50).map(r => r.codigo).filter(v => v != null);
       cliDetCat = codsCli.length ? await q(`
         SELECT CodCli codigo, categoria, SUM(Total) r, SUM(customedio) c
         FROM tmp_recorte WHERE CodCli = ANY(ARRAY[${codsCli.map(Number).filter(Number.isFinite).join(',') || 'NULL'}]::int[])
@@ -298,6 +304,25 @@ class DashboardRecorteService {
                          AND Fornecedor IS NOT NULL AND Descricao IS NOT NULL
                        GROUP BY categoria, Grupo, Fornecedor, Descricao`)
       };
+      // Mix por Categoria/Mês/Produto AGREGADO (todos os clientes do recorte, sem
+      // CodCli no GROUP BY) — mesma query do ETL (DashboardETLService.js), só que
+      // em tmp_recorte (já filtrado) — ETL.buildMixMesCategoriaProduto monta o
+      // mesmo formato {mes:{categoria:[{codigo,nome,r}]}} a partir destas linhas.
+      mesCatProd = await q(`
+        SELECT Mes mes, categoria, Codigo produto_codigo, Descricao produto_nome, SUM(Total) r
+        FROM tmp_recorte
+        WHERE categoria IS NOT NULL AND Descricao IS NOT NULL
+        GROUP BY Mes, categoria, Codigo, Descricao
+      `);
+      // Cliente → Categoria → Mês do recorte, TODOS os clientes, sem Produto —
+      // mesma query/racional do ETL (ETL.buildMixClienteCategoriaMes monta o
+      // mesmo formato {codcli:{categoria:{r,porMes}}} a partir destas linhas).
+      mixCliCatMes = await q(`
+        SELECT CodCli codigo, categoria, Mes mes, SUM(Total) r
+        FROM tmp_recorte
+        WHERE CodCli IS NOT NULL AND categoria IS NOT NULL
+        GROUP BY CodCli, categoria, Mes
+      `);
       await client.query('COMMIT');   // COMMIT derruba a temp table (ON COMMIT DROP)
     } catch (e) {
       try { await client.query('ROLLBACK'); } catch (_) {}
@@ -440,6 +465,8 @@ class DashboardRecorteService {
     // Builders compartilhados com o ETL → formato idêntico ao do cubo.
     dados.abcd = ETL.buildAbcd(abcdCli);
     dados.cascata = ETL.buildCascata(casc.cat, casc.grp, casc.forn, casc.prod);
+    dados.mix_mes_categoria_produto = ETL.buildMixMesCategoriaProduto(mesCatProd);
+    dados.mix_cliente_categoria_mes = ETL.buildMixClienteCategoriaMes(mixCliCatMes);
 
     // Listas "cash" (ordenadas por cash margin) nas mesmas formas do cubo.
     const porCash = (arr, extra) => arr.slice()

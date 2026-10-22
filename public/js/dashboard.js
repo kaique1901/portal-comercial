@@ -276,9 +276,16 @@ function renderDashboard(){
   const heroEl = document.getElementById('dash-kpis-hero');
   if (heroEl){
     if (visao){
+      // BUG CORRIGIDO: com filtro de Gerente/Supervisor/Vendedor/etc., estes
+      // KPIs vêm do recorte do ANO (ensureAnoScope/renderVisao) — enquanto ele
+      // está em voo ou se falhar (timeout do banco, por exemplo), os valores
+      // ficam todos zerados. A aba nativa Visão Geral já avisava isso; aqui
+      // os cards só mostravam R$ 0 em silêncio. `visao.avisos` carrega o
+      // mesmo aviso (idêntico à aba nativa), exibido antes dos cards.
+      const avisosHtml = (visao.notas||[]).map(b=>`<div class="alert" style="grid-column:1/-1">${b}</div>`).join('');
       const spark = mesesReceita.length>=2 ? dashSparklineSVG(mesesReceita.map(m=>m.atual)) : '';
       const kpis = visao.kpis.map((k,i)=> i===0 ? Object.assign({}, k, { extra: spark }) : k);
-      heroEl.innerHTML = kpis.map(dashKpiHTML).join('');
+      heroEl.innerHTML = avisosHtml + kpis.map(dashKpiHTML).join('');
     } else {
       heroEl.innerHTML = dashSemDado('Sem dados de Visão Geral para o período/escopo selecionado.');
     }

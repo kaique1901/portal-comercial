@@ -310,8 +310,8 @@ function apexExtractMix(){
   const mediaPositivacao = clientes.length ? clientes.reduce((s,c)=>s+c.positivacaoPct,0)/clientes.length : null;
   const mediaCategorias = clientes.length ? clientes.reduce((s,c)=>s+c.categorias,0)/clientes.length : null;
   const kpis = [
-    { label:'Clientes no Top 25', value: fN(clientes.length) },
-    { label:'Positivação média (Top 25)', value: mediaPositivacao!=null?mediaPositivacao.toFixed(0)+'%':'—' },
+    { label:'Clientes no recorte', value: fN(clientes.length) },
+    { label:'Positivação média', value: mediaPositivacao!=null?mediaPositivacao.toFixed(0)+'%':'—' },
     { label:'Categorias distintas/cliente (média)', value: mediaCategorias!=null?`${mediaCategorias.toFixed(1)} de ${res.nCatTotal}`:'—' },
   ];
   const ranking = clientes.length ? { titulo:'Top 5 Clientes por Receita', items: clientes.slice(0,5).map(c=>({label:c.nome, value:c.receita})) } : null;
@@ -466,7 +466,11 @@ function apexExtractVisaoGeral(){
   const ranking = res.categorias.length ? { titulo:'Mix por Categoria (Receita)', tipo:'pizza', items: res.categorias.map(c=>({label:c.nome, value:c.r})) } : null;
   const tables = res.gerentes.length ? [{ titulo:'Receita por Gerente', headers:['Gerente','Receita'],
     rows: res.gerentes.sort((a,b)=>b.r-a.r).map(g=>[g.nome, fF(g.r)]) }] : [];
-  return { tabKey:'visao', tabLabel:'Visão Geral', scopeLabel: res.escopoLabel||'Empresa inteira', kpis, tables, ranking, notas:[] };
+  // BUG CORRIGIDO: quando o recorte do ano (Gerente/Supervisor/Vendedor/etc.)
+  // está em voo ou falhou (ex.: timeout do banco), os KPIs acima vêm todos
+  // zerados — sem isto, o slide mostrava R$ 0 sem explicar o motivo.
+  const notas = (res.avisos||[]).map(apexStripTags);
+  return { tabKey:'visao', tabLabel:'Visão Geral', scopeLabel: res.escopoLabel||'Empresa inteira', kpis, tables, ranking, notas };
 }
 
 function apexExtractComparativos(){

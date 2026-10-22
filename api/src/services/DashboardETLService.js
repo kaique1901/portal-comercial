@@ -151,7 +151,10 @@ class DashboardETLService {
       const porCat = await q(`SELECT categoria, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq, SUM(Peso) p, COUNT(DISTINCT CodCli) n_clientes FROM tmp_base_vendas WHERE categoria IS NOT NULL GROUP BY categoria`);
       const porGrp = await q(`SELECT Grupo grupo, categoria, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq, SUM(Peso) p FROM tmp_base_vendas WHERE Grupo IS NOT NULL GROUP BY Grupo, categoria`);
       const topVend = await q(`SELECT CodVen codigo, Vendedor nome, supervisor, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq FROM tmp_base_vendas WHERE Vendedor IS NOT NULL GROUP BY CodVen, Vendedor, supervisor ORDER BY r DESC LIMIT 50`);
-      const topCli = await q(`SELECT CodCli codigo, Cliente nome, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq, COUNT(DISTINCT Mes) meses_ativos, COUNT(DISTINCT codcateg) categorias FROM tmp_base_vendas WHERE Cliente IS NOT NULL GROUP BY CodCli, Cliente ORDER BY r DESC LIMIT 50`);
+      // Sem LIMIT: a aba Mix & Positivação pediu para abrir para TODOS os
+      // clientes (27 mil+), não só o Top 50 por receita (medido: payload
+      // seguro, bem menor que o risco real de mix_cascata_detalhe/produto).
+      const topCli = await q(`SELECT CodCli codigo, Cliente nome, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq, COUNT(DISTINCT Mes) meses_ativos, COUNT(DISTINCT codcateg) categorias FROM tmp_base_vendas WHERE Cliente IS NOT NULL GROUP BY CodCli, Cliente ORDER BY r DESC`);
       const topProd = await q(`SELECT Codigo codigo, Descricao nome, categoria, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq FROM tmp_base_vendas WHERE Descricao IS NOT NULL GROUP BY Codigo, Descricao, categoria ORDER BY r DESC LIMIT 50`);
       // DataPed é timestamp (DataFechamento) e parte das linhas tem hora ≠ 00:00 — agrupar
       // pelo timestamp cru gera VÁRIOS grupos para o mesmo dia, que ao virarem chave de
@@ -334,10 +337,12 @@ class DashboardETLService {
       // ── cubos hierárquicos (por gerente/supervisor/vendedor) ────
       const hierTopCli = {}, hierTopProd = {}, hierCat = {}, hierPag = {}, hierAbcdRows = {};
       for (const [lvl, col] of Object.entries(LEVEL_COL)) {
-        hierTopCli[lvl] = await q(`SELECT ent, codigo, nome, r, c, qq FROM (
-          SELECT "${col}" ent, CodCli codigo, Cliente nome, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq,
-                 ROW_NUMBER() OVER (PARTITION BY "${col}" ORDER BY SUM(Total) DESC) rn
-          FROM tmp_base_vendas WHERE Cliente IS NOT NULL GROUP BY "${col}", CodCli, Cliente) t WHERE rn<=50`);
+        // Sem corte de Top 50 (mesma mudança de topCli acima) — e já traz
+        // meses_ativos/categorias (faltava, Mix & Positivação sob filtro de
+        // Gerente/Supervisor/Vendedor mostrava "undefined de N").
+        hierTopCli[lvl] = await q(`SELECT "${col}" ent, CodCli codigo, Cliente nome, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq,
+                 COUNT(DISTINCT Mes) meses_ativos, COUNT(DISTINCT codcateg) categorias
+          FROM tmp_base_vendas WHERE Cliente IS NOT NULL GROUP BY "${col}", CodCli, Cliente`);
         hierTopProd[lvl] = await q(`SELECT ent, codigo, nome, categoria, r, c, qq FROM (
           SELECT "${col}" ent, Codigo codigo, Descricao nome, categoria, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq,
                  ROW_NUMBER() OVER (PARTITION BY "${col}" ORDER BY SUM(Total) DESC) rn
@@ -346,13 +351,21 @@ class DashboardETLService {
         hierPag[lvl] = await q(`SELECT "${col}" ent, categoria, tipo, tipocob, SUM(Total) v FROM tmp_base_vendas WHERE categoria IS NOT NULL GROUP BY "${col}", categoria, tipo, tipocob`);
         hierAbcdRows[lvl] = await q(`SELECT "${col}" ent, SUM(Total) r, SUM(customedio) c FROM tmp_base_vendas WHERE Cliente IS NOT NULL GROUP BY "${col}", CodCli`);
       }
-      // ── Mix & Positivação em cascata: Supervisor → Vendedor → Cliente → Mês →
-      // Categoria → Produtos. Candidatos = códigos de cliente já no Top 50 de
-      // CADA vendedor (hierTopCli.vendedor, acima) — não uma nova varredura de
-      // "todos os clientes", só o detalhe (mês/categoria/produto) pra quem já é
-      // relevante o bastante pra estar no Top 50 de algum vendedor. Reaproveita
-      // tmp_base_vendas (já materializada) — sem novo scan da base inteira.
-      const mixCliCodes = [...new Set((hierTopCli.vendedor || []).map(r => r.codigo))];
+      // ── Top 50 de receita de CADA vendedor — consulta PRÓPRIA, independente
+      // de hierTopCli.vendedor (que desde a remoção do corte de Top 50 da
+      // tabela principal de Mix & Positivação passou a trazer TODOS os
+      // clientes). Ainda alimenta 3 consumidores que dependem do corte em 50:
+      // (a) mix_cascata_detalhe/"Mix em Cascata" abaixo (tem nível de Produto —
+      // Cliente×Categoria×Mês×Produto sem corte reproduziria o estouro de
+      // >200MB já visto nesta sessão); (b) Planos de Ação (perfil de compra
+      // pro cross-sell); (c) texto "carteira de N+ clientes" do plano por
+      // vendedor. Nenhum dos três foi pedido nesta mudança — mantidos como
+      // já eram, só com a fonte renomeada/isolada.
+      const hierTopCliVendCapped = await q(`SELECT ent, codigo, nome, r, c, qq FROM (
+        SELECT Vendedor ent, CodCli codigo, Cliente nome, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq,
+               ROW_NUMBER() OVER (PARTITION BY Vendedor ORDER BY SUM(Total) DESC) rn
+        FROM tmp_base_vendas WHERE Cliente IS NOT NULL AND Vendedor IS NOT NULL GROUP BY Vendedor, CodCli, Cliente) t WHERE rn<=50`);
+      const mixCliCodes = [...new Set(hierTopCliVendCapped.map(r => r.codigo))];
       const mixDetalhe = mixCliCodes.length ? await q(`
         SELECT CodCli codigo, Mes mes, categoria, Codigo produto_codigo, Descricao produto_nome,
                SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq
@@ -360,6 +373,32 @@ class DashboardETLService {
         WHERE CodCli = ANY($1::int[]) AND categoria IS NOT NULL AND Descricao IS NOT NULL
         GROUP BY CodCli, Mes, categoria, Codigo, Descricao
       `, [mixCliCodes]) : [];
+      // Meses ativos por cliente NESTE SEMESTRE, sem corte de Top 50 — usado pelo
+      // front pra somar com o semestre irmão do mesmo ano civil e montar "meses
+      // ativos no ano" por cliente (mix_cascata_detalhe/top_clientes são Top 50,
+      // essa aqui cobre QUALQUER cliente que apareça na tabela, mesmo fora do Top 50).
+      const porCliMesAtivo = await q(`SELECT CodCli codigo, COUNT(DISTINCT Mes) n FROM tmp_base_vendas WHERE CodCli IS NOT NULL GROUP BY CodCli`);
+      // Mix por Categoria/Mês/Produto AGREGADO (todos os clientes, sem CodCli no
+      // GROUP BY — nível empresa, bem mais leve que mixDetalhe) — só faturamento
+      // (pedido explícito do usuário, sem custo/qtde). Usado pela cascata
+      // "Categoria → Mês → Produto" de TODOS os clientes (não só o Top 25/50).
+      const mesCatProd = await q(`
+        SELECT Mes mes, categoria, Codigo produto_codigo, Descricao produto_nome, SUM(Total) r
+        FROM tmp_base_vendas
+        WHERE categoria IS NOT NULL AND Descricao IS NOT NULL
+        GROUP BY Mes, categoria, Codigo, Descricao
+      `);
+      // Cliente → Categoria → Mês, TODOS os clientes, SEM nível de Produto (ao
+      // contrário de mixDetalhe/mix_cascata_detalhe) — faturamento apenas. É o
+      // que mantém o payload pequeno (medido: ~250 mil linhas/semestre, contra
+      // ~650-700 mil se produto entrasse aqui também). Produto por categoria já
+      // é coberto, para a empresa inteira, por mesCatProd/mix_mes_categoria_produto.
+      const mixCliCatMes = await q(`
+        SELECT CodCli codigo, categoria, Mes mes, SUM(Total) r
+        FROM tmp_base_vendas
+        WHERE CodCli IS NOT NULL AND categoria IS NOT NULL
+        GROUP BY CodCli, categoria, Mes
+      `);
       const hierDiaGer = await q(`SELECT gerente ent, DataPed::date dia, SUM(Total) r, SUM(customedio) c FROM tmp_base_vendas GROUP BY gerente, DataPed::date`);
       const hierDiaCatGer = await q(`SELECT gerente ent, DataPed::date dia, categoria, SUM(Total) r, SUM(customedio) c FROM tmp_base_vendas WHERE categoria IS NOT NULL GROUP BY gerente, DataPed::date, categoria`);
 
@@ -389,6 +428,7 @@ class DashboardETLService {
         cliCatPorMes, cliVendPorMes, cliCatPorMesAnoAnterior, prodVendPorMes,
         pag, janRange, janProd, abcdCli,
         hierTopCli, hierTopProd, hierCat, hierPag, hierAbcdRows, hierDiaGer, hierDiaCatGer, meta, mixDetalhe,
+        porCliMesAtivo, mesCatProd, mixCliCatMes, hierTopCliVendCapped,
         cascCat, cascGrp, cascForn, cascProd,
         porCanal, porInadimplente, porStatus, bonif
       });
@@ -875,6 +915,24 @@ class DashboardETLService {
     for (const kc in mix_cascata_detalhe) for (const km in mix_cascata_detalhe[kc]) for (const cat in mix_cascata_detalhe[kc][km])
       mix_cascata_detalhe[kc][km][cat].sort((a, b) => b.r - a.r);
 
+    // meses_ativos_por_cliente[codcli] = nº de meses distintos com venda NESTE
+    // SEMESTRE — sem corte de Top 50 (ao contrário de top_clientes/mix_cascata_detalhe),
+    // pra permitir ao front somar os 2 semestres do ano civil e ter "meses ativos
+    // no ano" de QUALQUER cliente, não só quem está no Top 50.
+    const meses_ativos_por_cliente = {};
+    for (const row of d.porCliMesAtivo || []) meses_ativos_por_cliente[String(row.codigo)] = parseInt(row.n, 10) || 0;
+
+    // mix_mes_categoria_produto[mes][categoria] = [{codigo,nome,r}] — AGREGADO de
+    // TODOS os clientes (sem corte de Top 50/Top 50-por-vendedor, ao contrário de
+    // mix_cascata_detalhe) — só faturamento. Usado pela cascata "Categoria → Mês →
+    // Produto" de todos os clientes na aba Mix & Positivação.
+    const mix_mes_categoria_produto = buildMixMesCategoriaProduto(d.mesCatProd);
+
+    // mix_cliente_categoria_mes[codcli][categoria] = {r, porMes:{mes:r}} —
+    // TODOS os clientes, sem corte de Top 50, só faturamento (sem produto, ver
+    // nota na query mixCliCatMes). Cascata por cliente da aba Mix & Positivação.
+    const mix_cliente_categoria_mes = buildMixClienteCategoriaMes(d.mixCliCatMes);
+
     const pagamento_por_categoria = buildPag(d.pag);
     const hier_pagamento_por_categoria = {}; for (const lvl of Object.keys(d.hierPag)) hier_pagamento_por_categoria[lvl] = buildPagHier(d.hierPag[lvl]);
 
@@ -892,6 +950,9 @@ class DashboardETLService {
 
     // hier_* montados
     const hier_top_clientes = buildHierTop(d.hierTopCli);
+    // Top 50 por vendedor, separado de hier_top_clientes (agora sem corte) —
+    // ver nota na query hierTopCliVendCapped.
+    const hier_top_clientes_vendedor_top50 = buildHierTop({ vendedor: d.hierTopCliVendCapped || [] }).vendedor;
     const hier_top_produtos = buildHierTop(d.hierTopProd, true);
     const hier_por_categoria = buildHierCat(d.hierCat);
     const hier_abcd = {}; for (const lvl of Object.keys(d.hierAbcdRows)) hier_abcd[lvl] = buildHierAbcd(d.hierAbcdRows[lvl], medR, medM);
@@ -914,7 +975,8 @@ class DashboardETLService {
       top_clientes_detalhe_por_mes, top_produtos_detalhe_por_mes, top_clientes_categoria_ano_anterior,
       pagamento_por_categoria, hier_pagamento_por_categoria,
       janela90, por_produto_janela90, abcd,
-      hier_top_clientes, hier_top_produtos, hier_por_categoria, hier_abcd, hier_por_dia, hier_por_dia_categoria, mix_cascata_detalhe,
+      hier_top_clientes, hier_top_clientes_vendedor_top50, hier_top_produtos, hier_por_categoria, hier_abcd, hier_por_dia, hier_por_dia_categoria, mix_cascata_detalhe,
+      meses_ativos_por_cliente, mix_mes_categoria_produto, mix_cliente_categoria_mes,
       cascata: buildCascata(d.cascCat, d.cascGrp, d.cascForn, d.cascProd),
       meta: d.meta,
       por_canal: (() => { const o = {}; for (const r of d.porCanal || []) o[r.canal_vendas] = { r: round2(num(r.r)), c: round2(num(r.c)), q: round2(num(r.qq)), m: margem(num(r.r), num(r.c)), n_clientes: parseInt(r.n_clientes, 10) }; return o; })(),
@@ -1767,6 +1829,8 @@ function buildHierTop(byLevel, isProd) {
       const rr = num(r.r), cc = num(r.c);
       const item = { codigo: String(r.codigo), nome: r.nome, r: round2(rr), c: round2(cc), q: round2(num(r.qq)), m: margem(rr, cc) };
       if (isProd) item.categoria = r.categoria;
+      if (r.meses_ativos != null) item.meses_ativos = parseInt(r.meses_ativos, 10) || 0;
+      if (r.categorias != null) item.categorias = parseInt(r.categorias, 10) || 0;
       (o[r.ent] = o[r.ent] || []).push(item);
     }
     out[lvl] = o;
@@ -1837,6 +1901,35 @@ function buildCascata(catRows, grpRows, fornRows, prodRows) {
   }
   return out;
 }
+// mix_mes_categoria_produto[mes][categoria] = [{codigo,nome,r}] — reaproveitado
+// pelo ETL (todos os clientes) e pelo /recorte (DashboardRecorteService, linhas
+// já filtradas em tmp_recorte) — mesma função, só muda a origem das linhas.
+function buildMixMesCategoriaProduto(rows) {
+  const out = {};
+  for (const row of rows || []) {
+    const km = String(row.mes);
+    const porMes = out[km] || (out[km] = {});
+    const lista = porMes[row.categoria] || (porMes[row.categoria] = []);
+    lista.push({ codigo: String(row.produto_codigo), nome: row.produto_nome, r: round2(num(row.r)) });
+  }
+  for (const km in out) for (const cat in out[km]) out[km][cat].sort((a, b) => b.r - a.r);
+  return out;
+}
+// mix_cliente_categoria_mes[codcli][categoria] = {r, porMes:{mes:r}} — mesmo
+// compartilhamento ETL/recorte de buildMixMesCategoriaProduto acima, só que
+// com a dimensão de Cliente em vez de Produto (sem corte de Top 50).
+function buildMixClienteCategoriaMes(rows) {
+  const out = {};
+  for (const row of rows || []) {
+    const kc = String(row.codigo);
+    const porCli = out[kc] || (out[kc] = {});
+    const node = porCli[row.categoria] || (porCli[row.categoria] = { r: 0, porMes: {} });
+    const v = round2(num(row.r));
+    node.r = round2(node.r + v);
+    node.porMes[String(row.mes)] = v;
+  }
+  return out;
+}
 function median(arr) { if (!arr.length) return 0; const s = [...arr].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; }
 function classifyAbcd(r, m, medR, medM) { return (r >= medR && m >= medM) ? 'A' : (r >= medR) ? 'B' : (m >= medM) ? 'C' : 'D'; }
 // q (A-D, 2x2 pela mediana) serve só hier_abcd/Riscos & Oportunidades. A aba
@@ -1893,4 +1986,6 @@ module.exports.BASE_CTE = BASE_CTE;
 module.exports.PERIODOS = PERIODOS;
 module.exports.buildAbcd = buildAbcd;
 module.exports.buildCascata = buildCascata;
+module.exports.buildMixMesCategoriaProduto = buildMixMesCategoriaProduto;
+module.exports.buildMixClienteCategoriaMes = buildMixClienteCategoriaMes;
 module.exports.isoDay = isoDay;

@@ -439,10 +439,14 @@
 
 <!-- 5. MIX & POSITIVAÇÃO -->
 <div class="mod" id="m-mix">
-  <div class="mod-header"><div><div class="mod-title">Mix &amp; Positivação</div><div class="mod-sub">Amplitude de categorias e meses ativos — Top 50 clientes por receita</div></div></div>
-  <div class="alert">⚠ Sem uma base de clientes cadastrados (universo total), a "positivação" aqui é um proxy: nº de meses do semestre em que o cliente comprou. Cross-referência com o cadastro completo de clientes é necessária para o indicador oficial.</div>
+  <div class="mod-header"><div><div class="mod-title">Mix &amp; Positivação</div><div class="mod-sub">Amplitude de categorias e meses ativos — todos os clientes do recorte (sem corte de Top 50)</div></div></div>
+  <div class="alert">⚠ Sem uma base de clientes cadastrados (universo total), a "positivação" aqui é um proxy: nº de meses do ANO CIVIL (ambos os semestres, até o mês mais recente apurado) em que o cliente comprou. Cross-referência com o cadastro completo de clientes é necessária para o indicador oficial.</div>
   <div id="mixHierNote"></div>
   <div class="tbl-wrap"><table id="tMix"></table></div>
+  <div class="card-sub" style="margin-top:6px">Clique em um cliente (+) para ver, por Categoria → Mês, só o faturamento, mês a mês — útil pra analisar ritmo/espaçamento de compra. Produto por categoria está na cascata abaixo.</div>
+
+  <div class="mod-header" style="margin-top:22px;padding-top:0"><div><div class="mod-title" style="font-size:16px">Categoria → Produto → Mês — Todos os Clientes</div><div class="mod-sub">Faturamento agregado de todo o universo de clientes, por produto dentro de cada categoria, mês a mês, dentro do período selecionado</div></div></div>
+  <div class="tbl-wrap"><table id="tMixCatMesProd"></table></div>
 
   <div class="mod-header" style="margin-top:22px;padding-top:0"><div><div class="mod-title" style="font-size:16px">Mix em Cascata — Supervisor → Vendedor → Cliente → Mês → Categoria → Produtos</div><div class="mod-sub">Clique em + para expandir cada nível</div></div></div>
   <div class="alert">⚠ Candidatos = clientes que já estão no Top 50 de receita de algum vendedor (mesma fonte da tabela acima) — não é a carteira inteira, mas garante que todo vendedor apareça com os clientes mais relevantes dele. Produtos por mês/categoria vêm do período selecionado.</div>
