@@ -2,6 +2,13 @@ const DashboardService = require('../services/DashboardService');
 const DashboardClienteService = require('../services/DashboardClienteService');
 const DashboardRecorteService = require('../services/DashboardRecorteService');
 const DashboardCacheManager = require('../jobs/DashboardCacheManager');
+const Escopo = require('../auth/escopo');
+const { escopoDe } = require('../auth/middleware');
+
+// Erro com .status (403 fora do escopo / 503 cadastro não carregado) vira a resposta certa.
+function falhaEscopo(res, err) {
+  return res.status(err.status || 500).json({ error: err.message });
+}
 
 // filtros aceitos em /recorte → chave da query string
 const RECORTE_KEYS = ['cli', 'ger', 'sup', 'vend', 'cat', 'grp', 'canal', 'inad', 'status', 'mes', 'anomes'];
@@ -25,7 +32,11 @@ class DashboardController {
         filtros[k] = vals; n += vals.length;
       }
       if (!n) return res.status(400).json({ error: 'informe ao menos um filtro' });
-      res.json(await DashboardRecorteService.getScope(periodo, filtros));
+      // ESCOPO: gerente/supervisor sempre consultam com o próprio filtro de
+      // hierarquia, imposto aqui — o que vier na query só pode estreitar.
+      let filtrosEf;
+      try { filtrosEf = Escopo.forcarFiltros(filtros, escopoDe(req)); } catch (e) { return falhaEscopo(res, e); }
+      res.json(await DashboardRecorteService.getScope(periodo, filtrosEf));
     } catch (error) {
       console.error('[recorte]', error.message);
       res.status(500).json({ error: 'Erro ao consultar recorte', details: error.message });
@@ -48,8 +59,10 @@ class DashboardController {
         if (vals.length > 500) return res.status(400).json({ error: `máximo de 500 valores em ${k}` });
         filtros[k] = vals; n += vals.length;
       }
-      if (!n) return res.status(400).json({ error: 'informe ao menos um filtro (ger/sup/vend)' });
-      res.json(await DashboardRecorteService.getDowCascata(filtros));
+      let filtrosEf;
+      try { filtrosEf = Escopo.forcarFiltros(filtros, escopoDe(req)); } catch (e) { return falhaEscopo(res, e); }
+      if (!n && !escopoDe(req)) return res.status(400).json({ error: 'informe ao menos um filtro (ger/sup/vend)' });
+      res.json(await DashboardRecorteService.getDowCascata(filtrosEf));
     } catch (error) {
       console.error('[dow-cascata]', error.message);
       res.status(500).json({ error: 'Erro ao consultar vendas por dia da semana', details: error.message });
@@ -82,18 +95,25 @@ class DashboardController {
     if (!cache) {
       return res.status(503).json({ error: 'Cache ainda não pronto, tente novamente em instantes.' });
     }
+    let esc;
+    try { esc = escopoDe(req); } catch (e) { return falhaEscopo(res, e); }
+    const leve = c => {
+      const lightweight = {};
+      for (const k of Object.keys(c)) {
+        if (!k.startsWith('_') && c[k] && typeof c[k] === 'object') {
+          lightweight[k] = { ...c[k], mix_cascata_detalhe: {} };
+        } else {
+          lightweight[k] = c[k];
+        }
+      }
+      return lightweight;
+    };
+    // Gerente/supervisor recebem só o próprio escopo (ver auth/escopo.js).
+    if (esc) return res.json(Escopo.fullNoEscopo(cache, esc, leve));
     if (req.query.includeMix === 'true') {
       return res.json(cache);
     }
-    const lightweight = {};
-    for (const k of Object.keys(cache)) {
-      if (!k.startsWith('_') && cache[k] && typeof cache[k] === 'object') {
-        lightweight[k] = { ...cache[k], mix_cascata_detalhe: {} };
-      } else {
-        lightweight[k] = cache[k];
-      }
-    }
-    res.json(lightweight);
+    res.json(leve(cache));
   }
 
   // Serve o detalhe de mix_cascata sob demanda para um período específico (~40MB em vez de 200MB de uma vez)
@@ -104,7 +124,9 @@ class DashboardController {
       return res.status(404).json({ error: `Período ${periodo} não encontrado no cache` });
     }
     const mixDetalhe = (cache[periodo] && cache[periodo].mix_cascata_detalhe) || {};
-    res.json(mixDetalhe);
+    let esc;
+    try { esc = escopoDe(req); } catch (e) { return falhaEscopo(res, e); }
+    res.json(esc ? Escopo.mixNoEscopo(cache, periodo, mixDetalhe, esc) : mixDetalhe);
   }
 
   // Só o metadado de progresso do ETL (~400 bytes), sem o payload de 5 MB. O front

@@ -27,6 +27,11 @@ services:
       DB_USER: ${DB_USER:?defina DB_USER nas variaveis de ambiente do stack}
       DB_PASSWORD: ${DB_PASSWORD:?defina DB_PASSWORD nas variaveis de ambiente do stack}
       DB_NAME: ${DB_NAME:?defina DB_NAME nas variaveis de ambiente do stack}
+      # Assina o token de sessão. Sem ele as sessões caem a cada restart da API.
+      AUTH_SECRET: ${AUTH_SECRET:-}
+      # Credenciais de sistema da API de login da Cifal (padrão: o usuário que o front usava).
+      CIFAL_AUTH_USER: ${CIFAL_AUTH_USER:-}
+      CIFAL_AUTH_PASS: ${CIFAL_AUTH_PASS:-}
     # Snapshots do ETL e escopos pré-calculados do /recorte. Sem volume, todo
     # redeploy recriava o container com a pasta vazia: o painel voltava a pagar a
     # carga fria (~minutos por login) até o 1º ciclo do ETL terminar.

@@ -36,6 +36,34 @@ window.API_BASE_URL = window.API_BASE_URL || (
     ? `${window.location.origin}/api/v1/dashboard`
     : `http://${window.location.hostname}:4001/api/v1/dashboard`
 );
+// Login/carteira ficam em /api/v1/auth, ao lado de /api/v1/dashboard.
+window.API_AUTH_URL = window.API_BASE_URL.replace(/\/dashboard\/?$/, '/auth');
+// Toda chamada à API do portal leva o token da sessão (o servidor recusa sem ele
+// e recorta os dados pelo escopo do token). 401 = sessão expirada → volta ao login.
+(function(){
+  const raiz = window.API_BASE_URL.replace(/\/dashboard\/?$/, '');
+  const fetchOriginal = window.fetch.bind(window);
+  let saindo = false;
+  window.fetch = function(input, init){
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    if (!url.startsWith(raiz)) return fetchOriginal(input, init);
+    let token = null;
+    try { const s = window.__authSession && window.__authSession(); token = s && s.token; } catch (e) {}
+    if (!token){ try { token = (JSON.parse(localStorage.getItem('portalAuth') || 'null') || {}).token; } catch (e) {} }
+    const opts = Object.assign({}, init);
+    const h = new Headers(opts.headers || (typeof input !== 'string' && input.headers) || undefined);
+    if (token) h.set('Authorization', `Bearer ${token}`);
+    opts.headers = h;
+    return fetchOriginal(input, opts).then(r => {
+      if (r.status === 401 && !url.endsWith('/auth/login') && !saindo){
+        saindo = true;
+        try { localStorage.removeItem('portalAuth'); } catch (e) {}
+        location.reload();
+      }
+      return r;
+    });
+  };
+})();
 window.REAL_DATA = {};
 
 // ── DIAGNÓSTICO: por que uma visão/filtro está sem dado ───────────
@@ -178,6 +206,16 @@ function hierUnionTop(dictByLevel, level, names, topN){
 // Gerente/Supervisor/Vendedor ativo, para não misturar com o total da empresa.
 function hierUnionCategoria(d, level, names){
   const merged = {};
+  // Com recorte, d.por_categoria JÁ é o escopo exato (hierarquia + mês + canal +
+  // status + cliente, direto do banco). hier_por_categoria é do cubo do SEMESTRE
+  // inteiro e ignora todos esses filtros — supervisor/vendedor viam o semestre
+  // inteiro no lugar do mês escolhido.
+  if (d && d._recorte){
+    Object.entries(d.por_categoria || {}).forEach(([cat, x])=>{
+      merged[cat] = { r:x.r||0, c:x.c||0, q:x.q||0, m: x.r>0 ? +(100*(1-x.c/x.r)).toFixed(2) : 0 };
+    });
+    return merged;
+  }
   const src = d.hier_por_categoria && d.hier_por_categoria[level];
   if (!src) return merged;
   names.forEach(n=>{
@@ -732,6 +770,15 @@ function anoVigente(){
   if (anos.includes(atual)) return atual;
   return anos[0] ?? atual;
 }
+// Ano da Visão Geral (e dos KPIs-herói do Dashboard): o ano do mês mais recente
+// escolhido no filtro de Mês. Antes era sempre o ano corrente — quem escolhia
+// Out/2025 continuava vendo "2026 - Acumulado" sem nenhum aviso.
+function anoDaVisao(){
+  const anos = anosDisponiveis();
+  const ord = (ST.meses || []).slice().sort();
+  const ano = ord.length ? anomesAno(ord[ord.length - 1]) : null;
+  return (ano != null && anos.includes(ano)) ? ano : anoVigente();
+}
 // {chave:{r,c,q}} + {chave:{r,c,q}} → soma por chave, recalcula m.
 function somaDict(a, b){
   const out = {};
@@ -825,8 +872,11 @@ function buildYearPeriod(ano){
   // parte dos meses (ex.: 2026_2 criado pelo ETL em julho, só tem Jul-Out em
   // outubro). O certo é checar se os 12 MESES estão mesmo presentes.
   const anoCompleto = Object.keys(por_mes).length >= 12;
+  // "Acumulado até" o último mês que o cubo tem DESTE ano — com o mês de hoje, um
+  // ano passado incompleto (ex.: base começando em março) saía com o mês errado.
+  const ultimoMes = Math.max(0, ...Object.keys(por_mes).map(Number));
   const out = {
-    label: anoCompleto ? `${ano} - Ano completo` : `${ano} - Acumulado até ${MESES_NOME[new Date().getMonth()+1]}`,
+    label: anoCompleto ? `${ano} - Ano completo` : `${ano} - Acumulado até ${MESES_NOME[ultimoMes || (new Date().getMonth()+1)]}`,
     receita, custo, qtde,
     peso: (a.peso||0) + (b.peso||0),
     linhas: (a.linhas||0) + (b.linhas||0),
@@ -1492,6 +1542,9 @@ function monthlyGerenteCategoriaAgg(period, gerName, mes){
   return out;
 }
 function monthlyGerenteUnionCategoriaAgg(period, gerNames, mes){
+  // Recorte já vem filtrado pelos gerentes (e por todo o resto): o por_dia_categoria
+  // dele é o dado exato. O hier_por_dia_categoria do cubo ignora canal/status/cliente.
+  if (period && period._recorte) return monthlyCategoriaAgg(period, mes);
   const merged = {};
   gerNames.forEach(n=>{
     const catBreak = monthlyGerenteCategoriaAgg(period, n, mes);
@@ -2096,7 +2149,7 @@ function metaRentabilidade(d, mes){
 // corrente. O filtro de Mês da barra lateral NÃO se aplica aqui; Gerente/
 // Supervisor/Vendedor/Categoria/Grupo continuam valendo normalmente.
 function renderVisao(){
-  const ano = anoVigente();
+  const ano = anoDaVisao();
   const d = buildYearPeriod(ano);
   if (!d){
     document.getElementById("vg-sub").textContent = "Sem dados";
@@ -3206,7 +3259,9 @@ function buildCategoriaTable(d, prev, meses, level, names){
   let perMes = [];
   const realCatSel = {};
   let realCatMonthNote = null;
-  if (!level){
+  // Com recorte, d já é o escopo exato por mês (inclusive Supervisor/Vendedor, que
+  // o cubo não tem por mês): usa o caminho mensal, que também calcula a Tendência.
+  if (!level || d._recorte){
     perMes = meses.map(mes=>{
       const catAgg = monthlyCategoriaAgg(d, mes);
       const r = catNames.reduce((s,c)=>s+((catAgg[c]&&catAgg[c].r)||0),0);
@@ -3225,7 +3280,7 @@ function buildCategoriaTable(d, prev, meses, level, names){
     Object.keys(base).forEach(cat=>{ realCatSel[cat] = {r:base[cat].r, c:base[cat].c}; });
     realCatMonthNote = `Realizado por categoria sem grão mensal para ${level} — mostrando o semestre inteiro (${d.label}), independente do Período selecionado acima.`;
   }
-  if (level!=='supervisor' && level!=='vendedor'){
+  if ((level!=='supervisor' && level!=='vendedor') || d._recorte){
     perMes.forEach(pm=>Object.keys(pm.catAgg).forEach(cat=>{
       if(!realCatSel[cat]) realCatSel[cat]={r:0,c:0};
       realCatSel[cat].r += pm.catAgg[cat].r||0; realCatSel[cat].c += pm.catAgg[cat].c||0;
@@ -3257,7 +3312,7 @@ function buildCategoriaTable(d, prev, meses, level, names){
 
   const prevRealCatSel = {};
   if (prev){
-    if (!level){
+    if (!level || prev._recorte){
       meses.forEach(mes=>{
         const catAgg = monthlyCategoriaAgg(prev, mes);
         Object.keys(catAgg).forEach(cat=>{ const cur=prevRealCatSel[cat]||(prevRealCatSel[cat]={r:0,c:0}); cur.r+=catAgg[cat].r||0; cur.c+=catAgg[cat].c||0; });
@@ -4688,6 +4743,11 @@ function buildClientProfileIndex(d){
   const hierTopVend = d.hier_top_clientes_vendedor_top50 || {};
   const perfil = {};
   Object.keys(hierTopVend).forEach(vend=>{
+    // PERMISSÃO: hier_top_clientes_vendedor_top50 vem do cubo da EMPRESA (todos os
+    // vendedores). Com recorte ativo (inclui a trava do usuário logado), só entram
+    // os vendedores do escopo — senão o supervisor recebia sugestão de cross-sell
+    // com clientes e vendedores de outras equipes.
+    if (d._recorte && !(d.full_vendedores || {})[vend]) return;
     const sup = supervisorDoVendedor(d, vend);
     const ger = sup ? gerenteDoSupervisor(d, sup) : null;
     (hierTopVend[vend] || []).forEach(cli=>{
@@ -4760,24 +4820,59 @@ function renderPlanos(){
   const prevKey = PREV_OF[ST.per];
   const prev = prevPeriod();
   const level = hierLevelActive();
-  document.getElementById('planosHierNote').innerHTML = level
+  const escopo = planosEscopo(d, prev, level);
+  document.getElementById('planosHierNote').innerHTML = (level && d._recorte)
+    ? `<div class="alert">Planos recortados por <strong>${escAttr(recorteLabel())}</strong>: receita, margem, positivação, meta por categoria e oportunidades de cross-sell são só deste escopo.</div>`
+    : level
     ? `<div class="alert">⚠ Os planos abaixo usam os números da <strong>empresa inteira</strong> — esta aba não é recortável por Gerente/Supervisor/Vendedor neste cubo (receita/margem por categoria seriam exatos, mas positivação e produto líder por categoria só existem no nível empresa). Filtro de Categoria já é respeitado (mostrando só as categorias selecionadas). As oportunidades de cross-sell por cliente (parte 4 de cada categoria) já são por cliente/vendedor real, então não têm essa limitação.</div>` : "";
   let cats = Object.keys(d.por_categoria).sort((a,b)=>d.por_categoria[b].r-d.por_categoria[a].r);
   if (ST.cat.length) cats = cats.filter(c=>ST.cat.includes(c));
   const drv = computeDayDrivers(d.por_dia, d.por_dia_categoria, cats);
   const perfilClientes = buildClientProfileIndex(d);
   const coOcorrencia = buildCoOcorrenciaCategorias(perfilClientes);
-  document.getElementById('planos-cards').innerHTML = cats.map((cat,i)=>buildExecPlan(cat, i, cats.length, d, prev, drv, perfilClientes, coOcorrencia)).join("");
+  document.getElementById('planos-cards').innerHTML = cats.map((cat,i)=>buildExecPlan(cat, i, cats.length, d, prev, drv, perfilClientes, coOcorrencia, escopo)).join("");
 }
 
-function buildExecPlan(cat, idx, totalCats, d, prev, drv, perfilClientes, coOcorrencia){
+// Meta e positivação por categoria DO ESCOPO quando há recorte. Sem isto o plano
+// de um supervisor comparava o realizado dele com a meta da EMPRESA inteira
+// (d.meta.por_categoria é do cubo) e a positivação saía NaN (o por_categoria do
+// recorte não traz n_clientes). null = sem recorte, segue o caminho do cubo.
+function planosEscopo(d, prev, level){
+  if (!d || !d._recorte) return null;
+  const mesesPer = [...new Set(ST.meses.filter(am => anomesPeriodo(am) === ST.per).map(anomesMes))];
+  const meses = mesesPer.length ? mesesPer : Object.keys((curPeriodRaw()||{}).por_mes || {}).map(Number);
+  let metaCat = {};
+  if (level){
+    const agg = metaCategoriaHierMesFor(d, level, hierSelectedNames(level), meses);
+    Object.keys(agg).forEach(cat => { metaCat[cat] = agg[cat].meta; });
+  } else {
+    meses.forEach(mes => {
+      const mc = (d.meta && d.meta.por_mes_categoria && d.meta.por_mes_categoria[mes]) || {};
+      Object.keys(mc).forEach(cat => { metaCat[cat] = (metaCat[cat]||0) + mc[cat]; });
+    });
+  }
+  // Clientes distintos por categoria no recorte (união dos meses).
+  const nCli = period => {
+    const out = {}, sets = {};
+    Object.values((period && period.por_mes_categoria_clientes_cod) || {}).forEach(porCat =>
+      Object.entries(porCat).forEach(([cat, cods]) => { const s = sets[cat] || (sets[cat] = new Set()); cods.forEach(c => s.add(c)); }));
+    Object.keys(sets).forEach(cat => { out[cat] = sets[cat].size; });
+    return out;
+  };
+  return { metaCat, nCli: nCli(d), prevNCli: (prev && prev._recorte) ? nCli(prev) : null };
+}
+
+function buildExecPlan(cat, idx, totalCats, d, prev, drv, perfilClientes, coOcorrencia, escopo){
   const v = d.por_categoria[cat];
   const pv = (prev && prev.por_categoria[cat]) ? prev.por_categoria[cat] : null;
-  const metaVal = (d.meta && d.meta.por_categoria) ? d.meta.por_categoria[cat] : null;
+  const metaVal = escopo ? (escopo.metaCat[cat] || null)
+                : ((d.meta && d.meta.por_categoria) ? d.meta.por_categoria[cat] : null);
   const ating = (metaVal && metaVal>0) ? v.r/metaVal*100 : null;
   const share = d.receita>0 ? v.r/d.receita*100 : 0;
-  const pos = d.n_cli>0 ? v.n_clientes/d.n_cli*100 : 0;
-  const posPrev = (pv && prev.n_cli>0) ? pv.n_clientes/prev.n_cli*100 : null;
+  const vNCli = v.n_clientes != null ? v.n_clientes : (escopo ? (escopo.nCli[cat] || 0) : 0);
+  const pvNCli = !pv ? null : (pv.n_clientes != null ? pv.n_clientes : (escopo && escopo.prevNCli ? (escopo.prevNCli[cat] || 0) : null));
+  const pos = d.n_cli>0 ? vNCli/d.n_cli*100 : 0;
+  const posPrev = (pv && pvNCli!=null && prev.n_cli>0) ? pvNCli/prev.n_cli*100 : null;
   const deltaReceita = (pv && pv.r>0) ? (v.r-pv.r)/pv.r*100 : null;
   const deltaMargem = pv ? v.m-pv.m : null;
   const deltaPos = posPrev!=null ? pos-posPrev : null;
@@ -4786,7 +4881,7 @@ function buildExecPlan(cat, idx, totalCats, d, prev, drv, perfilClientes, coOcor
   const topsCategoria = d.top_produtos.filter(p=>p.categoria===cat);
   const top1 = topsCategoria[0] || null;
   const concTop1 = (top1 && v.r>0) ? top1.r/v.r*100 : null;
-  const ticketMedioCliente = v.n_clientes>0 ? v.r/v.n_clientes : 0;
+  const ticketMedioCliente = vNCli>0 ? v.r/vNCli : 0;
   const ganhoPosReceita = 0.05 * d.n_cli * ticketMedioCliente;
   const ganhoMargemCash = v.r * 0.01;
 
@@ -4802,7 +4897,7 @@ function buildExecPlan(cat, idx, totalCats, d, prev, drv, perfilClientes, coOcor
   }
 
   // ── 1. Visão Geral (Panorama Executivo) ──
-  const situacaoAtual = `<strong>${cat}</strong> responde por <strong>${share.toFixed(1)}%</strong> da receita total do período (${fF(v.r)}), com margem de <strong>${fPct(v.m)}</strong> (${gapMargem>=0?'+':''}${gapMargem.toFixed(1)} p.p. vs. a média da empresa) e cash margem de <strong>${fF(cashMargem)}</strong>. Positivação atual: <strong>${pos.toFixed(1)}%</strong> da base ativa (${fN(v.n_clientes)} de ${fN(d.n_cli)} clientes).`;
+  const situacaoAtual = `<strong>${cat}</strong> responde por <strong>${share.toFixed(1)}%</strong> da receita total do período (${fF(v.r)}), com margem de <strong>${fPct(v.m)}</strong> (${gapMargem>=0?'+':''}${gapMargem.toFixed(1)} p.p. vs. a média da empresa) e cash margem de <strong>${fF(cashMargem)}</strong>. Positivação atual: <strong>${pos.toFixed(1)}%</strong> da base ativa (${fN(vNCli)} de ${fN(d.n_cli)} clientes).`;
   const direcionadores = ating!=null
     ? `Atingimento de meta no período: <strong>${ating.toFixed(1)}%</strong> (meta ${fF(metaVal)} vs. realizado ${fF(v.r)}) — categoria <strong>${ating>=100?'acima':'abaixo'}</strong> do direcionador orçamentário aprovado pela diretoria.`
     : `Sem meta cadastrada para esta categoria no período — recomenda-se formalizar um direcionador orçamentário específico no próximo ciclo de planejamento.`;
@@ -6995,42 +7090,25 @@ let authSession = null;
 window.__authSession = () => authSession;
 window.__escopo = (sess) => escopoPermitido(sess);
 
-// Único admin do painel: o "gerente" DIRETORIA (cifalcomercial.gerente.codgerente = 28).
-// Ele loga pelo mesmo /Roteiro/gerente/login (CPF + token) e volta sem supervisores,
-// então como 'gerente' cairia em travaSemEscopo. Como 'admin' nenhuma trava se aplica
-// (escopoPermitido/applyAccessLock/secureFallback só agem em gerente/supervisor) e o
-// painel mostra a empresa inteira.
-const ADMIN_COD_GERENTE = '28';
-const isAdminSession = (sess) => String(pickCI(sess, 'codgerente', 'codger')) === ADMIN_COD_GERENTE;
-
+// Sessão = resposta do login + `token` emitido pela API do portal. O cargo
+// (inclusive 'admin' da DIRETORIA) e o escopo de dados são decididos NO SERVIDOR
+// (api/src/routes/authRoutes.js + auth/escopo.js); o navegador só guarda o token.
+// Sessão antiga, de antes do token, não vale: pede login de novo.
 function checkAuth() {
   const saved = localStorage.getItem('portalAuth');
   if (saved) {
     try {
-      authSession = JSON.parse(saved);
-      // Sessão da DIRETORIA salva antes desta regra existir ainda está como 'gerente'.
-      if (authSession && authSession.role === 'gerente' && isAdminSession(authSession)) authSession.role = 'admin';
-      document.getElementById('login-overlay').style.display = 'none';
-      return true;
+      const s = JSON.parse(saved);
+      if (s && s.token) {
+        authSession = s;
+        document.getElementById('login-overlay').style.display = 'none';
+        return true;
+      }
+      localStorage.removeItem('portalAuth');
     } catch(e){}
   }
   document.getElementById('login-overlay').style.display = 'flex';
   return false;
-}
-
-const AUTH_HOST = 'https://apis.cifaldistribuidora.com.br:8001';
-
-// Token base (credenciais de sistema) — usado tanto no login quanto p/ refazer a
-// busca de carteira quando a sessão é restaurada do localStorage sem clientes.
-async function getBaseToken(){
-  const r = await fetch(`${AUTH_HOST}/auth`, {
-    method:'POST', headers:{ 'Content-Type':'application/json' },
-    body: JSON.stringify({ userName:"cvlima", password:"123" })
-  });
-  if (!r.ok) throw new Error("Auth base falhou.");
-  const j = await r.json();
-  if (!j.token) throw new Error("Token não retornado.");
-  return j.token;
 }
 
 // A API de auth devolve as chaves em PascalCase (CodCliente/CodVendedor/...),
@@ -7045,71 +7123,6 @@ function pickCI(obj, ...keysLower){
   return undefined;
 }
 
-// Executa `fn` sobre `items` com no máximo `limit` requisições simultâneas —
-// evita disparar centenas de fetches de uma vez (gerente tem dezenas de vendedores).
-async function mapLimit(items, limit, fn){
-  const out = new Array(items.length);
-  let i = 0;
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (i < items.length){ const idx = i++; out[idx] = await fn(items[idx], idx); }
-  }));
-  return out;
-}
-
-const authGet = (token, path) =>
-  fetch(`${AUTH_HOST}${path}`, { headers: { 'Authorization': `Bearer ${token}` } })
-    .then(r => r.ok ? r.json() : []).catch(() => []);
-
-// Vendedores da sessão como [{cod, nome}]. Login de SUPERVISOR já traz a lista;
-// login de GERENTE traz só `Supervisores`, então buscamos os vendedores de cada
-// supervisor em /Roteiro/supervisor/{codSupervisor}/vendedores.
-async function resolveVendedoresDaSessao(token, sess){
-  const byCod = new Map();
-  const addFrom = arr => (Array.isArray(arr) ? arr : []).forEach(v => {
-    const cod = pickCI(v, 'codvendedor', 'codven', 'codvend', 'cod');
-    if (cod != null && !byCod.has(String(cod))){
-      byCod.set(String(cod), { cod, nome: pickCI(v, 'vendedor', 'nomven', 'nome') });
-    }
-  });
-
-  addFrom(pickCI(sess, 'vendedores'));
-
-  if (!byCod.size){
-    const sups = pickCI(sess, 'supervisores');
-    const codsSup = (Array.isArray(sups) ? sups : [])
-      .map(s => pickCI(s, 'codsupervisor', 'codsup', 'cod'))
-      .filter(c => c != null);
-    if (codsSup.length){
-      const listas = await mapLimit(codsSup, 6, cod => authGet(token, `/Roteiro/supervisor/${cod}/vendedores`));
-      listas.forEach(addFrom);
-      console.log(`[carteira] ${byCod.size} vendedor(es) obtidos de ${codsSup.length} supervisor(es)`);
-    }
-  }
-  return [...byCod.values()];
-}
-
-// Carteira de clientes por vendedor. Extrai SOMENTE codCliente, cliente,
-// nomeFantasia. Devolve { todos:[...], byVend:{ [codVendedor]: [...] } }.
-async function fetchCarteira(token, vendedores){
-  if (!vendedores.length) return { todos: [], byVend: {} };
-  const listas = await mapLimit(vendedores, 6, v => authGet(token, `/Roteiro/vendedor/${v.cod}/clientes`));
-  const todosByCod = new Map();
-  const byVend = {};
-  vendedores.forEach((v, i) => {
-    const arr = Array.isArray(listas[i]) ? listas[i] : [];
-    const doVend = [];
-    arr.forEach(c => {
-      const cod = pickCI(c, 'codcliente');
-      if (cod == null) return;
-      const item = { codCliente: cod, cliente: pickCI(c, 'cliente'), nomeFantasia: pickCI(c, 'nomefantasia') };
-      doVend.push(item);
-      if (!todosByCod.has(String(cod))) todosByCod.set(String(cod), item);
-    });
-    byVend[String(v.cod)] = doVend;
-  });
-  return { todos: [...todosByCod.values()], byVend };
-}
-
 // Persiste a sessão; carteira grande pode estourar a cota do localStorage — nesse
 // caso segue só em memória (a carteira é rebuscada no próximo boot).
 function persistAuthSession(){
@@ -7118,19 +7131,20 @@ function persistAuthSession(){
 }
 
 // Carrega a carteira na sessão (login novo ou sessão restaurada sem clientes).
+// Vem do servidor, que resolve os vendedores/clientes a partir do escopo do token.
 async function ensureCarteira(){
   if (!authSession) return;
   // Admin não tem carteira própria: o filtro Cliente usa o top do cubo da empresa.
   if (authSession.role === 'admin') return;
   if (Array.isArray(authSession.clientes) && authSession.clientes.length) return;
   try {
-    const token = await getBaseToken();
-    const vendedores = await resolveVendedoresDaSessao(token, authSession);
-    if (!vendedores.length){
-      console.warn('[carteira] nenhum vendedor encontrado p/ esta sessão — filtro Cliente cai no top 50. Chaves da sessão:', Object.keys(authSession));
+    const r = await fetch(`${API_AUTH_URL}/carteira`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const { vendedores, todos, byVend } = await r.json();
+    if (!vendedores || !vendedores.length){
+      console.warn('[carteira] nenhum vendedor encontrado p/ esta sessão — filtro Cliente cai no top 50.');
       return;
     }
-    const { todos, byVend } = await fetchCarteira(token, vendedores);
     authSession.vendedoresCarteira = vendedores;
     authSession.clientes = todos;
     authSession.clientesByVend = byVend;
@@ -7143,8 +7157,6 @@ async function ensureCarteira(){
 
 window.doLogin = async function() {
   const role = document.getElementById('loginRole').value; // 'supervisor', 'gerente' ou 'diretoria'
-  // Diretoria não tem rota própria na API da Cifal: é um gerente (cod 28).
-  const rotaLogin = role === 'diretoria' ? 'gerente' : role;
   const user = document.getElementById('loginUser').value;
   const pass = document.getElementById('loginPass').value;
   const btn = document.getElementById('loginBtn');
@@ -7155,39 +7167,20 @@ window.doLogin = async function() {
   err.textContent = "";
 
   try {
-    // 1. Obter o JWT Token primeiro usando credenciais HARDCODED do sistema
-    const authRes = await fetch(`https://apis.cifaldistribuidora.com.br:8001/auth`, {
+    // O servidor valida na API da Cifal e devolve { token, sessao }.
+    const res = await fetch(`${API_AUTH_URL}/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userName: "cvlima", password: "123" })
+      body: JSON.stringify({ role, login: user, senha: pass })
     });
-    
-    if (!authRes.ok) throw new Error("Usuário ou senha inválidos no Auth Base.");
-    const authData = await authRes.json();
-    const token = authData.token;
-
-    if (!token) throw new Error("Token não retornado pela API.");
-
-    // 2. Chamar a rota de elevação de cargo usando o Token
-    const res = await fetch(`https://apis.cifaldistribuidora.com.br:8001/Roteiro/${rotaLogin}/login`, {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({ login: user, senha: pass })
-    });
-    
-    if (!res.ok) throw new Error("Usuário ou senha inválidos.");
-    const data = await res.json();
-    const admin = rotaLogin === 'gerente' && isAdminSession(data);
-    // "Diretoria" escolhido com credencial de outro gerente: não vira gerente comum.
-    if (role === 'diretoria' && !admin) throw new Error("Usuário ou senha inválidos.");
-    data.role = admin ? 'admin' : role;
+    if (res.status === 401) throw new Error("Usuário ou senha inválidos.");
+    if (!res.ok) throw new Error("Falha no login — tente novamente em instantes.");
+    const { token, sessao } = await res.json();
+    if (!token || !sessao) throw new Error("Resposta de login inválida.");
 
     // Sucesso! Salvar na sessão. A carteira de clientes é carregada por
     // ensureCarteira() dentro de loadAndInit (mesmo caminho da sessão restaurada).
-    authSession = data;
+    authSession = Object.assign({}, sessao, { token });
     persistAuthSession();
 
     document.getElementById('login-overlay').style.display = 'none';
