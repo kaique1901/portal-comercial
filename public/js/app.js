@@ -97,17 +97,17 @@ const DIAG = {
 
   // Motivo de um filtro estar vazio, em ordem de precedência da causa raiz.
   motivoVazio(key){
-    if (!window.REAL_DATA || !Object.keys(window.REAL_DATA).length) return 'dados da API ainda não carregados';
+    if (!window.REAL_DATA || !Object.keys(window.REAL_DATA).length) return 'dados ainda não carregados';
     const pendente = (this.etl && !this.etl.completo && Array.isArray(this.etl.faltando) && this.etl.faltando.length)
       ? this.etl.faltando.join(', ') : null;
     if ((key === 'vend' || key === 'sup' || key === 'ger') && this.cadastroVazio)
-      return `cadastro da força de vendas (_hierarquia) ainda não veio da API${pendente ? ' — ETL pendente: ' + pendente : ''}`;
+      return `cadastro da força de vendas ainda não carregado${pendente ? ' — atualização dos dados em andamento' : ''}`;
     let carregando = false;
     try { const p = curPeriod(); carregando = !!(p && p._carregando); } catch (e) {}
     if (carregando) return 'recorte do seu escopo ainda carregando';
     if (key === 'vend' && this.naoResolvidos.length)
-      return `${this.naoResolvidos.length} nome(s) da API de login não casaram com o cadastro (ex.: ${this.naoResolvidos.slice(0,3).join(' | ')}) — barreira de acesso não liberou ninguém`;
-    if (pendente) return `etapa do ETL ainda não concluída: ${pendente}`;
+      return `${this.naoResolvidos.length} nome(s) do login não foram encontrados no cadastro (ex.: ${this.naoResolvidos.slice(0,3).join(' | ')}) — acesso não liberado`;
+    if (pendente) return 'atualização dos dados ainda em andamento';
     return 'nenhuma opção dentro do escopo/mês selecionados';
   },
 
@@ -348,8 +348,8 @@ function escopoPermitido(sess){
     if (out[k] && (out[k].size === 0 || nadaResolveu)){
       out[k] = null;
       if (m) m.barreira_ignorada = out[k] === null && m.recebidos
-        ? `nenhum dos ${m.recebidos} ${m.nivel}(es) do login casou por código, por nome ou pela árvore do cadastro — barreira local desligada para não zerar a lista; escopo segue garantido pelo recorte da API (ST.ger/ST.sup)`
-        : 'nenhum nome/código resolveu — barreira local desligada; escopo segue garantido pelo recorte da API';
+        ? `nenhum dos ${m.recebidos} ${m.nivel}(es) do login casou por código, por nome ou pela árvore do cadastro — barreira local desligada para não zerar a lista; escopo segue garantido pelo servidor`
+        : 'nenhum nome/código resolveu — barreira local desligada; escopo segue garantido pelo servidor';
     }
   });
 
@@ -995,7 +995,7 @@ function avisoSelecaoCruzada(){
   if (!selecaoCruzaSemestres()) return '';
   const doPer = ST.meses.filter(am => anomesPeriodo(am) === ST.per).map(anomesLabel);
   const fora  = ST.meses.filter(am => anomesPeriodo(am) !== ST.per).map(anomesLabel);
-  return `<div class="alert">⚠ A seleção de meses cruza semestres. <strong>Realizado, rankings e positivação</strong> cobrem todos os meses escolhidos (${rotuloMeses()}). Já <strong>Meta e Bonificação</strong> existem por semestre no cubo e cobrem apenas ${doPer.join(' + ') || '—'}; ${fora.join(' + ')} ficam de fora dessas duas colunas.</div>`;
+  return `<div class="alert">⚠ A seleção de meses cruza semestres. <strong>Realizado, rankings e positivação</strong> cobrem todos os meses escolhidos (${rotuloMeses()}). Já <strong>Meta e Bonificação</strong> existem por semestre e cobrem apenas ${doPer.join(' + ') || '—'}; ${fora.join(' + ')} ficam de fora dessas duas colunas.</div>`;
 }
 // Rótulo do recorte temporal, usado nas notas de comparação.
 function rotuloMeses(){
@@ -1839,7 +1839,7 @@ function populateFilters(){
   Object.keys(FILTERS).forEach(renderFilterWidget);
   const d = curPeriod();
   document.getElementById("topPeriodo").textContent = d.label;
-  document.getElementById("sbFootTxt").textContent = `Base: ${fN(d.linhas)} linhas reais (API) — ${d.label}`;
+  document.getElementById("sbFootTxt").textContent = `Base: ${fN(d.linhas)} linhas reais — ${d.label}`;
   populateMesGlobalFilter();
   populateCompFiltro();
   renderDiagBox();
@@ -1869,13 +1869,11 @@ function populateCompFiltro(){
 function motivoEtapaAusente(etapa){
   const etl = DIAG.etl;
   if (etl && Array.isArray(etl.faltando) && etl.faltando.includes('_' + etapa)){
-    const outras = etl.faltando.filter(k => k !== '_' + etapa).map(k=>k.replace(/^_/,''));
-    return `Etapa "${etapa}" do ETL ainda não concluída no servidor — esta aba se preenche sozinha quando terminar`
-         + (outras.length ? ` (também pendente: ${outras.join(', ')}).` : '.');
+    return 'Os dados desta aba ainda estão sendo atualizados — a tela se preenche sozinha quando terminar.';
   }
   if (etl && etl.completo)
-    return `Sem dado: o ETL concluiu o ciclo e não produziu a etapa "${etapa}" — verificar "[ETL] ${etapa} falhou" no log da API.`;
-  return `Dados de "${etapa}" não disponíveis (aguardando a API).`;
+    return 'Os dados desta aba não estão disponíveis no momento — se persistir, avise o suporte.';
+  return 'Os dados desta aba ainda não foram carregados.';
 }
 
 const ETAPA_EXPLICA = {
@@ -1897,18 +1895,18 @@ function renderDiagBox(){
     const faltando = (etl.faltando || []).map(k => k.replace(/^_/, ''));
     const etapas = faltando.filter(k => ETAPA_EXPLICA[k]);
     const periodos = faltando.filter(k => !ETAPA_EXPLICA[k]);
-    if (periodos.length) itens.push(`<li><b>Períodos ainda montando:</b> ${periodos.join(', ')}</li>`);
-    etapas.forEach(k => itens.push(`<li><b>${k}</b> ainda não chegou — afeta ${ETAPA_EXPLICA[k]}.</li>`));
-    if (faltando.length) itens.push(`<li>O ETL leva ~25 min no boot. Esta tela se atualiza sozinha quando as etapas chegam.</li>`);
+    if (periodos.length) itens.push(`<li><b>Períodos ainda em atualização:</b> ${periodos.map(k=>k.replace('_', ' - ') + 'º semestre').join(', ')}</li>`);
+    etapas.forEach(k => itens.push(`<li>Ainda em atualização — afeta ${ETAPA_EXPLICA[k]}.</li>`));
+    if (faltando.length) itens.push(`<li>A atualização completa leva cerca de 25 minutos. Esta tela se atualiza sozinha quando terminar.</li>`);
   }
 
   if (DIAG.cadastroVazio && !(etl && (etl.faltando||[]).includes('_hierarquia')))
-    itens.push('<li><b>Cadastro (_hierarquia) ausente</b> no payload da API, e o ETL diz que já terminou — verificar <code>[ETL] hierarquia falhou</code> no log da API.</li>');
+    itens.push('<li><b>Cadastro da força de vendas não carregado</b> — se persistir, avise o suporte.</li>');
 
   const esc = DIAG.escopo;
   if (esc){
     if (esc.barreira_ignorada)
-      itens.push(`<li><b>Escopo de acesso não resolveu:</b> ${esc.recebidos} ${esc.nivel}(es) vindos do login, nenhum casou por código nem por nome. Barreira local desligada; o recorte da API continua limitando ao seu escopo.</li>`);
+      itens.push(`<li><b>Escopo de acesso não resolveu:</b> ${esc.recebidos} ${esc.nivel}(es) vindos do login, nenhum casou por código nem por nome. Barreira local desligada; o servidor continua limitando ao seu escopo.</li>`);
     else if (esc.nome_cru)
       itens.push(`<li><b>${esc.nome_cru} ${esc.nivel}(es)</b> do login não existem no cadastro (aceitos pelo nome cru). Códigos casados: ${esc.por_codigo}, nomes casados: ${esc.por_nome}.</li>`);
   }
@@ -1940,7 +1938,7 @@ function renderDiagBox(){
     ? `Diagnóstico (${nProblemas})`
     : 'Carregando dados…';
   document.getElementById('diagBody').innerHTML =
-    `<ul>${itens.join('')}</ul><div style="margin-top:6px;color:var(--sb-t3)">Detalhe completo: <code>__diag()</code> no console.</div>`;
+    `<ul>${itens.join('')}</ul>`;
   const tog = document.getElementById('diagToggle');
   if (tog && !tog._wired){ tog._wired = true; tog.onclick = () => box.classList.toggle('open'); }
 }
@@ -2009,7 +2007,7 @@ function populateMesGlobalFilter(){
     // meses clicando um a um geraria 4 consultas pesadas no banco (~30s cada
     // quando cruza anos), jogando fora todas menos a última.
     agendarRenderAposMeses();
-  }, { emptyMsg: 'Nenhum mês com venda no cubo carregado' });
+  }, { emptyMsg: 'Nenhum mês com venda nos dados carregados' });
 
   if (note){
     if (!todos.length) note.textContent = 'Sem meses com venda';
@@ -2170,7 +2168,7 @@ function renderVisao(){
   if (!d){
     document.getElementById("vg-sub").textContent = "Sem dados";
     document.getElementById("vg-meta").textContent = "—";
-    document.getElementById("vg-kpis").innerHTML = `<div class="alert" style="grid-column:1/-1">⚠ O ETL ainda não concluiu nenhum semestre para o ano vigente.</div>`;
+    document.getElementById("vg-kpis").innerHTML = `<div class="alert" style="grid-column:1/-1">⚠ Os dados ainda não foram processados para nenhum semestre para o ano vigente.</div>`;
     ["cVgMes","cVgCat","cVgGer","cVgGrp"].forEach(id=>{ if (charts[id]) { charts[id].destroy(); delete charts[id]; } });
     return null;
   }
@@ -2231,7 +2229,7 @@ function renderVisao(){
     {lbl:"Receita", val:fM(eff.r), delta: prevEff?fDelta(eff.r,prevEff.r):null, cls:"k0"},
     {lbl:"Margem %", val:fPct(effMargem), delta: prevEff?fDelta(effMargem,prevMargem):null, cls:"k1"},
     {lbl:"Cash Margem (R$)", val:fM(cashMargem), delta: prevEff?fDelta(cashMargem,prevCashMargem):null, cls:"k6"},
-    {lbl:"Qtde vendida", val: eff.q!=null?fN(eff.q):"—", delta: (prevEff&&eff.q!=null&&prevEff.q!=null)?fDelta(eff.q,prevEff.q):null, note: eff.q==null?"não recortável para este filtro neste cubo":null, cls:"k2"},
+    {lbl:"Qtde vendida", val: eff.q!=null?fN(eff.q):"—", delta: (prevEff&&eff.q!=null&&prevEff.q!=null)?fDelta(eff.q,prevEff.q):null, note: eff.q==null?"não recortável para este filtro":null, cls:"k2"},
     // Pedidos, clientes e vendedores também saem do recorte do ano — antes eram
     // sempre os da empresa, com uma nota explicando que "não eram recortáveis".
     {lbl:"Ticket médio/pedido", val:fF(dEff.ticket_pedido), delta: prevEff2?fDelta(dEff.ticket_pedido,prevEff2.ticket_pedido):null, cls:"k3"},
@@ -2242,7 +2240,7 @@ function renderVisao(){
   // O erro é global às duas consultas (ano e ano anterior): só zera a tela quando
   // quem faltou foi o recorte do ano corrente.
   if (anoScopeErro && comFiltro && !recAno) banners.push(`⚠ Falha ao consultar o recorte do ano (<strong>${anoScopeErro}</strong>) — os valores estão zerados por segurança. Recarregue a página.`);
-  else if (eff.carregando) banners.push(`⏳ Consultando no banco o recorte <strong>${eff.label || recorteLabel()}</strong> do ano inteiro — os valores aparecem em alguns segundos.`);
+  else if (eff.carregando) banners.push(`⏳ Calculando o recorte <strong>${eff.label || recorteLabel()}</strong> do ano inteiro — os valores aparecem em alguns segundos.`);
   else if (comFiltro && !prevEff) banners.push(`⏳ Consultando ${ano-1} no mesmo recorte para calcular as variações — os deltas aparecem em alguns segundos.`);
   if (eff.monthNote) banners.push(`⚠ ${eff.monthNote}`);
   document.getElementById("vg-kpis").innerHTML = banners.map(b=>`<div class="alert" style="grid-column:1/-1">${b}</div>`).join("") + kpis.map(k=>`
@@ -2254,7 +2252,7 @@ function renderVisao(){
 
   // Rótulo comum aos 4 cards: o que está sendo mostrado ali.
   const notaRecorte = comFiltro
-    ? (recAno ? `Recorte: ${recorteLabel()}` : 'Consultando o recorte no banco…')
+    ? (recAno ? `Recorte: ${recorteLabel()}` : 'Calculando o recorte…')
     : d.label;
 
   // Receita por Mês: eixo sempre com os meses que o ano tem no cubo (não some mês
@@ -2323,7 +2321,7 @@ function renderComp(){
   if (ST.compAno==null || !anos.includes(ST.compAno)) ST.compAno = anoVigente();
   const d = buildYearPeriod(ST.compAno);
   if (!d){
-    document.getElementById("comp-cards").innerHTML = `<div class="alert" style="grid-column:1/-1">⚠ O ETL ainda não concluiu nenhum semestre para este ano.</div>`;
+    document.getElementById("comp-cards").innerHTML = `<div class="alert" style="grid-column:1/-1">⚠ Os dados ainda não foram processados para nenhum semestre para este ano.</div>`;
     ["cCompMes","cCompMargem","cCompCash","cCompCat"].forEach(id=>{ if (charts[id]) { charts[id].destroy(); delete charts[id]; } });
     return null;
   }
@@ -2360,7 +2358,7 @@ function renderComp(){
   const subEl = document.getElementById("comp-sub");
   if (subEl) subEl.textContent = `${periodoTxt} vs. ${prevLabel}`;
   const compBanner = bloqueado
-    ? `⚠ Filtro de Canal/Inadimplente/Status/Cliente ou Grupo+Hierarquia não é suportado no comparativo por Ano (só existe consulta exata ao banco por semestre) — o comparativo abaixo <strong>ignora esse filtro</strong>.`
+    ? `⚠ Filtro de Canal/Inadimplente/Status/Cliente ou Grupo+Hierarquia não é suportado no comparativo por Ano (só existe cálculo exato por semestre) — o comparativo abaixo <strong>ignora esse filtro</strong>.`
     : (eff.monthNote ? `⚠ ${eff.monthNote}` : (eff.label?`Recorte ativo: <strong>${eff.label}</strong> — comparado ao mesmo recorte em ${prevLabel}.`:""));
   document.getElementById("comp-cards").innerHTML = (compBanner?`<div class="alert" style="grid-column:1/-1">${compBanner}</div>`:"") + rows.map(r=>{
     const dl = (r.b!=null) ? fDelta(r.a,r.b) : {s:"sem base", c:"neu"};
@@ -2871,7 +2869,7 @@ function renderMargemCash(){
   const catInfo = categoriaCascadeRowsFor(d, ST.mes);
   const catRows = catInfo.rows.sort((a,b)=>(b[1].r-b[1].c)-(a[1].r-a[1].c));
   const mcCatNotes = [];
-  if (catInfo.level) mcCatNotes.push(`Recortado por ${catInfo.level} — <strong>${labelJoin(catInfo.names)}</strong>: Faturamento/Cash Margem/Margem/Meta exatos (cubo hierárquico Gerente/Supervisor/Vendedor × Categoria × Mês).`);
+  if (catInfo.level) mcCatNotes.push(`Recortado por ${catInfo.level} — <strong>${labelJoin(catInfo.names)}</strong>: Faturamento/Cash Margem/Margem/Meta exatos (Gerente/Supervisor/Vendedor × Categoria × Mês).`);
   if (catInfo.monthNote) mcCatNotes.push(catInfo.monthNote);
   document.getElementById("mcCatNote").innerHTML = mcCatNotes.length ? `<div class="alert">${mcCatNotes.join(" ")}</div>` : "";
   // BUG CORRIGIDO: Meta Cash Margem/Meta Faturamento por categoria vinham SEMPRE
@@ -2925,7 +2923,7 @@ function renderMargemCash(){
     prodList = topProdutosFonte(d, level, names).slice().sort((a,b)=>(b.r-b.c)-(a.r-a.c));
     cliListM = topClientesFonte(d, level, names).slice().sort((a,b)=>b.m-a.m);
     prodListM = topProdutosFonte(d, level, names).slice().sort((a,b)=>b.m-a.m);
-    document.getElementById("cashHierNote").innerHTML = `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: Top 50 por Cash Margem/Margem % calculado sobre todos os clientes/produtos daquele recorte (cubo hierárquico).${mesTopNoteHier}</div>`;
+    document.getElementById("cashHierNote").innerHTML = `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: Top 50 por Cash Margem/Margem % calculado sobre todos os clientes/produtos daquele recorte.${mesTopNoteHier}</div>`;
   } else {
     // Sem filtro de hierarquia: Top 50 respeita o filtro de Mês via os cubos
     // mensais dedicados (top_clientes_cash_por_mes etc.) — antes sempre
@@ -3412,7 +3410,7 @@ function buildCategoriaTable(d, prev, meses, level, names){
   // existe no cubo carregado (cache antigo) — aí sim mostra "—"; 0 é zero de
   // verdade e aparece como R$ 0,00, que é informação diferente de "sem dado".
   const celulasBonificacao = (valor, receita) => {
-    if (valor == null) return `<td class="tv"><span style="color:var(--t3)" title="cubo sem a etapa de bonificação — recarregue após o próximo ciclo do ETL">—</span></td><td class="tv"><span style="color:var(--t3)">—</span></td>`;
+    if (valor == null) return `<td class="tv"><span style="color:var(--t3)" title="Bonificação ainda não disponível — aparece na próxima atualização dos dados">—</span></td><td class="tv"><span style="color:var(--t3)">—</span></td>`;
     const pct = receita > 0 ? (valor / receita * 100) : null;
     return `<td class="tv">${fF(valor)}</td><td class="tv">${pct!=null?fPct(pct):'<span style="color:var(--t3)">—</span>'}</td>`;
   };
@@ -3588,7 +3586,7 @@ function renderObjetivosDatas(){
 
   const banners = [];
   banners.push(`⚠ Comparativo por datas exatas mostra só <strong>Realizado</strong> (receita, margem, categoria) — a Meta do ERP só existe por MÊS, não por dia, então não há Meta/Atingimento/Tendência aqui.`);
-  if (bloqueado) banners.push(`⚠ Filtro de ${level==='supervisor'?'Supervisor':'Vendedor'} não é suportado neste modo (o cubo só tem grão diário por Gerente) — mostrando <strong>nível empresa</strong>.`);
+  if (bloqueado) banners.push(`⚠ Filtro de ${level==='supervisor'?'Supervisor':'Vendedor'} não é suportado neste modo (só existe dado diário por Gerente) — mostrando <strong>nível empresa</strong>.`);
   else if (level==='gerente') banners.push(`Recortado por Gerente: <strong>${labelJoin(gerNames)}</strong>.`);
 
   const margemAtual = atual.m, margemAnterior = anterior.m;
@@ -3768,7 +3766,7 @@ function renderObjetivos(){
     const temCods = !!p.por_mes_categoria_clientes_cod && Object.keys(p.por_mes_categoria_clientes_cod).length > 0;
     const avisoPos = temCods
       ? ''
-      : `<div class="alert">⚠ Positivação por categoria indisponível: ${p._carregando ? 'recorte do seu escopo ainda carregando' : 'a API não devolveu os códigos de cliente por mês/categoria (cache antigo — recarregue após o próximo ciclo do ETL)'}. Mostrando "—".</div>`;
+      : `<div class="alert">⚠ Positivação por categoria indisponível: ${p._carregando ? 'recorte do seu escopo ainda carregando' : 'dado ainda não disponível — aparece na próxima atualização dos dados'}. Mostrando "—".</div>`;
     document.getElementById('objCashNote').innerHTML = avisoSelecaoCruzada() + avisoPos;
   }
 
@@ -4170,8 +4168,8 @@ function mergeHierPorDiaCategoria(d, names){
 }
 function diaFilterNote(hierOn){
   const blocked = (ST.sup.length||ST.vend.length) && !hierOn;
-  if (hierOn) return `<div class="alert">Recortado por Gerente — <strong>${labelJoin(ST.ger)}</strong>: valores exatos (cubo hierárquico Gerente × Dia).</div>`;
-  if (blocked) return `<div class="alert">⚠ Esta aba só é recortável por <strong>Gerente</strong> neste cubo — filtro de Supervisor/Vendedor/Cliente/Grupo ativo é ignorado aqui, mostrando o total da empresa. Categoria já é respeitada (linhas abaixo).</div>`;
+  if (hierOn) return `<div class="alert">Recortado por Gerente — <strong>${labelJoin(ST.ger)}</strong>: valores exatos (Gerente × Dia).</div>`;
+  if (blocked) return `<div class="alert">⚠ Esta aba só é recortável por <strong>Gerente</strong> — filtro de Supervisor/Vendedor/Cliente/Grupo ativo é ignorado aqui, mostrando o total da empresa. Categoria já é respeitada (linhas abaixo).</div>`;
   return "";
 }
 
@@ -4855,7 +4853,7 @@ function renderPlanos(){
   document.getElementById('planosHierNote').innerHTML = (level && d._recorte)
     ? `<div class="alert">Planos recortados por <strong>${escAttr(recorteLabel())}</strong>: receita, margem, positivação, meta por categoria e oportunidades de cross-sell são só deste escopo.</div>`
     : level
-    ? `<div class="alert">⚠ Os planos abaixo usam os números da <strong>empresa inteira</strong> — esta aba não é recortável por Gerente/Supervisor/Vendedor neste cubo (receita/margem por categoria seriam exatos, mas positivação e produto líder por categoria só existem no nível empresa). Filtro de Categoria já é respeitado (mostrando só as categorias selecionadas). As oportunidades de cross-sell por cliente (parte 4 de cada categoria) já são por cliente/vendedor real, então não têm essa limitação.</div>` : "";
+    ? `<div class="alert">⚠ Os planos abaixo usam os números da <strong>empresa inteira</strong> — esta aba não é recortável por Gerente/Supervisor/Vendedor (receita/margem por categoria seriam exatos, mas positivação e produto líder por categoria só existem no nível empresa). Filtro de Categoria já é respeitado (mostrando só as categorias selecionadas). As oportunidades de cross-sell por cliente (parte 4 de cada categoria) já são por cliente/vendedor real, então não têm essa limitação.</div>` : "";
   let cats = Object.keys(d.por_categoria).sort((a,b)=>d.por_categoria[b].r-d.por_categoria[a].r);
   if (ST.cat.length) cats = cats.filter(c=>ST.cat.includes(c));
   const drv = computeDayDrivers(d.por_dia, d.por_dia_categoria, cats);
@@ -5153,7 +5151,7 @@ function renderPlanosVendedores(){
   const noteEl = document.getElementById('planosVendNote');
   if (!d){
     if (noteEl) noteEl.textContent = 'Sem dados';
-    if (kpisEl) kpisEl.innerHTML = `<div class="alert" style="grid-column:1/-1">⚠ O ETL ainda não concluiu nenhum semestre para o ano vigente.</div>`;
+    if (kpisEl) kpisEl.innerHTML = `<div class="alert" style="grid-column:1/-1">⚠ Os dados ainda não foram processados para nenhum semestre para o ano vigente.</div>`;
     ['planosVend-grupo1','planosVend-grupo2'].forEach(id=>document.getElementById(id).innerHTML = '');
     return;
   }
@@ -5349,7 +5347,7 @@ function renderRank(){
   const cliBase  = topClientesFonte(d, level, names);
   const prodBase = topProdutosFonte(d, level, names);
   document.getElementById("rankHierNote").innerHTML = (level
-    ? `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: Top 50 calculado sobre todos os clientes/produtos daquele recorte (cubo hierárquico), não do Top 50 da empresa inteira.</div>` : "")
+    ? `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: Top 50 calculado sobre todos os clientes/produtos daquele recorte, não do Top 50 da empresa inteira.</div>` : "")
     + (rankCarregando ? `<div class="alert">⏳ Consultando o semestre anterior restrito aos mesmos meses do atual — os comparativos "Δ vs ano ant." aparecem em alguns segundos.</div>` : "")
     + (rankScopeErro && rankCarregando ? `<div class="alert">⚠ Falha ao consultar o recorte do semestre anterior (<strong>${rankScopeErro}</strong>) — os comparativos ficam sem base até recarregar a página.</div>` : "");
 
@@ -6291,7 +6289,7 @@ function renderScCascata(clientes, categoriasPorCliente){
 // Texto da janela de dias. Cache antigo (antes da regra 61-180) não traz
 // dias_min/dias_max — aí descreve a regra antiga, que é o que aquele dado contém.
 function scJanelaTxt(d){
-  return (d && d.dias_max) ? `com último pedido entre ${d.dias_min} e ${d.dias_max} dias atrás` : 'há mais de 60 dias sem comprar (regra antiga — aguardando próximo ciclo do ETL)';
+  return (d && d.dias_max) ? `com último pedido entre ${d.dias_min} e ${d.dias_max} dias atrás` : 'há mais de 60 dias sem comprar (regra antiga — atualiza na próxima atualização dos dados)';
 }
 function renderClientesSemCompra(){
   const dados = REAL_DATA._clientesSemCompra60;
@@ -6469,7 +6467,7 @@ function renderPagamento(){
   const notes = [];
   if (level) notes.push(`Recortado por ${level} — <strong>${labelJoin(names)}</strong>.`);
   if (ST.cat.length) notes.push(`Filtrado por Categoria — <strong>${labelJoin(ST.cat)}</strong>.`);
-  document.getElementById('pagFilterNote').innerHTML = notes.length ? `<div class="alert">${notes.join(" ")} Todos os totais abaixo (KPIs e tabelas) refletem exatamente esse recorte (cubo hierárquico Gerente/Supervisor/Vendedor × Categoria × Tipo de Pagamento).</div>` : "";
+  document.getElementById('pagFilterNote').innerHTML = notes.length ? `<div class="alert">${notes.join(" ")} Todos os totais abaixo (KPIs e tabelas) refletem exatamente esse recorte (Gerente/Supervisor/Vendedor × Categoria × Tipo de Pagamento).</div>` : "";
 
   // KPIs gerais: sob filtro de Gerente/Supervisor/Vendedor, soma as entidades
   // selecionadas via o cubo hierárquico (entityPagamentoEntry já respeita ST.cat);
@@ -6787,7 +6785,7 @@ function renderRiscoOport(){
   const level = hierLevelActive();
   const names = level ? hierSelectedNames(level) : [];
   document.getElementById("riscoGeralNote").innerHTML = level
-    ? `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: riscos/oportunidades por Categoria e Estoque são exatos; "Clientes ativos", "Up-sell/Cross-sell por positivação" e "Reativação" não são recortáveis por Gerente/Supervisor/Vendedor neste cubo e ficam omitidos ou substituídos por uma alternativa equivalente.</div>` : "";
+    ? `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: riscos/oportunidades por Categoria e Estoque são exatos; "Clientes ativos", "Up-sell/Cross-sell por positivação" e "Reativação" não são recortáveis por Gerente/Supervisor/Vendedor e ficam omitidos ou substituídos por uma alternativa equivalente.</div>` : "";
   const riscos = computeRiscosGeral(d, prev, est, level, names);
   const oports = computeOportunidadesGeral(d, prev, level, names);
   document.getElementById("riscos-geral-list").innerHTML = riscos.map(x=>x.html).join("");
@@ -6840,7 +6838,7 @@ function renderRiscoOportCat(){
   const catInfo = categoriaCascadeRows(d);
   const notes = [];
   if (!prev) notes.push("Período sem base de comparação no mesmo semestre do ano anterior — os riscos desta página usam apenas o gap de margem vs. a média da empresa.");
-  if (catInfo.level) notes.push(`Recortado por ${catInfo.level} — <strong>${labelJoin(catInfo.names)}</strong>: receita/margem exatos (cubo hierárquico); positivação por categoria não é recortável por Gerente/Supervisor/Vendedor neste cubo.`);
+  if (catInfo.level) notes.push(`Recortado por ${catInfo.level} — <strong>${labelJoin(catInfo.names)}</strong>: receita/margem exatos; positivação por categoria não é recortável por Gerente/Supervisor/Vendedor.`);
   document.getElementById("riscoCatNote").innerHTML = notes.length ? `<div class="alert">⚠ ${notes.join(" ")}</div>` : "";
   const cats = catInfo.rows.filter(([,v])=>v.r>0).sort((a,b)=>b[1].r-a[1].r);
   const riscosCat = cats.map(([n,v])=>computeRiscoCategoria(n,v, categoriaValueFor(prev, catInfo.level, catInfo.names, n), d.margem_geral));
@@ -7036,7 +7034,7 @@ function renderCascata(){
     if (mesSel) partes.push("Mês: "+mesSel);
     if (partes.length) cascataFilterNoteHtml = `<div class="alert">Recortado por <strong>${partes.join(" · ")}</strong> — os números desta cascata já refletem esse filtro.</div>`;
   } else if (mesSel){
-    cascataFilterNoteHtml = `<div class="alert">⚠ Filtro de Mês ativo, mas ignorado nesta aba isoladamente (o cubo fechado de cascata não tem grão mensal, só Categoria) — mostrando o semestre inteiro${ST.cat.length?", filtrado pela Categoria selecionada":""}. Combine com Gerente/Supervisor/Vendedor/Grupo/Cliente/Canal/Status para recortar o período também.</div>`;
+    cascataFilterNoteHtml = `<div class="alert">⚠ Filtro de Mês ativo, mas ignorado nesta aba isoladamente (esta análise não tem quebra mensal, só Categoria) — mostrando o semestre inteiro${ST.cat.length?", filtrado pela Categoria selecionada":""}. Combine com Gerente/Supervisor/Vendedor/Grupo/Cliente/Canal/Status para recortar o período também.</div>`;
   }
   document.getElementById('cascataFilterNote').innerHTML = cascataFilterNoteHtml;
 
@@ -7044,7 +7042,7 @@ function renderCascata(){
   const isDefault = cascataIsDefaultOrder();
   const ordemLbl = {grupo:"Grupo",fornecedor:"Fornecedor",produto:"Produto"};
   document.getElementById('cascataOrdemNote').innerHTML = isDefault ? "" :
-    `<div class="alert">⚠ Hierarquia reordenada (<strong>${cascataOrder.map(k=>ordemLbl[k]).join(" → ")}</strong>). O nível <strong>Categoria continua 100% exato</strong> (vem direto do cubo). Nos níveis abaixo, esta visão reagrupa a lista de produtos já limitada (Top 8 por Fornecedor/Top 20 por Grupo, ver aviso acima) — <strong>Faturamento/Quantidade/Peso podem ficar levemente subestimados</strong> para um ${ordemLbl[cascataOrder[0]]} com mais itens do que esse limite (o total pode não bater exatamente com a mesma entidade na ordem padrão). <strong>Clientes (Positivação) marcados com ≈ são aproximados</strong> — a soma dos filhos pode contar o mesmo cliente mais de uma vez. Para números exatos por Fornecedor, use a ordem padrão (Grupo → Fornecedor → Produto).</div>`;
+    `<div class="alert">⚠ Hierarquia reordenada (<strong>${cascataOrder.map(k=>ordemLbl[k]).join(" → ")}</strong>). O nível <strong>Categoria continua 100% exato</strong> (vem direto da base de vendas). Nos níveis abaixo, esta visão reagrupa a lista de produtos já limitada (Top 8 por Fornecedor/Top 20 por Grupo, ver aviso acima) — <strong>Faturamento/Quantidade/Peso podem ficar levemente subestimados</strong> para um ${ordemLbl[cascataOrder[0]]} com mais itens do que esse limite (o total pode não bater exatamente com a mesma entidade na ordem padrão). <strong>Clientes (Positivação) marcados com ≈ são aproximados</strong> — a soma dos filhos pode contar o mesmo cliente mais de uma vez. Para números exatos por Fornecedor, use a ordem padrão (Grupo → Fornecedor → Produto).</div>`;
 
   let rowsHtml = '';
   if (isDefault){
@@ -7134,7 +7132,7 @@ function renderQual(){
     {k:"linhas_custo_maior_que_receita", title:"Linhas com custo médio > receita (margem negativa)", extra:" — vendas abaixo do custo"},
   ];
   document.getElementById("qualFilterNote").innerHTML = activeFilterCount()>0
-    ? `<div class="alert">⚠ Esta aba mostra sempre a base inteira do período, mesmo com filtros ativos — qualidade de dados é uma propriedade do arquivo, não recortável por Gerente/Categoria/Cliente neste cubo.</div>` : "";
+    ? `<div class="alert">⚠ Esta aba mostra sempre a base inteira do período, mesmo com filtros ativos — qualidade de dados é uma propriedade do arquivo, não recortável por Gerente/Categoria/Cliente.</div>` : "";
   document.getElementById("qual-cards").innerHTML = defs.map(x=>{
     const v = q[x.k];
     const ok = v===0;
@@ -7343,7 +7341,7 @@ async function loadAndInit(){
         const faltaCadastro = buildCanonIndex().vazio;
         if (errBox){
           errBox.textContent = faltaCadastro
-            ? 'Não foi possível validar seu escopo de acesso: o cadastro da força de vendas ainda não chegou da API. Aguarde o fim da carga e recarregue a página.'
+            ? 'Não foi possível validar seu escopo de acesso: o cadastro da força de vendas ainda não foi carregado. Aguarde o fim da carga e recarregue a página.'
             : 'Não foi possível determinar seu escopo de acesso (usuário sem gerente/supervisor correspondente no cadastro). Procure o suporte — o painel não será exibido sem escopo.';
           errBox.style.display = 'block';
         }
@@ -7377,8 +7375,8 @@ async function loadAndInit(){
       console.error('Erro ao puxar dados da API:', e);
       if (errBox) {
         errBox.textContent = warming
-          ? `A API ainda está montando os dados. Aguarde e recarregue a página.`
-          : `Falha ao carregar dados da API (${API_BASE_URL}). ${window.location.protocol === 'https:' ? 'O proxy de /api no nginx do front está de pé?' : 'A API está rodando na porta 4001?'} Detalhe: ${e.message}`;
+          ? `Os dados ainda estão sendo preparados. Aguarde e recarregue a página.`
+          : `Falha ao carregar os dados. Recarregue a página; se persistir, avise o suporte. (Detalhe: ${e.message})`;
         errBox.style.display = 'block';
       }
       if (overlay) overlay.style.display = 'none';

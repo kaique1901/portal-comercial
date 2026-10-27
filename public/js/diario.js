@@ -455,12 +455,12 @@ function renderDiario(){
   let posAtual = null, posAnt = null;
   if (posEl){
     if (bloqueios.length){
-      posEl.innerHTML = `<div class="alert" style="grid-column:1/-1">⚠ Positivação indisponível com filtro de <strong>${bloqueios.join(', ')}</strong> ativo — o cubo de códigos de cliente não tem recorte pronto para esse(s) filtro(s) (só existe nível empresa). Limpe o(s) filtro(s) acima para ver a positivação desta janela.</div>`;
+      posEl.innerHTML = `<div class="alert" style="grid-column:1/-1">⚠ Positivação indisponível com filtro de <strong>${bloqueios.join(', ')}</strong> ativo — esse dado só existe no nível empresa, sem recorte para esse(s) filtro(s). Limpe o(s) filtro(s) acima para ver a positivação desta janela.</div>`;
     } else {
       posAtual = diarioPositivacao(win.iniStr, win.finStr);
       posAnt = diarioPositivacao(win.prevIniStr, win.prevFinStr);
       if (posAtual.totalGeral==null){
-        posEl.innerHTML = '<div class="alert" style="grid-column:1/-1">⚠ Sem dado de positivação para esta janela (cache antigo ou período ainda não processado pelo ETL).</div>';
+        posEl.innerHTML = '<div class="alert" style="grid-column:1/-1">⚠ Sem dado de positivação para esta janela (período ainda não processado — aparece na próxima atualização dos dados).</div>';
       } else {
         posEl.innerHTML = [{
           lbl:'Positivação Geral (clientes distintos)', val:fN(posAtual.totalGeral), cur:posAtual.totalGeral, prevv:posAnt.totalGeral,
@@ -513,7 +513,7 @@ function renderDiario(){
     } else {
       const matrizPos = diarioMatrizPosDiaCategoriaHTML(win.iniStr, win.finStr, nomesCats, hojeStr, LIMITE_MATRIZ);
       tPosCatDiaEl.innerHTML = matrizPos;
-      if (tPosCatDiaSubEl) tPosCatDiaSubEl.textContent = matrizPos ? `Mostrando os dias mais recentes com dado de positivação no período (até ${LIMITE_MATRIZ}).` : 'Sem dado de positivação por dia nesta janela (cache antigo ou período ainda não processado pelo ETL).';
+      if (tPosCatDiaSubEl) tPosCatDiaSubEl.textContent = matrizPos ? `Mostrando os dias mais recentes com dado de positivação no período (até ${LIMITE_MATRIZ}).` : 'Sem dado de positivação por dia nesta janela (período ainda não processado — aparece na próxima atualização dos dados).';
     }
   }
 

@@ -417,7 +417,7 @@ function renderDashboard(){
   // escopado quando não é.
   const mesNoteEl = document.getElementById('dashMesNote');
   if (mesNoteEl) mesNoteEl.textContent = (typeof hierLevelActive === 'function' && hierLevelActive())
-    ? 'Série sempre em nível empresa — mesma limitação da aba Comparativos (o cubo por mês não cruza com Gerente/Supervisor/Vendedor)'
+    ? 'Série sempre em nível empresa — mesma limitação da aba Comparativos (a série por mês não é recortada por Gerente/Supervisor/Vendedor)'
     : '';
   if (mesesReceita.length){
     mkChart('cDashMes', { type:'line', data:{ labels: mesesReceita.map(m=>m.label), datasets:[
@@ -528,5 +528,5 @@ function renderDashboard(){
 
   // 10) Rodapé — mesmo escopo/período que o restante do portal já mostra
   const footEl = document.getElementById('dash-footer');
-  if (footEl) footEl.textContent = `Fonte: 100% API do portal, mesmo cubo das demais abas · Escopo: ${ctx.escopoLabel} · Período: ${ctx.periodoLabel}`;
+  if (footEl) footEl.textContent = `Fonte: 100% dados reais do ERP, mesma base das demais abas · Escopo: ${ctx.escopoLabel} · Período: ${ctx.periodoLabel}`;
 }

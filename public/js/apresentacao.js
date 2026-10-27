@@ -893,7 +893,7 @@ const APEX_TABS = [
   { key:'top50cash', label:'Top 50 Cash Margem', desc:'Top clientes, produtos e vendedores por Cash Margem (R$).', extractor: apexExtractTop50Cash },
   { key:'top50margem', label:'Top 50 Margem %', desc:'Top clientes, produtos e vendedores por Margem % (razão).', extractor: apexExtractTop50Margem },
   { key:'kgfumo', label:'Metas KG Fumo, Papel e Estratégico', desc:'Meta x tendência x ano anterior das 3 métricas especiais.', extractor: apexExtractKgFumo },
-  { key:'cascata', label:'Análise em Cascata', desc:'Faturamento e margem por categoria (cubo fechado por semestre).', extractor: apexExtractCascata },
+  { key:'cascata', label:'Análise em Cascata', desc:'Faturamento e margem por categoria (fechado por semestre).', extractor: apexExtractCascata },
   { key:'dias', label:'Sazonalidade (Dia da Semana)', desc:'Receita por dia da semana no período selecionado, vs. ano anterior.', extractor: apexExtractDias },
   { key:'dowcasc', label:'Vendas por Dia da Semana', desc:'Faturamento por dia da semana — janela fixa dos últimos 90 dias.', extractor: apexExtractDowCascata },
   { key:'rank', label:'Rankings', desc:'Top clientes, produtos, vendedores e piores margens (ofensores).', extractor: apexExtractRankings },

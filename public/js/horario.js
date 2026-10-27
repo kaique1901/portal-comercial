@@ -139,12 +139,12 @@ function horarioTabelaCascata(){
   const notaEl = document.getElementById('horarioCascNota');
   if (notaEl) notaEl.textContent = prod
     ? `Clique em + para abrir Hora → Categoria → Produto. % da categoria = sobre a receita da faixa; % do produto = sobre a categoria naquela faixa. Produtos: Top ${prod.topN||20} por faixa+categoria, o restante somado em "Demais produtos".`
-    : 'Detalhe por produto indisponível neste cache (gerado antes da cascata) — abre só até Categoria até o próximo processamento do ETL.';
+    : 'Detalhe por produto ainda não disponível para este período — por enquanto abre só até Categoria; aparece na próxima atualização dos dados.';
 }
 
 function horarioLimpar(msg){
   const alertEl = document.getElementById('horarioStatus');
-  if (alertEl) alertEl.innerHTML = msg ? `<div class="alert">⚠ ${msg}</div>` : '';
+  if (alertEl) alertEl.innerHTML = msg ? `<div class="alert"><span>⚠ ${msg}</span></div>` : '';
   HORARIO._ctx = null;
   ['horario-kpis','tHorario','tHorarioMapa','tHorarioCat'].forEach(id=>{ const el=document.getElementById(id); if (el) el.innerHTML=''; });
   if (charts['cHorario']) { charts['cHorario'].destroy(); delete charts['cHorario']; }
@@ -161,7 +161,7 @@ function renderHorario(){
 
   if (p._carregando){ horarioLimpar('Recorte do seu escopo ainda carregando…'); return null; }
   if (!p.por_hora){
-    horarioLimpar('Dado de horário indisponível para este período/recorte — o cubo em cache foi gerado antes desta aba existir. Aparece após o próximo processamento do ETL (períodos já fechados só são reprocessados com <code>ETL_FORCAR_TUDO=1</code>).');
+    horarioLimpar('Dado de horário ainda não disponível para este período/recorte — aparece na próxima atualização dos dados.');
     return null;
   }
   const meses = horarioMesesNaJanela(p.por_hora);
@@ -175,7 +175,7 @@ function renderHorario(){
   if (statusEl){
     const pctPed = totPed>0 ? comHoraPed/totPed*100 : 0;
     const pctR = totR>0 ? comHoraR/totR*100 : 0;
-    statusEl.innerHTML = `<div class="alert">Cobertura: <strong>${pctPed.toFixed(1)}%</strong> dos pedidos (${pctR.toFixed(1)}% da receita) têm hora registrada${A.semHora[2]>0?` — ${fN(A.semHora[2])} pedido(s) / ${fF(A.semHora[0])} sem hora ficam na linha <strong>Sem hora</strong> da tabela e fora do gráfico e do mapa`:''}. Percentuais por faixa são sobre a receita <strong>com</strong> hora.</div>`;
+    statusEl.innerHTML = `<div class="alert"><span>Cobertura: <strong>${pctPed.toFixed(1)}%</strong> dos pedidos (${pctR.toFixed(1)}% da receita) têm hora registrada${A.semHora[2]>0?` — ${fN(A.semHora[2])} pedido(s) / ${fF(A.semHora[0])} sem hora ficam na linha <strong>Sem hora</strong> da tabela e fora do gráfico e do mapa`:''}. Percentuais por faixa são sobre a receita <strong>com</strong> hora.</span></div>`;
   }
 
   // ── 1) KPIs ──
