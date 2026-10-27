@@ -240,6 +240,87 @@ function dashCategoriaCashTable(raw){
   };
 }
 
+// ── Cascata Categoria → Cliente → Produto na tabela "Bonificação por
+// Categoria" (SÓ no Dashboard, pedido do usuário — a Apresentação Executiva
+// continua com a mesma tabela de sempre, sem o detalhe). Fonte: d.bonificacao
+// (mesmo campo de apexBonificacaoPorCategoria em apresentacao.js), que agora
+// também guarda cliente/produto por categoria/mês — ver _buildBonificacao no
+// ETL. Mesmo padrão de escopo (hier[level][nome] somado sobre os meses
+// selecionados) que apexBonificacaoPorCategoria já usa pra "Bonificação", só
+// que aqui PRESERVANDO o detalhe por cliente/produto em vez de só o total.
+function dashBonificacaoDetalhada(d, level, names, meses){
+  const b = d && d.bonificacao;
+  if (!b || !b.por_mes_categoria) return null;
+  const fontes = level && names && names.length ? names.map(n => (b.hier && b.hier[level] && b.hier[level][n]) || {}) : [b.por_mes_categoria];
+  const out = {}; // categoria -> { total, clientes: { codcli -> {nome,total,produtos:{nome:valor}} } }
+  fontes.forEach(fonte => meses.forEach(mes => {
+    const mc = fonte[mes] || {};
+    Object.keys(mc).forEach(cat => {
+      const catInfo = mc[cat];
+      const o = out[cat] || (out[cat] = { total: 0, clientes: {} });
+      o.total += catInfo.r || 0;
+      Object.keys(catInfo.clientes || {}).forEach(codcli => {
+        const ci = catInfo.clientes[codcli];
+        const oc = o.clientes[codcli] || (o.clientes[codcli] = { nome: ci.nome, total: 0, produtos: {} });
+        oc.total += ci.r || 0;
+        Object.keys(ci.produtos || {}).forEach(prod => { oc.produtos[prod] = (oc.produtos[prod] || 0) + ci.produtos[prod]; });
+      });
+    });
+  }));
+  return out;
+}
+let dashBonifExpanded = new Set();
+function toggleDashBonif(pathKey){
+  if (dashBonifExpanded.has(pathKey)) dashBonifExpanded.delete(pathKey); else dashBonifExpanded.add(pathKey);
+  renderDashboard();
+}
+function dashBonifToggle(key, expanded){
+  return `<span class="casc-toggle" onclick="toggleDashBonif('${key.replace(/'/g,"\\'")}')">${expanded?'−':'+'}</span>`;
+}
+// Linhas de detalhe (Cliente → Produto) de UMA categoria, inseridas logo
+// abaixo da linha dessa categoria na tabela — mesmo nº de colunas da tabela
+// (headers.length), só a 1ª coluna com conteúdo (indentado) e o resto vazio,
+// exceto quando o valor cai na coluna "Bonificação" (2ª coluna).
+function dashBonifDetalheHtml(catNome, detCat, nCols){
+  if (!detCat || !Object.keys(detCat.clientes).length){
+    return `<tr><td colspan="${nCols}" style="padding-left:18px;color:var(--t3);font-size:12px">Sem detalhe de cliente/produto disponível para esta categoria.</td></tr>`;
+  }
+  const vazias = (n)=>Array(n).fill('<td></td>').join('');
+  let html = '';
+  Object.keys(detCat.clientes).sort((a,b)=>detCat.clientes[b].total-detCat.clientes[a].total).forEach(codcli=>{
+    const cli = detCat.clientes[codcli];
+    const kCli = 'DASHBONIF|||'+catNome+'|||'+codcli;
+    const expCli = dashBonifExpanded.has(kCli);
+    html += `<tr class="casc-lvl1"><td style="padding-left:18px">${dashBonifToggle(kCli,expCli)}${escAttr(codcli+' - '+cli.nome)}</td><td class="tv">${fF(cli.total)}</td>${vazias(nCols-2)}</tr>`;
+    if (!expCli) return;
+    Object.keys(cli.produtos).sort((a,b)=>cli.produtos[b]-cli.produtos[a]).forEach(prod=>{
+      html += `<tr class="casc-info"><td style="padding-left:36px">${escAttr(prod)}</td><td class="tv">${fF(cli.produtos[prod])}</td>${vazias(nCols-2)}</tr>`;
+    });
+  });
+  return html;
+}
+// Monta o card da tabela "Bonificação por Categoria" com "+/−" por categoria
+// (mesmo HTML/classes de dashTableCard, só que com cascata nas linhas).
+function dashBonifCascataCard(t, bonifDet){
+  if (!t || !t.rows || !t.rows.length) return '';
+  const nCols = t.headers.length;
+  const totalHTML = t.totalRow
+    ? `<tr style="font-weight:700"><td class="tn">${t.totalRow[0]}</td>${t.totalRow.slice(1).map(c=>`<td class="tv">${c}</td>`).join('')}</tr>`
+    : '';
+  const linhasHtml = t.rows.map(r=>{
+    const catNome = r[0];
+    const detCat = bonifDet ? bonifDet[catNome] : null;
+    const kCat = 'DASHBONIF|||'+catNome;
+    const expCat = dashBonifExpanded.has(kCat);
+    const linha = `<tr><td class="tn">${dashBonifToggle(kCat,expCat)}${catNome}</td>${r.slice(1).map(c=>`<td class="tv">${c}</td>`).join('')}</tr>`;
+    return expCat ? linha + dashBonifDetalheHtml(catNome, detCat, nCols) : linha;
+  }).join('');
+  return `<div class="card" style="margin-bottom:14px"><div class="card-h"><div><div class="card-title">${t.titulo}</div><div class="card-sub">Clique em + para ver o cliente que recebeu a bonificação e, no cliente, os produtos bonificados.</div></div></div><div class="tbl-wrap"><table>
+    <thead><tr>${t.headers.map((h,i)=>`<th${i>0?' class="tv"':''}>${h}</th>`).join('')}</tr></thead>
+    <tbody>${linhasHtml}${totalHTML}</tbody>
+  </table></div></div>`;
+}
+
 function renderDashboard(){
   const subEl = document.getElementById('dash-sub'), metaEl = document.getElementById('dash-meta');
   const ctx = (typeof apexContextoAtivo === 'function') ? apexContextoAtivo() : { escopoLabel: '—', periodoLabel: '—' };
@@ -367,7 +448,17 @@ function renderDashboard(){
     } else {
       tabelas = (obj && obj.tables) || [];
     }
-    catTablesEl.innerHTML = tabelas.length ? tabelas.map(dashTableCard).join('') : dashSemDado('Sem detalhamento por categoria disponível para este período/recorte.');
+    // "Bonificação por Categoria" ganha cascata Categoria → Cliente → Produto
+    // (só aqui no Dashboard — ver dashBonificacaoDetalhada acima); as demais
+    // tabelas continuam no renderizador genérico de sempre.
+    const d = (typeof curPeriod === 'function') ? curPeriod() : null;
+    const levelBonif = (typeof hierLevelActive === 'function') ? hierLevelActive() : null;
+    const namesBonif = levelBonif && typeof hierSelectedNames === 'function' ? hierSelectedNames(levelBonif) : [];
+    const mesesBonif = (typeof objMesesSelecionados === 'function') ? objMesesSelecionados() : [];
+    const bonifDet = d ? dashBonificacaoDetalhada(d, levelBonif, namesBonif, mesesBonif) : null;
+    catTablesEl.innerHTML = tabelas.length ? tabelas.map(t=>
+      t && t.titulo==='Bonificação por Categoria' ? dashBonifCascataCard(t, bonifDet) : dashTableCard(t)
+    ).join('') : dashSemDado('Sem detalhamento por categoria disponível para este período/recorte.');
   }
 
   // 5) Desempenho por Gerente

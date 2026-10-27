@@ -416,11 +416,22 @@ class DashboardETLService {
       const meta = await this._buildMeta(client, ano, mesIni, mesFim);
       const bonif = await this._buildBonificacao(client, periodo.ini, periodo.fim);
 
+      // Calendário real de dias úteis do ano do período (cifalcomercial.tcperiodo,
+      // mesma fonte já usada em Estoque x Venda — considera feriado nacional, não
+      // só sábado/domingo) — usado pelo front para corrigir a projeção de
+      // "Tendência de Fechamento" (tendencia()/businessDaysInMonth/Elapsed em
+      // app.js), hoje só excluía fim de semana.
+      const calendarioRows = await q(`
+        SELECT dia_completo dia, (final_de_semana=0 AND feriado_nacional=0) util
+        FROM cifalcomercial.tcperiodo
+        WHERE extract(year from dia_completo)=$1
+      `, [ano]);
+
       await client.query('COMMIT');
 
       return this._montarJson(periodo, {
         resumo, porMes, porGer, porSup, porCat, porGrp, topVend, topCli, topProd, porDia, porDiaCat, porDiaCatCliCod,
-        porGerMes, porSupMes, porVendMes,
+        porGerMes, porSupMes, porVendMes, calendarioRows,
         porMesCli, porMesCatCli, porMesCatCliCod, porMesFumo, porMesFumoTotal, realFumoGer, realFumoSup, realFumoVend, fullVend, qual,
         topCliCash, topCliCashCat, topCliCashVend, topProdCash, topProdCashVend, topVendCash,
         topCliMargem, topCliMargemCat, topCliMargemVend, topProdMargem, topProdMargemVend, topVendMargem,
@@ -455,10 +466,17 @@ class DashboardETLService {
   // (supervisor.codgerente, NÃO eqvend.codgerente — mesma correção já aplicada em
   // _buildMeta: 310 dos 1.171 vendedores divergem entre os dois campos).
   async _buildBonificacao(client, ini, fim) {
+    // codcli/cliente/codproduto/produto: aditivo (pedido do usuário — cascata
+    // Categoria → Cliente → Produto na tabela "Bonificação por Categoria" do
+    // Dashboard). Mesmo volume pequeno de sempre (milhares de linhas, não
+    // milhões — bonificação é uma fração do pedido normal), então o detalhe por
+    // cliente/produto não pesa no payload como pesaria no BASE_CTE principal.
     const rows = (await client.query(`
       SELECT extract(month from pe.datafechamento)::int mes,
              c.descategoriaprod categoria,
              g.nomegerente gerente, s.nomesupervisor supervisor, e.nomven vendedor,
+             pe.codcliente codcli, cl.nomcli cliente,
+             ip.codproduto codproduto, pr.desceq produto,
              SUM(ip.qtde * ip.valuni)     r,
              SUM(ip.qtde * ip.customedio) c,
              SUM(ip.qtde)                 q
@@ -470,33 +488,44 @@ class DashboardETLService {
       LEFT JOIN cifalcomercial.eqvend e              ON e.codven = pe.codvendedor
       LEFT JOIN cifalcomercial.supervisor s          ON s.codsupervisor = e.codsupervisor
       LEFT JOIN cifalcomercial.gerente g             ON g.codgerente = s.codgerente
+      LEFT JOIN cifalcomercial.eqclid cl             ON cl.codcli = pe.codcliente
       WHERE pe.cancelado IS NULL
         AND pe.codtpo IN (6, 19)
         AND pe.datafechamento::date >= $1
         AND pe.datafechamento::date <= $2
         AND c.descategoriaprod IS NOT NULL
-      GROUP BY 1, 2, 3, 4, 5
+      GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9
     `, [ini, fim])).rows;
 
-    const empresa = {};                                  // mes -> cat -> {r,c,q}
+    const empresa = {};                                  // mes -> cat -> {r,c,q,clientes}
     const hier = { gerente: {}, supervisor: {}, vendedor: {} };
-    const acumular = (alvo, mes, cat, r, c, q) => {
+    const acumular = (alvo, mes, cat, r, c, q, codcli, cliente, produto) => {
       const m = alvo[mes] || (alvo[mes] = {});
-      const o = m[cat] || (m[cat] = { r: 0, c: 0, q: 0 });
+      const o = m[cat] || (m[cat] = { r: 0, c: 0, q: 0, clientes: {} });
       o.r += r; o.c += c; o.q += q;
+      if (codcli != null) {
+        const cliKey = String(codcli);
+        const oc = o.clientes[cliKey] || (o.clientes[cliKey] = { nome: cliente || `(cliente ${cliKey})`, r: 0, produtos: {} });
+        oc.r += r;
+        if (produto) oc.produtos[produto] = (oc.produtos[produto] || 0) + r;
+      }
     };
     for (const row of rows) {
       const r = num(row.r), c = num(row.c), q = num(row.q);
       const mes = String(row.mes), cat = row.categoria;
-      acumular(empresa, mes, cat, r, c, q);
+      acumular(empresa, mes, cat, r, c, q, row.codcli, row.cliente, row.produto);
       for (const [nivel, ent] of [['gerente', row.gerente], ['supervisor', row.supervisor], ['vendedor', row.vendedor]]) {
         if (!ent) continue;
-        acumular(hier[nivel][ent] || (hier[nivel][ent] = {}), mes, cat, r, c, q);
+        acumular(hier[nivel][ent] || (hier[nivel][ent] = {}), mes, cat, r, c, q, row.codcli, row.cliente, row.produto);
       }
     }
     const arredondar = alvo => {
       for (const mes in alvo) for (const cat in alvo[mes]) {
         const o = alvo[mes][cat]; o.r = round2(o.r); o.c = round2(o.c); o.q = round2(o.q);
+        for (const cliKey in o.clientes) {
+          const oc = o.clientes[cliKey]; oc.r = round2(oc.r);
+          for (const prod in oc.produtos) oc.produtos[prod] = round2(oc.produtos[prod]);
+        }
       }
     };
     arredondar(empresa);
@@ -959,6 +988,9 @@ class DashboardETLService {
     const hier_por_dia = { gerente: buildDiaByEnt(d.hierDiaGer) };
     const hier_por_dia_categoria = { gerente: buildDiaCatByEnt(d.hierDiaCatGer) };
 
+    const calendario_dias_uteis = {};
+    for (const row of d.calendarioRows || []) calendario_dias_uteis[isoDay(row.dia)] = !!row.util;
+
     return {
       label: periodo.label, linhas,
       receita: round2(receita), custo: round2(custo), qtde: round2(num(d.resumo.qtde)), peso: round2(num(d.resumo.peso)),
@@ -976,7 +1008,7 @@ class DashboardETLService {
       pagamento_por_categoria, hier_pagamento_por_categoria,
       janela90, por_produto_janela90, abcd,
       hier_top_clientes, hier_top_clientes_vendedor_top50, hier_top_produtos, hier_por_categoria, hier_abcd, hier_por_dia, hier_por_dia_categoria, mix_cascata_detalhe,
-      meses_ativos_por_cliente, mix_mes_categoria_produto, mix_cliente_categoria_mes,
+      meses_ativos_por_cliente, mix_mes_categoria_produto, mix_cliente_categoria_mes, calendario_dias_uteis,
       cascata: buildCascata(d.cascCat, d.cascGrp, d.cascForn, d.cascProd),
       meta: d.meta,
       por_canal: (() => { const o = {}; for (const r of d.porCanal || []) o[r.canal_vendas] = { r: round2(num(r.r)), c: round2(num(r.c)), q: round2(num(r.qq)), m: margem(num(r.r), num(r.c)), n_clientes: parseInt(r.n_clientes, 10) }; return o; })(),
@@ -1393,10 +1425,13 @@ class DashboardETLService {
              SUM(t.saldo) saldo,
              MAX(t.atraso) atraso_max,
              MIN(t.vencimento) venc_mais_antigo,
-             SUM(t.saldo) FILTER (WHERE t.atraso <= 30)                    f0_30,
-             SUM(t.saldo) FILTER (WHERE t.atraso BETWEEN 31 AND 90)        f31_90,
-             SUM(t.saldo) FILTER (WHERE t.atraso BETWEEN 91 AND 365)       f91_365,
-             SUM(t.saldo) FILTER (WHERE t.atraso > 365)                    f365_mais
+             SUM(t.saldo) FILTER (WHERE t.atraso <= 30)                     f0_30,
+             SUM(t.saldo) FILTER (WHERE t.atraso BETWEEN 31 AND 60)         f31_60,
+             SUM(t.saldo) FILTER (WHERE t.atraso BETWEEN 61 AND 90)         f61_90,
+             SUM(t.saldo) FILTER (WHERE t.atraso BETWEEN 91 AND 120)        f91_120,
+             SUM(t.saldo) FILTER (WHERE t.atraso BETWEEN 121 AND 180)       f121_180,
+             SUM(t.saldo) FILTER (WHERE t.atraso BETWEEN 181 AND 365)       f181_365,
+             SUM(t.saldo) FILTER (WHERE t.atraso > 365)                     f365_mais
       FROM titulos t
       LEFT JOIN cifalcomercial.eqclid cl     ON cl.codcli = t.codcli
       LEFT JOIN cifalcomercial.eqvend e      ON e.codven = t.codven
@@ -1406,8 +1441,12 @@ class DashboardETLService {
       ORDER BY SUM(t.saldo) DESC
     `)).rows;
 
-    const FAIXAS = ['f0_30', 'f31_90', 'f91_365', 'f365_mais'];
-    const zero = () => ({ clientes: 0, titulos: 0, saldo: 0, f0_30: 0, f31_90: 0, f91_365: 0, f365_mais: 0 });
+    // Faixas de atraso (aging), do mais recente pro mais antigo. Cortes
+    // 30/60/90/120/180/365 — pedido explícito do usuário para o filtro "até N dias"
+    // da aba Inadimplência por Carteira (ver INAD_FAIXAS/INAD_CORTES no frontend,
+    // que usam os MESMOS cortes pra filtrar clientes por atraso_max).
+    const FAIXAS = ['f0_30', 'f31_60', 'f61_90', 'f91_120', 'f121_180', 'f181_365', 'f365_mais'];
+    const zero = () => { const o = { clientes: 0, titulos: 0, saldo: 0 }; FAIXAS.forEach(f => { o[f] = 0; }); return o; };
     const somar = (alvo, cl) => {
       alvo.clientes++; alvo.titulos += cl.titulos; alvo.saldo += cl.saldo;
       FAIXAS.forEach(f => { alvo[f] += cl[f]; });
@@ -1428,8 +1467,9 @@ class DashboardETLService {
       saldo: round2(num(r.saldo)),
       atraso_max: parseInt(r.atraso_max, 10) || 0,
       venc_mais_antigo: r.venc_mais_antigo ? isoDay(r.venc_mais_antigo) : null,
-      f0_30: round2(num(r.f0_30)), f31_90: round2(num(r.f31_90)),
-      f91_365: round2(num(r.f91_365)), f365_mais: round2(num(r.f365_mais)),
+      f0_30: round2(num(r.f0_30)), f31_60: round2(num(r.f31_60)), f61_90: round2(num(r.f61_90)),
+      f91_120: round2(num(r.f91_120)), f121_180: round2(num(r.f121_180)), f181_365: round2(num(r.f181_365)),
+      f365_mais: round2(num(r.f365_mais)),
     }));
 
     const por_gerente = {}, por_supervisor = {}, por_vendedor = {};

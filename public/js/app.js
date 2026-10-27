@@ -2110,14 +2110,21 @@ function renderAll(){
 // O mês selecionado é o mês CORRENTE? Nesse caso o realizado é parcial (só os dias
 // já decorridos) e comparar com a meta cheia do mês subestima o atingimento — o
 // painel avisa em vez de deixar o número parecer ruim.
-function mesParcialInfo(){
+function mesParcialInfo(period){
   if (ST.mes == null) return null;
   const hoje = new Date();
   const anoPer = parseInt(String(ST.per).slice(0, 4), 10);
   if (hoje.getFullYear() !== anoPer || (hoje.getMonth() + 1) !== ST.mes) return null;
   const diasNoMes = new Date(anoPer, ST.mes, 0).getDate();
   const dia = hoje.getDate();
-  return { dia, diasNoMes, pct: dia / diasNoMes, label: `mês em curso — ${dia} de ${diasNoMes} dias (${(dia / diasNoMes * 100).toFixed(0)}% do mês)` };
+  // pctUtil/diaUtil = mesmo critério de dia útil (seg-sex + feriado nacional) de
+  // tendencia() — usado pra projetar a META PROPORCIONAL, não só pro texto.
+  const calendario = (period || REAL_DATA[ST.per] || {}).calendario_dias_uteis;
+  const diasUteisNoMes = businessDaysInMonth(anoPer, ST.mes, calendario);
+  const diaUtil = businessDaysElapsed(anoPer, ST.mes, calendario);
+  const pctUtil = diasUteisNoMes>0 ? diaUtil/diasUteisNoMes : 0;
+  return { dia, diasNoMes, pct: dia / diasNoMes, diaUtil, diasUteisNoMes, pctUtil,
+    label: `mês em curso — ${diaUtil} de ${diasUteisNoMes} dias úteis (${(pctUtil * 100).toFixed(0)}% do mês)` };
 }
 
 // Meta de rentabilidade (Cash Margem alvo) do escopo ativo. Vem de
@@ -2806,7 +2813,7 @@ function renderMargemCash(){
   // curso projetado pros dias úteis totais) — aplicado a Faturamento e Custo
   // separadamente (tendencia() só ajusta quando ST.mes é o mês em curso; em
   // mês fechado ou sem filtro de Mês, devolve o valor realizado sem alterar).
-  const parcial = mesParcialInfo();
+  const parcial = mesParcialInfo(d);
   const trendR = tendencia(effR, d, ST.mes);
   const trendC = tendencia(effC, d, ST.mes);
   const trendCash = trendR - trendC;
@@ -2831,12 +2838,12 @@ function renderMargemCash(){
      note:atingMargem!=null?`margem realizada ${fPct(effM)} vs meta ${fPct(metaMargemPct)}`:"depende da meta de margem"},
     {lbl:"Cash Margem Total", val:fM(cash), cur:cash, prevv:prevCash},
     {lbl:"Tendência de Fechamento — Cash Margem", val:fM(trendCash),
-     note: parcial ? `Projeção pelo ritmo diário atual (dia ${parcial.dia} de ${parcial.diasNoMes} — ${(parcial.pct*100).toFixed(0)}% do mês); mesmo cálculo de Acompanhamento Objetivos/Planos de Ação.`
+     note: parcial ? `Projeção pelo ritmo diário útil atual (dia útil ${parcial.diaUtil} de ${parcial.diasUteisNoMes} — ${(parcial.pctUtil*100).toFixed(0)}% do mês, exclui sábado/domingo/feriado nacional); mesmo cálculo de Acompanhamento Objetivos/Planos de Ação.`
        : (ST.meses.length===1 ? "Mês selecionado já fechado — tendência = realizado." : ST.meses.length>1 ? `Vários meses selecionados (${rotuloMeses()}) — tendência = realizado.` : "Sem mês específico selecionado — tendência = realizado do semestre inteiro.")},
     {lbl:"Meta Cash Margem", val:metaValRent>0?fM(metaValRent):"—",
      note:metaValRent>0?`meta de receita × margem alvo (${fPct(metaMargemPct)})`:"sem meta cadastrada no ERP p/ este período"},
     {lbl:"% Atingimento Cash Margem", val:metaValRent>0?fPct(cash/metaValRent*100):"—",
-     note:metaValRent>0 && mesParcialInfo() ? `${fPct(cash/(metaValRent*mesParcialInfo().pct)*100)} da meta proporcional (${mesParcialInfo().dia}/${mesParcialInfo().diasNoMes} dias)` : ""},
+     note:metaValRent>0 && parcial ? `${fPct(cash/(metaValRent*parcial.pctUtil)*100)} da meta proporcional (${parcial.diaUtil}/${parcial.diasUteisNoMes} dias úteis)` : ""},
     {lbl:"Cash Margem / Cliente Ativo", val:fF(cashPerCliente),
      note:`${fM(cash)} ÷ ${fN(d.n_cli)} clientes${d._recorte?" do recorte":" (empresa)"}`},
   ];
@@ -4060,9 +4067,23 @@ function monthYearFor(period, mes){
   const key = Object.keys((period&&period.por_dia)||{}).find(dk=>dk.slice(5,7)===mesStr);
   return key ? +key.slice(0,4) : null;
 }
-function businessDaysInMonth(year, month){
+// Dia útil = seg-sex E não-feriado nacional. O calendário REAL (com feriado)
+// vem do cubo (período.calendario_dias_uteis, lido de cifalcomercial.tcperiodo
+// — mesma fonte já usada em Estoque x Venda); na ausência dele (período sem
+// esse campo ainda, ex.: cache antigo) cai para seg-sex puro, igual ao
+// comportamento anterior, em vez de quebrar a conta.
+function diaUtilReal(ano, mes, dnum, calendario){
+  if (calendario){
+    const key = `${ano}-${String(mes).padStart(2,'0')}-${String(dnum).padStart(2,'0')}`;
+    const v = calendario[key];
+    if (v != null) return v;
+  }
+  const dow = new Date(ano, mes-1, dnum).getDay();
+  return dow>=1 && dow<=5;
+}
+function businessDaysInMonth(year, month, calendario){
   let count=0; const daysInMonth = new Date(year, month, 0).getDate();
-  for (let dnum=1; dnum<=daysInMonth; dnum++){ const dow = new Date(year, month-1, dnum).getDay(); if (dow>=1 && dow<=5) count++; }
+  for (let dnum=1; dnum<=daysInMonth; dnum++){ if (diaUtilReal(year, month, dnum, calendario)) count++; }
   return count;
 }
 // Dias úteis JÁ CONCLUÍDOS de (year,month) — regra determinística por
@@ -4072,17 +4093,16 @@ function businessDaysInMonth(year, month){
 // hoje só a partir de meio-dia (12h) — antes das 12h, hoje ainda não conta
 // como dia útil concluído (regra confirmada com o usuário: dia 10/08, 14º dia
 // útil do mês, conta 13 dias concluídos até 12h e 14 a partir das 12h).
-function businessDaysElapsed(year, month){
+function businessDaysElapsed(year, month, calendario){
   const hoje = new Date();
-  const totalDiasUteis = businessDaysInMonth(year, month);
+  const totalDiasUteis = businessDaysInMonth(year, month, calendario);
   const chaveAvaliado = year*12 + month, chaveAtual = hoje.getFullYear()*12 + (hoje.getMonth()+1);
   if (chaveAvaliado < chaveAtual) return totalDiasUteis;
   if (chaveAvaliado > chaveAtual) return 0;
   let count = 0;
   const diaHoje = hoje.getDate();
   for (let dnum=1; dnum<=diaHoje; dnum++){
-    const dow = new Date(year, month-1, dnum).getDay();
-    if (dow<1 || dow>5) continue;
+    if (!diaUtilReal(year, month, dnum, calendario)) continue;
     if (dnum===diaHoje){ if (hoje.getHours()>=12) count++; }
     else count++;
   }
@@ -4093,8 +4113,9 @@ function businessDaysElapsed(year, month){
 function tendencia(realizado, period, mes){
   const year = monthYearFor(period, mes);
   if (!year) return realizado;
-  const total = businessDaysInMonth(year, mes);
-  const decorridos = businessDaysElapsed(year, mes);
+  const calendario = period && period.calendario_dias_uteis;
+  const total = businessDaysInMonth(year, mes, calendario);
+  const decorridos = businessDaysElapsed(year, mes, calendario);
   if (decorridos<=0) return realizado;
   return realizado * (total/decorridos);
 }
@@ -4638,8 +4659,9 @@ function renderPlanoMesVigente(){
 
   const diasNoMes = new Date(anoAtual, mesAtual, 0).getDate();
   const diaAtual = hoje.getDate();
-  const totalDiasUteis = businessDaysInMonth(anoAtual, mesAtual);
-  const diasUteisComDados = businessDaysElapsed(anoAtual, mesAtual);
+  const calendarioAtual = dAtual.calendario_dias_uteis;
+  const totalDiasUteis = businessDaysInMonth(anoAtual, mesAtual, calendarioAtual);
+  const diasUteisComDados = businessDaysElapsed(anoAtual, mesAtual, calendarioAtual);
   const diasUteisRestantes = Math.max(0, totalDiasUteis - diasUteisComDados);
 
   elSub.textContent = `${MESES_NOME[mesAtual]}/${anoAtual} — dia ${diaAtual} de ${diasNoMes} (${(diaAtual/diasNoMes*100).toFixed(0)}% do mês corrido) · ${fN(diasUteisComDados)} de ${fN(totalDiasUteis)} dias úteis decorridos · ${fN(diasUteisRestantes)} dias úteis restantes`;
@@ -5400,6 +5422,41 @@ function clienteMesesAtivosNoAno(codigo, ano){
   });
   return any ? total : null;
 }
+// Mesmo padrão de clienteMesesAtivosNoAno acima: combina os 2 semestres do cubo
+// BASE (sem corte de Top 50, sem recorte de hierarquia) — "Categorias
+// distintas"/"detalhe por Categoria/Mês" desta aba são sempre o comportamento
+// TOTAL do cliente (todos os vendedores/gerentes), nunca só o recorte ativo
+// (ver nota no banner de mixHierNote). Null se nenhum semestre tiver o campo.
+function clienteCategoriaMesNoAno(codigo, ano){
+  const combinado = {}; let any = false;
+  [1,2].forEach(sem=>{
+    const p = window.REAL_DATA && REAL_DATA[`${ano}_${sem}`];
+    const porCat = p && p.mix_cliente_categoria_mes && p.mix_cliente_categoria_mes[codigo];
+    if (!porCat) return;
+    any = true;
+    Object.keys(porCat).forEach(cat=>{
+      const dst = combinado[cat] || (combinado[cat] = { r:0, porMes:{} });
+      dst.r += porCat[cat].r || 0;
+      Object.keys(porCat[cat].porMes||{}).forEach(mes=>{
+        dst.porMes[mes] = (dst.porMes[mes]||0) + porCat[cat].porMes[mes];
+      });
+    });
+  });
+  return any ? combinado : null;
+}
+// Mesma ideia, mas o agregado da EMPRESA INTEIRA (Categoria → Produto → Mês,
+// não por cliente) — combina os 2 semestres do ano em {mes:{categoria:[produtos]}}.
+function mesCategoriaProdutoNoAno(ano){
+  const combinado = {}; let any = false;
+  [1,2].forEach(sem=>{
+    const p = window.REAL_DATA && REAL_DATA[`${ano}_${sem}`];
+    const porMes = p && p.mix_mes_categoria_produto;
+    if (!porMes) return;
+    any = true;
+    Object.assign(combinado, porMes);
+  });
+  return any ? combinado : null;
+}
 function renderMix(){
   ensureMixCascata(ST.per);
   const d = curPeriod();
@@ -5414,16 +5471,25 @@ function renderMix(){
   document.getElementById("mixHierNote").innerHTML = level
     ? `<div class="alert">Recortado por ${level} — <strong>${labelJoin(names)}</strong>: todos os clientes do recorte (sem corte de Top 50). "Categorias distintas"/"Meses ativos" e o detalhe por Categoria/Mês (clique no cliente) continuam refletindo o comportamento total do cliente (com todos os vendedores), não só este recorte.</div>` : "";
   const rows = filtrarClientes(base);
+  // Denominador de "Categorias distintas": total de categorias da EMPRESA no ano
+  // (buildYearPeriod já faz essa união dos 2 semestres) — mesmo escopo do
+  // numerador (clienteCategoriaMesNoAno), nunca o d.n_cat do recorte (que conta só
+  // as categorias ativas NO FILTRO/MÊS atual — ver nota no mixHierNote acima).
+  const anoPeriod = buildYearPeriod(anoRef);
+  const nCatAno = (anoPeriod && anoPeriod.n_cat) || d.n_cat;
   document.getElementById("tMix").innerHTML = `<thead><tr><th>Cliente</th><th class="tv">Receita</th><th class="tv">Δ vs ano ant.</th><th class="tv">Categorias distintas</th><th class="tv">Meses ativos (ano)</th><th class="tv">Positivação</th></tr></thead><tbody>${
     rows.map(r=>{
       const mesesAtivosAno = clienteMesesAtivosNoAno(r.codigo, anoRef);
       const mesesAtivosExibir = mesesAtivosAno!=null ? mesesAtivosAno : r.meses_ativos;
       const totalMesesExibir = mesesAtivosAno!=null ? mesesAnoRef : nMeses;
       const pos = totalMesesExibir>0 ? Math.round(mesesAtivosExibir/totalMesesExibir*100) : 0;
+      const catMesAno = clienteCategoriaMesNoAno(r.codigo, anoRef);
+      const catsExibir = catMesAno!=null ? Object.keys(catMesAno).length : r.categorias;
+      const catsTotalExibir = catMesAno!=null ? nCatAno : d.n_cat;
       const pv = prevLookupList(prev,"top_clientes","nome",r.nome);
       const kCli = 'MIXTOPCLI|||'+r.codigo;
       const expCli = mixTopCliExpanded.has(kCli);
-      let linha = `<tr><td class="tn">${mixTopCliToggle(kCli,expCli)}${escAttr(r.nome)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${deltaPillSmall(r.r,pv)}</td><td class="tv">${r.categorias} de ${d.n_cat}</td><td class="tv">${mesesAtivosExibir} de ${totalMesesExibir}</td>
+      let linha = `<tr><td class="tn">${mixTopCliToggle(kCli,expCli)}${escAttr(r.nome)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${deltaPillSmall(r.r,pv)}</td><td class="tv">${catsExibir} de ${catsTotalExibir}</td><td class="tv">${mesesAtivosExibir} de ${totalMesesExibir}</td>
         <td class="tv"><div class="bar-row"><div class="bar-bg"><div class="bar-fg" style="width:${pos}%"></div></div><div class="bar-pct">${pos}%</div></div></td></tr>`;
       if (expCli) linha += renderMixTopCliDetalhe(r.codigo, kCli);
       return linha;
@@ -5469,40 +5535,20 @@ function toggleMixTopCli(pathKey){
 function mixTopCliToggle(key, expanded){
   return `<span class="casc-toggle" onclick="toggleMixTopCli('${key.replace(/'/g,"\\'")}')">${expanded?'−':'+'}</span>`;
 }
-// CLI_SCOPE (recorte da aba) só traz os MESES MARCADOS no painel lateral (por
-// padrão, só o mês corrente) — ver recorteQuery/cliScopeKey. Sem isto, com um
-// filtro de hierarquia/categoria ativo, a cascata "mês a mês" mostrava só 1 mês
-// em vez do semestre inteiro. Reaproveita o MESMO recorte do ano civil que a
-// Visão Geral já busca (ensureAnoScope/anoScopeDados), que ignora o filtro de
-// Mês por construção — dispara a consulta se precisar (idempotente).
-function mixAnoDados(){
-  if (filtrosDoAno() === 0) return null;
-  const anoRef = parseInt(ST.per.split('_')[0], 10);
-  ensureAnoScope(anoRef);
-  return anoScopeDados(anoRef);
-}
-function mixAnoCarregando(){
-  if (filtrosDoAno() === 0) return false;
-  const anoRef = parseInt(ST.per.split('_')[0], 10);
-  const key = anoScopeQuery(anoRef);
-  return !!(key && anoScopePending[anoRef] === key);
-}
 function renderMixTopCliDetalhe(codigo, prefix){
-  const d = curPeriod();
-  // Cliente → Categoria → Mês, TODOS os clientes (sem corte de Top 50), só
-  // faturamento — sem nível de Produto (ver nota em mix_cliente_categoria_mes/
-  // mixCliCatMes no ETL: incluir Produto aqui faria o payload saltar de ~250
-  // mil para ~650-700 mil linhas/semestre). Produto por categoria é coberto,
-  // para a empresa inteira, pela cascata "Categoria → Produto → Mês" abaixo.
-  const anoDados = mixAnoDados();
-  const fonte = (anoDados && anoDados.mix_cliente_categoria_mes) || d.mix_cliente_categoria_mes || {};
-  const porCat = fonte[codigo] || {};
+  // Cliente → Categoria → Mês, SEMPRE o comportamento total do cliente no ANO
+  // CIVIL (todos os vendedores/gerentes, sem corte de Top 50) — mesmo escopo de
+  // "Categorias distintas"/"Meses ativos" (ver clienteMesesAtivosNoAno e o aviso
+  // em mixHierNote: estas 3 informações NUNCA são restritas ao recorte/filtro de
+  // Mês ativo). Sem nível de Produto aqui (ver nota em mix_cliente_categoria_mes
+  // no ETL: incluir Produto faria o payload saltar de ~250 mil para ~650-700 mil
+  // linhas/semestre) — Produto por categoria é coberto, para a empresa inteira,
+  // pela cascata "Categoria → Produto → Mês" abaixo.
+  const anoRef = parseInt(ST.per.split('_')[0], 10);
+  const porCat = clienteCategoriaMesNoAno(codigo, anoRef) || {};
   const catNames = Object.keys(porCat);
   if (!catNames.length){
-    const msg = mixAnoCarregando()
-      ? '⏳ Carregando detalhe do ano completo...'
-      : 'Sem dado de Categoria/Mês disponível para este cliente no período.';
-    return `<tr><td colspan="5" style="padding-left:18px;color:var(--t3);font-size:12px">${msg}</td><td class="tv">—</td></tr>`;
+    return `<tr><td colspan="5" style="padding-left:18px;color:var(--t3);font-size:12px">Sem dado de Categoria/Mês disponível para este cliente no período.</td><td class="tv">—</td></tr>`;
   }
   let html = '';
   catNames.sort((a,b)=>porCat[b].r-porCat[a].r).forEach(cat=>{
@@ -5553,13 +5599,16 @@ function mixPivotCategoriaProdutoMes(dadosPorMes){
   return porCat;
 }
 function renderMixCategoriaMesProduto(d){
-  const anoDados = mixAnoDados();
-  const fonte = (anoDados && anoDados.mix_mes_categoria_produto) || d.mix_mes_categoria_produto || {};
+  // Agregado da EMPRESA INTEIRA no ANO CIVIL (todos os clientes, sem corte de
+  // Top 50, sem restringir ao filtro de hierarquia ativo — mesma decisão de
+  // escopo de clienteCategoriaMesNoAno acima). Fallback pro campo do próprio
+  // semestre (`d`) só se o ano ainda não estiver disponível em REAL_DATA.
+  const anoRef = parseInt(ST.per.split('_')[0], 10);
+  const fonte = mesCategoriaProdutoNoAno(anoRef) || d.mix_mes_categoria_produto || {};
   const porCat = mixPivotCategoriaProdutoMes(fonte);
   const catNames = Object.keys(porCat);
   if (!catNames.length) {
-    const msg = mixAnoCarregando() ? '⏳ Carregando detalhe do ano completo...' : 'Sem dado disponível para este período/recorte.';
-    return `<tr><td colspan="2" style="text-align:center;color:var(--t3);padding:20px">${msg}</td></tr>`;
+    return `<tr><td colspan="2" style="text-align:center;color:var(--t3);padding:20px">Sem dado disponível para este período/recorte.</td></tr>`;
   }
   let html = '';
   catNames.sort((a,b)=>porCat[b].total-porCat[a].total).forEach(cat=>{
@@ -6014,10 +6063,19 @@ function computeProdutosParados(rows, diasUteis){
 // Vendedor → Cliente, respeitando o filtro de hierarquia da barra lateral.
 const INAD_FAIXAS = [
   { k:'f0_30',     lbl:'até 30d'  },
-  { k:'f31_90',    lbl:'31–90d'   },
-  { k:'f91_365',   lbl:'91–365d'  },
+  { k:'f31_60',    lbl:'31–60d'   },
+  { k:'f61_90',    lbl:'61–90d'   },
+  { k:'f91_120',   lbl:'91–120d'  },
+  { k:'f121_180',  lbl:'121–180d' },
+  { k:'f181_365',  lbl:'181–365d' },
   { k:'f365_mais', lbl:'+365d'    },
 ];
+// Cortes do filtro "Atraso até" (pedido do usuário: 30/60/90... "e assim por
+// diante") — cumulativo: selecionar 60 mostra TODO cliente cujo PIOR título
+// (atraso_max) está em até 60 dias, não uma faixa isolada 31-60. null = sem
+// filtro (todos os clientes, comportamento de sempre).
+const INAD_CORTES = [30, 60, 90, 120, 180, 365];
+let inadFiltroAtraso = null;
 
 // Clientes do dataset dentro do escopo selecionado. Sem filtro, todos.
 function inadClientesNoEscopo(inad){
@@ -6028,8 +6086,13 @@ function inadClientesNoEscopo(inad){
     if (ger.size  && !ger.has(normNome(c.gerente)))    return false;
     if (sup.size  && !sup.has(normNome(c.supervisor))) return false;
     if (vend.size && !vend.has(normNome(c.vendedor)))  return false;
+    if (inadFiltroAtraso!=null && c.atraso_max > inadFiltroAtraso) return false;
     return true;
   });
+}
+function setInadFiltroAtraso(v){
+  inadFiltroAtraso = v ? parseInt(v,10) : null;
+  renderInadimplencia();
 }
 
 function inadAgregar(clientes){
@@ -6076,7 +6139,8 @@ function renderInadCascata(clientes){
         const kV = kS+'|||'+v;
         html += inadRowHtml(v, 2, kV, inadAgregar(cliV), true);
         if (!estoqueCascataExpanded.has(kV)) return;
-        cliV.slice().sort((a,b)=>b.saldo-a.saldo).forEach(c => {
+        const ordemCliente = inadFiltroAtraso!=null ? (a,b)=>b.atraso_max-a.atraso_max : (a,b)=>b.saldo-a.saldo;
+        cliV.slice().sort(ordemCliente).forEach(c => {
           html += inadRowHtml(`${c.codigo} - ${c.nome}`, 3, kV+'|||'+c.codigo, inadAgregar([c]), false);
         });
       });
@@ -6095,10 +6159,13 @@ function renderInadimplencia(){
     document.getElementById('inad-kpis').innerHTML = '';
     return null;
   }
+  const selAtraso = document.getElementById('fInadAtraso');
+  if (selAtraso && selAtraso.value !== String(inadFiltroAtraso ?? '')) selAtraso.value = inadFiltroAtraso==null ? '' : String(inadFiltroAtraso);
   const clientes = inadClientesNoEscopo(inad);
   const agg = inadAgregar(clientes);
   const escopo = ST.vend.length ? 'Vendedor' : ST.sup.length ? 'Supervisor' : ST.ger.length ? 'Gerente' : 'empresa';
-  sub.textContent = `Posição em ${inad.gerado_em} — ${fN(agg.clientes)} clientes, ${fN(agg.titulos)} títulos vencidos (recorte: ${escopo}). Não muda com o filtro de Período/Mês.`;
+  const filtroTxt = inadFiltroAtraso!=null ? `, atraso até ${inadFiltroAtraso}d` : '';
+  sub.textContent = `Posição em ${inad.gerado_em} — ${fN(agg.clientes)} clientes, ${fN(agg.titulos)} títulos vencidos (recorte: ${escopo}${filtroTxt}). Não muda com o filtro de Período/Mês.`;
 
   const vencidoAntigo = agg.saldo>0 ? (agg.f365_mais/agg.saldo*100) : 0;
   document.getElementById('inad-kpis').innerHTML = [
@@ -6112,8 +6179,10 @@ function renderInadimplencia(){
   const cabecalho = `<thead><tr><th>Gerente / Supervisor / Vendedor / Cliente</th><th class="tv">Clientes</th><th class="tv">Títulos</th><th class="tv">Saldo em aberto</th>${INAD_FAIXAS.map(f=>`<th class="tv">${f.lbl}</th>`).join('')}<th class="tv">Maior atraso (dias)</th></tr></thead>`;
   document.getElementById('tInadHier').innerHTML = cabecalho + `<tbody>${renderInadCascata(clientes)}</tbody>`;
 
-  const top = clientes.slice().sort((a,b)=>b.saldo-a.saldo).slice(0,100);
-  document.getElementById('inadTopSub').textContent = `Top ${top.length} por saldo em aberto, dentro do recorte atual`;
+  const top = clientes.slice().sort(inadFiltroAtraso!=null ? (a,b)=>b.atraso_max-a.atraso_max : (a,b)=>b.saldo-a.saldo).slice(0,100);
+  document.getElementById('inadTopSub').textContent = inadFiltroAtraso!=null
+    ? `Top ${top.length} por maior atraso, dentro do recorte atual (atraso até ${inadFiltroAtraso}d)`
+    : `Top ${top.length} por saldo em aberto, dentro do recorte atual`;
   document.getElementById('tInadClientes').innerHTML =
     `<thead><tr><th>Cliente</th><th>Vendedor</th><th>Supervisor</th><th class="tv">Títulos</th><th class="tv">Cheques dev.</th><th class="tv">Saldo</th><th class="tv">Atraso (dias)</th><th>Vencimento mais antigo</th></tr></thead><tbody>${
       top.map(c=>`<tr><td class="tn">${escAttr(c.codigo+' - '+c.nome)}</td><td>${escAttr(c.vendedor)}</td><td>${escAttr(c.supervisor)}</td>
@@ -7063,16 +7132,34 @@ function renderQual(){
 }
 
 // ── EXPORT CSV (respeita filtro de cliente ativo) ────────────────
-function exportCSV(){
-  const d = curPeriod();
-  const rows = filtrarClientes(d.top_clientes);
-  let csv = "codigo;cliente;receita;custo;qtde;margem_pct;meses_ativos;categorias\n";
-  rows.forEach(r=>{ csv += `${r.codigo};${r.nome};${r.r};${r.c};${r.q};${r.m};${r.meses_ativos};${r.categorias}\n`; });
-  const blob = new Blob([csv],{type:"text/csv;charset=utf-8;"});
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `export_${ST.per}.csv`;
-  a.click();
+// Exporta a ABA ATIVA no momento (qualquer uma — genérico, lê as tabelas já
+// renderizadas na tela, nunca recalcula nada) como .xlsx real (SheetJS,
+// vendorizado em xlsx.bundle.js). Cada <table> visível vira 1 aba da
+// planilha (mesmo nome do card). Substitui o antigo exportCSV() — que, apesar
+// do rótulo "visão atual", sempre exportava a lista de clientes do Mix,
+// ignorando a aba realmente selecionada — e o botão "Exportar PDF"
+// (window.print()), ambos removidos a pedido do usuário. Cascata fechada
+// exporta só o que está visível (abra o que quiser incluir antes de exportar).
+function exportExcel(){
+  const modEl = document.querySelector('.mod.on');
+  if (!modEl){ alert('Nenhuma aba ativa para exportar.'); return; }
+  const tabelas = Array.from(modEl.querySelectorAll('table')).filter(t=>t.querySelector('tbody') && t.querySelector('tbody tr'));
+  if (!tabelas.length){ alert('Nenhuma tabela visível nesta aba para exportar. Expanda as cascatas que quiser incluir antes de exportar.'); return; }
+  const wb = XLSX.utils.book_new();
+  const nomesUsados = new Set();
+  tabelas.forEach((table, i) => {
+    const clone = table.cloneNode(true);
+    clone.querySelectorAll('.casc-toggle, .casc-toggle-spacer').forEach(el=>el.remove());
+    const ws = XLSX.utils.table_to_sheet(clone);
+    const cardTitle = table.closest('.card') && table.closest('.card').querySelector('.card-title');
+    let nome = (cardTitle ? cardTitle.textContent : `Tabela ${i+1}`).trim().replace(/[:\\\/\?\*\[\]]/g,' ').slice(0,31) || `Tabela ${i+1}`;
+    let nomeFinal = nome, n = 2;
+    while (nomesUsados.has(nomeFinal)) { nomeFinal = (nome.slice(0,28)+' '+n).slice(0,31); n++; }
+    nomesUsados.add(nomeFinal);
+    XLSX.utils.book_append_sheet(wb, ws, nomeFinal);
+  });
+  const aba = (document.getElementById('topSection').textContent||'export').trim().replace(/[^\w\- ]/g,'').slice(0,40);
+  XLSX.writeFile(wb, `${aba}_${ST.per}.xlsx`);
 }
 
 document.getElementById("sbTog").onclick = () => {
