@@ -87,7 +87,14 @@ const BASE_CTE = `
       case when pedidos.valdinheiro>0 then 'DINHEIRO' when pedidos.valcheque>0 then 'CHEQUE' when pedidos.valdup>0 then 'BOLETO' when pedidos.valorpix>0 then 'PIX' else 'OUTROS' end as tipocob,
       case when eqclid.sitcli = true then 'Inativo' else 'Ativo' end as status_cliente,
       pedidos.prazomedio as prazo_pagamento,
-      a.desati as canal_vendas
+      a.desati as canal_vendas,
+      -- Hora real do pedido (aba Vendas por Horário). DataFechamento só tem a DATA
+      -- (00:00). A hora vem de pedpalm.horapedido (pedido digitado no app de força
+      -- de vendas, ~94% dos pedidos) e, no balcão/cupom que não passa pelo app, de
+      -- pedidos.horapedido. pedidos.horafechou existe mas vem sempre vazia.
+      -- Medido em 2025-07..2026-10: cobertura de 99,5-100% dos pedidos. O que
+      -- sobrar fica NULL e o painel mostra como "sem hora", nunca estima.
+      coalesce(pp.horapedido, Pedidos.horapedido) as horaped
     from cifalcomercial.Pedidos
     join cifalcomercial.ItensPedido on ItensPedido.NroPedido=Pedidos.NroPedido
     join cifalcomercial.UnidadeAlt on ItensPedido.CodProduto=UnidadeAlt.CodProduto and ItensPedido.Unidade=UnidadeAlt.Unidade
@@ -97,6 +104,8 @@ const BASE_CTE = `
     join cifalcomercial.Supervisor on Supervisor.CodSupervisor=eqvend.CodSupervisor
     join cifalcomercial.Gerente on Supervisor.CodGerente=Gerente.CodGerente
     left join cifalcomercial.atividades a on a.codati = eqclid.codati
+    -- pedpalm_pk = (nropedido): no máximo 1 linha por pedido, não duplica itens.
+    left join cifalcomercial.pedpalm pp on pp.nropedido = Pedidos.NroPedido
     where Pedidos.Cancelado is null and Pedidos.CodTpo in(2,4,5)
     and pedidos.datafechamento::date >= $1
     and pedidos.datafechamento::date <= $2
@@ -114,6 +123,29 @@ const BASE_CTE = `
       and Datadevolucao::date <= now() - '30 day'::interval
   ) inad on inad.codcli = s.codcli
 `;
+
+// Clientes sem Compra: janela de dias desde o último pedido de venda (ver
+// _buildClientesSemCompra60). O front lê dias_min/dias_max do próprio dado.
+const SEM_COMPRA_DIAS_MIN = 61;
+const SEM_COMPRA_DIAS_MAX = 180;
+
+// Vendas por Horário — mesmas colunas no ETL e no /recorte (ver buildPorHora).
+// EXTRACT no banco, não no Node: horaped é timestamp sem fuso e o driver pg o
+// converteria para UTC, deslocando a hora em 3h.
+const SQL_HORA_SELECT = `to_char(DataPed,'YYYY-MM') anomes, EXTRACT(ISODOW FROM DataPed)::int dow,
+  EXTRACT(HOUR FROM horaped)::int hora, SUM(Total) r, SUM(customedio) c`;
+const SQL_HORA_CAT_SELECT = `to_char(DataPed,'YYYY-MM') anomes, EXTRACT(HOUR FROM horaped)::int hora,
+  categoria, SUM(Total) r, SUM(customedio) c`;
+// Produto: chave só com int (hora, Codigo); categoria/Descricao por MIN() — são
+// dependentes do produto (mesma otimização de _buildDowCascata). Pedido sem hora
+// fica fora da cascata (aparece só como "Sem hora" na tabela).
+const SQL_HORA_PROD_SELECT = `EXTRACT(HOUR FROM horaped)::int hora, Codigo codigo,
+  MIN(categoria) categoria, MIN(Descricao) produto, SUM(Total) r, SUM(customedio) c, SUM(Qtde) q`;
+const SQL_HORA_PROD_WHERE = `WHERE categoria IS NOT NULL AND Descricao IS NOT NULL AND horaped IS NOT NULL`;
+// Top 20 por (hora, categoria): medido em 2026_2 = ~95% da receita de cada
+// célula, ~0,6 MB por semestre. O resto o front mostra como "Demais produtos"
+// (total exato da categoria em por_hora_categoria − soma do Top N).
+const HORA_PROD_TOP_N = 20;
 
 const num = v => parseFloat(v) || 0;
 const round2 = v => Math.round(v * 100) / 100;
@@ -167,6 +199,20 @@ class DashboardETLService {
       // GERAL e por Categoria no grão de DIA EXATO (aba Resultados Diários),
       // não só por mês civil.
       const porDiaCatCliCod = await q(`SELECT DataPed::date dia, categoria, array_agg(DISTINCT CodCli) codigos FROM tmp_base_vendas WHERE categoria IS NOT NULL GROUP BY DataPed::date, categoria ORDER BY 1`);
+      // Vendas por Horário: ano-mês × dia da semana × hora do pedido (horaped).
+      // Chave ano-mês (não só o mês) para o recorte poder cruzar anos sem colidir.
+      // COUNT(DISTINCT NroPed) por célula é somável entre células: cada pedido
+      // tem uma única data e uma única hora, então cai em exatamente uma célula.
+      // Por categoria NÃO há contagem de pedidos — um pedido com 2 categorias
+      // contaria 2x ao somar; ali só receita/custo.
+      const porHora = await q(`SELECT ${SQL_HORA_SELECT}, COUNT(DISTINCT NroPed) pedidos FROM tmp_base_vendas GROUP BY 1, 2, 3`);
+      const porHoraCat = await q(`SELECT ${SQL_HORA_CAT_SELECT} FROM tmp_base_vendas WHERE categoria IS NOT NULL GROUP BY 1, 2, 3`);
+      // Cascata Hora → Categoria → Produto: por ano-mês (filtro de 1 mês) e no
+      // período inteiro (sem filtro de mês). Top N por (hora, categoria) — ver
+      // buildHoraProduto. Os dois grãos são necessários: somar o Top N de cada
+      // mês não dá o Top N do semestre.
+      const horaProdMes = await q(`SELECT to_char(DataPed,'YYYY-MM') anomes, ${SQL_HORA_PROD_SELECT} FROM tmp_base_vendas ${SQL_HORA_PROD_WHERE} GROUP BY 1, 2, 3`);
+      const horaProdTot = await q(`SELECT ${SQL_HORA_PROD_SELECT} FROM tmp_base_vendas ${SQL_HORA_PROD_WHERE} GROUP BY 1, 2`);
       const porCanal = await q(`SELECT canal_vendas, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq, COUNT(DISTINCT CodCli) n_clientes FROM tmp_base_vendas WHERE canal_vendas IS NOT NULL GROUP BY canal_vendas`);
       const porInadimplente = await q(`SELECT inadimplente, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq, COUNT(DISTINCT CodCli) n_clientes FROM tmp_base_vendas GROUP BY inadimplente`);
       const porStatus = await q(`SELECT status_cliente, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq, COUNT(DISTINCT CodCli) n_clientes FROM tmp_base_vendas GROUP BY status_cliente`);
@@ -441,7 +487,7 @@ class DashboardETLService {
         hierTopCli, hierTopProd, hierCat, hierPag, hierAbcdRows, hierDiaGer, hierDiaCatGer, meta, mixDetalhe,
         porCliMesAtivo, mesCatProd, mixCliCatMes, hierTopCliVendCapped,
         cascCat, cascGrp, cascForn, cascProd,
-        porCanal, porInadimplente, porStatus, bonif
+        porCanal, porInadimplente, porStatus, bonif, porHora, porHoraCat, horaProdMes, horaProdTot
       });
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
@@ -1014,6 +1060,8 @@ class DashboardETLService {
       por_canal: (() => { const o = {}; for (const r of d.porCanal || []) o[r.canal_vendas] = { r: round2(num(r.r)), c: round2(num(r.c)), q: round2(num(r.qq)), m: margem(num(r.r), num(r.c)), n_clientes: parseInt(r.n_clientes, 10) }; return o; })(),
       por_inadimplente: (() => { const o = {}; for (const r of d.porInadimplente || []) o[r.inadimplente] = { r: round2(num(r.r)), c: round2(num(r.c)), q: round2(num(r.qq)), m: margem(num(r.r), num(r.c)), n_clientes: parseInt(r.n_clientes, 10) }; return o; })(),
       por_status: (() => { const o = {}; for (const r of d.porStatus || []) o[r.status_cliente] = { r: round2(num(r.r)), c: round2(num(r.c)), q: round2(num(r.qq)), m: margem(num(r.r), num(r.c)), n_clientes: parseInt(r.n_clientes, 10) }; return o; })(),
+      ...buildPorHora(d.porHora, d.porHoraCat),
+      por_hora_produto: buildHoraProduto(d.horaProdTot, d.horaProdMes),
       bonificacao: d.bonif || { por_mes_categoria: {}, hier: { gerente: {}, supervisor: {}, vendedor: {} } },
     };
   }
@@ -1510,6 +1558,15 @@ class DashboardETLService {
   // um cliente cujo último pedido foi com vendedor hoje inativo simplesmente
   // sai desta análise (pedido explícito: "vendedores desligados não devem
   // aparecer... nem influenciar totais").
+  // Regra (definida com a área comercial em 2026-10-27): só cliente que
+  // REALMENTE parou de comprar e ainda é recuperável — último pedido de venda
+  // (CodTpo 2/4/5) entre SEM_COMPRA_DIAS_MIN e SEM_COMPRA_DIAS_MAX dias atrás.
+  // Antes era "> 60 dias" sem teto: 17 mil clientes, 9 mil deles parados há
+  // mais de 2 anos (alguns desde 2010) — base perdida, não carteira a reativar.
+  // Também saem os cadastros que recebem REMESSA/transferência de mercadoria
+  // (CodTpo 3 = Remessa Venda/Complementar/Negociação, 44 = Transf. entre
+  // Vendedores) no último ano: são vendedores/estoque interno cadastrados como
+  // cliente (76 de 93 tinham o nome exato de um vendedor), não clientes.
   async _buildClientesSemCompra60() {
     const rows = (await this._queryCronometrada('clientesSemCompra60/lista', `
       WITH ultima AS (
@@ -1547,9 +1604,14 @@ class DashboardETLService {
       LEFT JOIN cifalcomercial.Gerente g ON g.codgerente = s.codgerente
       WHERE (cl.sitcli IS NULL OR cl.sitcli = false)
         AND NOT EXISTS (SELECT 1 FROM inad WHERE inad.codcli = cl.codcli)
-        AND (now()::date - u.ultima_compra::date) > 60
+        AND NOT EXISTS (
+          SELECT 1 FROM cifalcomercial.Pedidos r
+          WHERE r.CodCliente = cl.codcli AND r.CodTpo IN (3, 44)
+            AND coalesce(r.DataFechamento, r.DataPedido)::date >= now()::date - 365
+        )
+        AND (now()::date - u.ultima_compra::date) BETWEEN $1 AND $2
       ORDER BY dias_sem_compra DESC
-    `)).rows;
+    `, [SEM_COMPRA_DIAS_MIN, SEM_COMPRA_DIAS_MAX])).rows;
 
     const SEM = '(sem vendedor no cadastro)';
     const clientes = rows.map(r => ({
@@ -1561,7 +1623,8 @@ class DashboardETLService {
       ultima_compra: r.ultima_compra ? isoDay(r.ultima_compra) : null,
       dias_sem_compra: parseInt(r.dias_sem_compra, 10) || 0,
     }));
-    if (!clientes.length) return { gerado_em: isoDay(new Date()), total: 0, clientes: [], categorias_por_cliente: {} };
+    const janela = { dias_min: SEM_COMPRA_DIAS_MIN, dias_max: SEM_COMPRA_DIAS_MAX };
+    if (!clientes.length) return { gerado_em: isoDay(new Date()), ...janela, total: 0, clientes: [], categorias_por_cliente: {} };
 
     // Categorias que cada cliente costuma comprar + média mensal de faturamento
     // por categoria — últimos 365 dias (janela ampla o bastante para captar o
@@ -1603,7 +1666,7 @@ class DashboardETLService {
     }
     for (const k in categorias_por_cliente) categorias_por_cliente[k].sort((a, b) => b.total - a.total);
 
-    return { gerado_em: isoDay(new Date()), total: clientes.length, clientes, categorias_por_cliente };
+    return { gerado_em: isoDay(new Date()), ...janela, total: clientes.length, clientes, categorias_por_cliente };
   }
 
   // Árvore REAL da força de vendas (cadastro: supervisor + eqvend, só ativos).
@@ -2017,6 +2080,57 @@ function buildHierAbcd(entRows, medR, medM) {
   function z() { return { count: 0, receita: 0, custo: 0, cash_margin: 0 }; }
 }
 
+// por_hora[anomes][dow][hora] = [r, c, pedidos]
+// por_hora_categoria[anomes][hora][categoria] = [r, c]
+// dow = ISODOW (1=Segunda ... 7=Domingo); hora 0-23, ou 'nd' quando o pedido não
+// tem hora registrada (mostrado como "sem hora", nunca redistribuído).
+function buildPorHora(rowsHora, rowsHoraCat) {
+  const por_hora = {}, por_hora_categoria = {};
+  const chaveHora = h => (h === null || h === undefined ? 'nd' : String(h));
+  for (const row of rowsHora || []) {
+    const m = por_hora[row.anomes] || (por_hora[row.anomes] = {});
+    const d = m[row.dow] || (m[row.dow] = {});
+    const acc = d[chaveHora(row.hora)] || (d[chaveHora(row.hora)] = [0, 0, 0]);
+    acc[0] += num(row.r); acc[1] += num(row.c); acc[2] += parseInt(row.pedidos, 10) || 0;
+  }
+  for (const am in por_hora) for (const dw in por_hora[am]) for (const h in por_hora[am][dw]) {
+    const a = por_hora[am][dw][h]; a[0] = round2(a[0]); a[1] = round2(a[1]);
+  }
+  for (const row of rowsHoraCat || []) {
+    const m = por_hora_categoria[row.anomes] || (por_hora_categoria[row.anomes] = {});
+    const h = m[chaveHora(row.hora)] || (m[chaveHora(row.hora)] = {});
+    const acc = h[row.categoria] || (h[row.categoria] = [0, 0]);
+    acc[0] += num(row.r); acc[1] += num(row.c);
+  }
+  for (const am in por_hora_categoria) for (const h in por_hora_categoria[am]) for (const cat in por_hora_categoria[am][h]) {
+    const a = por_hora_categoria[am][h][cat]; a[0] = round2(a[0]); a[1] = round2(a[1]);
+  }
+  return { por_hora, por_hora_categoria };
+}
+
+// por_hora_produto.total[hora][categoria]          = [{codigo,nome,r,c,q}] (Top N)
+// por_hora_produto.por_mes[anomes][hora][categoria] = idem, por ano-mês
+// rowsMes é opcional (o /recorte só manda o total da própria seleção).
+function buildHoraProduto(rowsTot, rowsMes) {
+  const add = (alvo, row) => {
+    const h = alvo[row.hora] || (alvo[row.hora] = {});
+    (h[row.categoria] || (h[row.categoria] = [])).push({
+      codigo: String(row.codigo), nome: row.produto, r: round2(num(row.r)), c: round2(num(row.c)), q: round2(num(row.q)),
+    });
+  };
+  const corta = alvo => { for (const h in alvo) for (const cat in alvo[h]) alvo[h][cat] = alvo[h][cat].sort((a, b) => b.r - a.r).slice(0, HORA_PROD_TOP_N); };
+  const total = {};
+  for (const row of rowsTot || []) add(total, row);
+  corta(total);
+  const out = { top_n: HORA_PROD_TOP_N, total };
+  if (rowsMes) {
+    out.por_mes = {};
+    for (const row of rowsMes) add(out.por_mes[row.anomes] || (out.por_mes[row.anomes] = {}), row);
+    for (const am in out.por_mes) corta(out.por_mes[am]);
+  }
+  return out;
+}
+
 module.exports = new DashboardETLService();
 // Reaproveitados pelas consultas sob demanda (recorte por cliente / por filtros),
 // que rodam o mesmo BASE_CTE com WHERE dinâmico — números batem com o cubo.
@@ -2029,3 +2143,9 @@ module.exports.buildCascata = buildCascata;
 module.exports.buildMixMesCategoriaProduto = buildMixMesCategoriaProduto;
 module.exports.buildMixClienteCategoriaMes = buildMixClienteCategoriaMes;
 module.exports.isoDay = isoDay;
+module.exports.buildPorHora = buildPorHora;
+module.exports.SQL_HORA_SELECT = SQL_HORA_SELECT;
+module.exports.SQL_HORA_CAT_SELECT = SQL_HORA_CAT_SELECT;
+module.exports.buildHoraProduto = buildHoraProduto;
+module.exports.SQL_HORA_PROD_SELECT = SQL_HORA_PROD_SELECT;
+module.exports.SQL_HORA_PROD_WHERE = SQL_HORA_PROD_WHERE;

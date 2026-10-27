@@ -502,7 +502,7 @@ function renderDashboard(){
     const sc = (typeof apexExtractClientesSemCompra === 'function') ? apexExtractClientesSemCompra() : null;
     if (sc){
       const c = sc.kpis.find(k=>k.label==='Clientes no Recorte');
-      if (c) cards.push({ label:'Clientes sem Compra (60+ dias)', value:c.value });
+      if (c) cards.push({ label:'Clientes sem Compra (61 a 180 dias)', value:c.value });
     }
     const est = (typeof apexExtractEstoque === 'function') ? apexExtractEstoque() : null;
     if (est){

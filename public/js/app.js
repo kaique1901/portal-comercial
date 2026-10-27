@@ -1041,6 +1041,7 @@ function recorteVazio(){
     full_vendedores:{}, por_dia:{}, por_dia_categoria:{}, por_mes_clientes:{},
     por_mes_categoria_clientes_cod:{}, por_mes_categoria_clientes:{}, por_anomes:{},
     por_mes_fumokg:{}, realizado_fumokg:{ por_gerente:{}, por_supervisor:{}, por_vendedor:{} },
+    por_hora:{}, por_hora_categoria:{}, por_hora_produto:{ total:{} },
     clientes:[], top_produtos:[], vendedores:[],
     top_clientes_cash:[], top_produtos_cash:[], top_vendedores_cash:[],
     top_clientes_margem:[], top_produtos_margem:[],
@@ -1088,6 +1089,12 @@ function mesclarRecorte(p, rec){
     // Mesmo racional: sem isto, um recorte ativo manteria a cascata por
     // Cliente→Categoria→Mês da EMPRESA inteira em vez do recorte.
     mix_cliente_categoria_mes: rec.mix_cliente_categoria_mes || {},
+    // Vendas por Horário (public/js/horario.js). `|| null` e não `|| p.por_hora`:
+    // cair no cubo seria mostrar a empresa inteira com filtro ativo. null = recorte
+    // de cache antigo, sem o campo — a aba avisa "dado indisponível".
+    por_hora: rec.por_hora || null,
+    por_hora_categoria: rec.por_hora_categoria || null,
+    por_hora_produto: rec.por_hora_produto || null,
     // FUMO KG: sem isso a aba Meta comparava meta do escopo com realizado da empresa.
     por_mes_fumokg: rec.por_mes_fumokg,
     realizado_fumokg: rec.realizado_fumokg,
@@ -1877,7 +1884,7 @@ const ETAPA_EXPLICA = {
   abcd90:     'abas Clientes A-I / Riscos (curva ABCD de 90 dias)',
   dowCascata: 'Vendas por Dia da Semana sem filtro de hierarquia',
   inadimplencia: 'aba Inadimplência por Carteira',
-  clientesSemCompra60: 'aba Clientes Ativos sem Compra (60+ dias)',
+  clientesSemCompra60: 'aba Clientes Ativos sem Compra (61 a 180 dias)',
 };
 
 function renderDiagBox(){
@@ -2101,6 +2108,8 @@ function renderAll(){
   // Resultados Diários (public/js/diario.js): mesma fonte de dado de Sazonalidade
   // (por_dia/por_dia_categoria), só não agrega por dia da semana.
   if (typeof renderDiario === 'function') renderDiario();
+  // Vendas por Horário (public/js/horario.js): só leitura de por_hora/por_hora_categoria.
+  if (typeof renderHorario === 'function') renderHorario();
   // Dashboard (public/js/dashboard.js): só leitura, roda por último pra
   // reaproveitar os extractors da Apresentação Executiva sem interferir em
   // nenhuma das abas acima.
@@ -6198,7 +6207,8 @@ function renderInadimplencia(){
   };
 }
 
-// ── ABA "Clientes Ativos sem Compra (60+ dias)" ─────────────────────────
+// ── ABA "Clientes Ativos sem Compra (61 a 180 dias)" ────────────────────
+// Janela vem do próprio dado (dias_min/dias_max, ver _buildClientesSemCompra60).
 // Fonte: REAL_DATA._clientesSemCompra60 (sempre "até hoje", independente de
 // período — mesmo racional de _estoque/_abcd90/_inadimplencia). Cascata
 // Gerente → Supervisor → Vendedor → Cliente; no Cliente, "+" abre as
@@ -6278,6 +6288,11 @@ function renderScCascata(clientes, categoriasPorCliente){
   });
   return html;
 }
+// Texto da janela de dias. Cache antigo (antes da regra 61-180) não traz
+// dias_min/dias_max — aí descreve a regra antiga, que é o que aquele dado contém.
+function scJanelaTxt(d){
+  return (d && d.dias_max) ? `com último pedido entre ${d.dias_min} e ${d.dias_max} dias atrás` : 'há mais de 60 dias sem comprar (regra antiga — aguardando próximo ciclo do ETL)';
+}
 function renderClientesSemCompra(){
   const dados = REAL_DATA._clientesSemCompra60;
   const sub = document.getElementById('scSub');
@@ -6290,7 +6305,7 @@ function renderClientesSemCompra(){
   const clientes = scClientesNoEscopo(dados);
   const agg = scAgregar(clientes);
   const escopo = ST.vend.length ? 'Vendedor' : ST.sup.length ? 'Supervisor' : ST.ger.length ? 'Gerente' : 'empresa';
-  if (sub) sub.textContent = `Posição em ${dados.gerado_em} — ${fN(agg.clientes)} clientes ativos, não inadimplentes, há mais de 60 dias sem comprar (recorte: ${escopo}). Não muda com o filtro de Período/Mês.`;
+  if (sub) sub.textContent = `Posição em ${dados.gerado_em} — ${fN(agg.clientes)} clientes ativos, não inadimplentes, ${scJanelaTxt(dados)} (recorte: ${escopo}). Não muda com o filtro de Período/Mês.`;
 
   document.getElementById('sc-kpis').innerHTML = [
     { lbl:'Clientes no recorte', val: fN(agg.clientes) },

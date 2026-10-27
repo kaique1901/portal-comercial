@@ -120,6 +120,7 @@
       <div class="nav-item"     data-mod="m-dias"    onclick="showMod('m-dias',this)"><span class="nav-ico">∿</span><span class="nav-txt">Sazonalidade (Dia da Semana)</span></div>
       <div class="nav-item"     data-mod="m-dow-casc" onclick="showMod('m-dow-casc',this)"><span class="nav-ico">⊟</span><span class="nav-txt">Vendas por Dia da Semana</span></div>
       <div class="nav-item"     data-mod="m-diario"  onclick="showMod('m-diario',this)"><span class="nav-ico">◷</span><span class="nav-txt">Resultados Diários</span></div>
+      <div class="nav-item"     data-mod="m-horario" onclick="showMod('m-horario',this)"><span class="nav-ico">◴</span><span class="nav-txt">Vendas por Horário</span></div>
       <div class="nav-item"     data-mod="m-rank"    onclick="showMod('m-rank',this)"><span class="nav-ico">▲</span><span class="nav-txt">Rankings</span></div>
       <div class="nav-item"     data-mod="m-mix"     onclick="showMod('m-mix',this)"><span class="nav-ico">◈</span><span class="nav-txt">Mix &amp; Positivação</span></div>
       <div class="nav-item"     data-mod="m-abcd"    onclick="showMod('m-abcd',this)"><span class="nav-ico">◐</span><span class="nav-txt">Clientes de A a I</span></div>
@@ -130,7 +131,7 @@
       <div class="nav-item"     data-mod="m-produtos-letra-p" onclick="showMod('m-produtos-letra-p',this)"><span class="nav-ico">▣</span><span class="nav-txt">Produtos Letra P</span></div>
       <div class="nav-item"     data-mod="m-pagamento" onclick="showMod('m-pagamento',this)"><span class="nav-ico">◫</span><span class="nav-txt">Vendas por Tipo de Pagamento</span></div>
       <div class="nav-item"     data-mod="m-inad"    onclick="showMod('m-inad',this)"><span class="nav-ico">◔</span><span class="nav-txt">Inadimplência por Carteira</span></div>
-      <div class="nav-item"     data-mod="m-sem-compra" onclick="showMod('m-sem-compra',this)"><span class="nav-ico">◔</span><span class="nav-txt">Clientes sem Compra (60+ dias)</span></div>
+      <div class="nav-item"     data-mod="m-sem-compra" onclick="showMod('m-sem-compra',this)"><span class="nav-ico">◔</span><span class="nav-txt">Clientes sem Compra (61 a 180 dias)</span></div>
       <div class="nav-item"     data-mod="m-risco"   onclick="showMod('m-risco',this)"><span class="nav-ico">⚡</span><span class="nav-txt">Riscos &amp; Oportunidades</span></div>
       <div class="nav-item"     data-mod="m-risco-cat" onclick="showMod('m-risco-cat',this)"><span class="nav-ico">⬡</span><span class="nav-txt">Riscos &amp; Oport. por Categoria</span></div>
       <div class="nav-item"     data-mod="m-qual"    onclick="showMod('m-qual',this)"><span class="nav-ico">⚠</span><span class="nav-txt">Qualidade dos Dados</span></div>
@@ -421,6 +422,31 @@
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Dias mais recentes</div><div class="card-sub" id="diarioTabelaSub">—</div></div></div><div class="tbl-wrap"><table id="tDiario"></table></div></div></div>
 </div>
 
+<!-- 3F. VENDAS POR HORÁRIO — hora real do pedido (public/js/horario.js) -->
+<div class="mod" id="m-horario">
+  <div class="mod-header">
+    <div><div class="mod-title">Vendas por Horário</div><div class="mod-sub" id="horarioSub">—</div></div>
+  </div>
+  <div class="alert">⚠ <strong>Hora = momento em que o pedido foi digitado</strong> — no app de força de vendas (<code>pedpalm.horapedido</code>) ou, no balcão/cupom, no próprio ERP (<code>pedidos.horapedido</code>). Não é a hora de faturamento: no ERP a data de fechamento só tem o dia. Segue os filtros do topo (Período, Mês, Gerente, Supervisor, Vendedor, Categoria, Cliente, Canal, Status). Pedidos sem hora registrada aparecem à parte como <strong>Sem hora</strong>, nunca redistribuídos entre as faixas. <strong>Nº de Pedidos e Ticket Médio</strong> existem por faixa horária e dia da semana, mas não por categoria — um pedido com várias categorias seria contado várias vezes; por isso a tabela por categoria mostra só receita.</div>
+  <div id="horarioStatus"></div>
+
+  <div class="kpi-grid" id="horario-kpis"></div>
+
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Receita e Pedidos por Hora</div><div class="card-sub">Barras = receita · linha = nº de pedidos (eixo direito)</div></div></div><canvas id="cHorario" height="120"></canvas></div></div>
+
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Resultado por Faixa Horária — Cascata Hora → Categoria → Produto</div><div class="card-sub" id="horarioCascNota">—</div></div>
+    <div style="display:flex;gap:6px"><button class="fsel" onclick="horarioExpandirTudo(true)">Expandir horas</button><button class="fsel" onclick="horarioExpandirTudo(false)">Recolher tudo</button></div></div><div class="tbl-wrap"><table id="tHorario"></table></div></div></div>
+
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Mapa de Calor — Dia da Semana × Hora</div><div class="card-sub">Quanto mais escuro, maior o valor</div></div>
+    <div><select class="fsel" id="fHorarioMetrica" onchange="onHorarioMetricaChange(this.value)">
+      <option value="r">Receita</option>
+      <option value="ped">Nº de Pedidos</option>
+      <option value="m">Margem %</option>
+    </select></div></div><div class="tbl-wrap"><table id="tHorarioMapa"></table></div></div></div>
+
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Receita por Hora × Categoria</div><div class="card-sub">Só pedidos com hora registrada</div></div></div><div class="tbl-wrap"><table id="tHorarioCat"></table></div></div></div>
+</div>
+
 <!-- 4. RANKINGS -->
 <div class="mod" id="m-rank">
   <div class="mod-header"><div><div class="mod-title">Rankings — Top 50</div><div class="mod-sub">Ofensores e geradores de resultado</div></div></div>
@@ -545,8 +571,8 @@
 
 <!-- 6C3. CLIENTES ATIVOS SEM COMPRA (60+ DIAS) -->
 <div class="mod" id="m-sem-compra">
-  <div class="mod-header"><div><div class="mod-title">Clientes Ativos sem Compra (60+ dias)</div><div class="mod-sub" id="scSub">—</div></div></div>
-  <div class="alert">⚠ Fotografia <strong>atual</strong> (sempre até hoje — não muda com o filtro de Período/Mês): clientes com cadastro <strong>Ativo</strong>, <strong>sem</strong> título vencido/cheque devolvido em aberto (mesma regra de Inadimplência por Carteira) e cujo <strong>último pedido</strong> foi há mais de <strong>60 dias</strong>. Gerente/Supervisor/Vendedor = time responsável pelo pedido mais recente do cliente — e esse vendedor precisa estar <strong>ativo</strong> no cadastro hoje (mesma trava usada em todo o painel); cliente cujo último pedido foi com vendedor hoje desligado não entra nesta análise (não há regra de redistribuição de carteira no sistema). Categorias e média mensal de faturamento por categoria consideram os últimos 365 dias de histórico do cliente. Respeita o filtro de Gerente/Supervisor/Vendedor da barra lateral.</div>
+  <div class="mod-header"><div><div class="mod-title">Clientes Ativos sem Compra (61 a 180 dias)</div><div class="mod-sub" id="scSub">—</div></div></div>
+  <div class="alert">⚠ Fotografia <strong>atual</strong> (sempre até hoje — não muda com o filtro de Período/Mês): clientes com cadastro <strong>Ativo</strong>, <strong>sem</strong> título vencido/cheque devolvido em aberto (mesma regra de Inadimplência por Carteira) cujo <strong>último pedido de venda</strong> foi entre <strong>61 e 180 dias atrás</strong> — ou seja, compraram no último semestre e pararam. Quem está parado há mais de 180 dias não entra (base antiga, não carteira a reativar). Também ficam de fora os cadastros que recebem <strong>remessa ou transferência de mercadoria</strong> (vendedores/estoque interno cadastrados como cliente). Gerente/Supervisor/Vendedor = time responsável pelo pedido mais recente do cliente — e esse vendedor precisa estar <strong>ativo</strong> no cadastro hoje (mesma trava usada em todo o painel); cliente cujo último pedido foi com vendedor hoje desligado não entra nesta análise (não há regra de redistribuição de carteira no sistema). Categorias e média mensal de faturamento por categoria consideram os últimos 365 dias de histórico do cliente. Respeita o filtro de Gerente/Supervisor/Vendedor da barra lateral.</div>
   <div class="kpi-grid" id="sc-kpis"></div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Cascata — Gerente → Supervisor → Vendedor → Cliente</div><div class="card-sub">Clique em + para expandir; no cliente, + mostra as categorias que costuma comprar e a média mensal por categoria.</div></div></div><div class="tbl-wrap"><table id="tClientesSemCompra"></table></div></div></div>
 </div>
@@ -666,6 +692,7 @@
 <script src="js/app.js"></script>
 <script src="js/apresentacao.js"></script>
 <script src="js/diario.js"></script>
+<script src="js/horario.js"></script>
 <script src="js/dashboard.js"></script>
 </body>
 </html>

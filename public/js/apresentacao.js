@@ -711,8 +711,8 @@ function apexExtractClientesSemCompra(){
   const ranking = top8.length ? { titulo:'Clientes Parados por Gerente', items: top8.map(g=>({label:g.nome, value:g.clientes})) } : null;
   const tables = top8.length ? [{ titulo:'Clientes sem Compra por Gerente', headers:['Gerente','Clientes','Média Dias sem Compra'],
     rows: top8.map(g=>[g.nome, fN(g.clientes), fN(g.mediaDias)+' dias']) }] : [];
-  return { tabKey:'semcompra', tabLabel:'Clientes sem Compra (60+ dias)', scopeLabel:`Posição em ${res.geradoEm}`, kpis, tables, ranking,
-    notas:['Fotografia atual (clientes ativos, não inadimplentes) — não muda com o filtro de Período/Mês. Sem meta/ano anterior nesta aba — é um indicador de oportunidade de reativação, não de tendência.'] };
+  return { tabKey:'semcompra', tabLabel:'Clientes sem Compra (61 a 180 dias)', scopeLabel:`Posição em ${res.geradoEm}`, kpis, tables, ranking,
+    notas:['Fotografia atual (clientes ativos, não inadimplentes, último pedido de venda entre 61 e 180 dias atrás; exclui vendedores/remessas) — não muda com o filtro de Período/Mês. Sem meta/ano anterior nesta aba — é um indicador de oportunidade de reativação, não de tendência.'] };
 }
 
 function apexStripTags(html){ return String(html||'').replace(/<[^>]+>/g,'').replace(/\s+/g,' ').trim(); }
@@ -906,7 +906,7 @@ const APEX_TABS = [
   { key:'letrap', label:'Produtos Letra P', desc:'Estoque de produtos com descrição "(P)" por vendedor.', extractor: apexExtractProdutosLetraP },
   { key:'pagamento', label:'Vendas por Tipo de Pagamento', desc:'Total por Nota Fiscal/Cupom e por forma de pagamento.', extractor: apexExtractPagamento },
   { key:'inad', label:'Inadimplência por Carteira', desc:'Saldo em aberto, clientes inadimplentes e top devedores.', extractor: apexExtractInadimplencia },
-  { key:'semcompra', label:'Clientes sem Compra (60+ dias)', desc:'Clientes ativos sem comprar há 60+ dias, por gerente.', extractor: apexExtractClientesSemCompra },
+  { key:'semcompra', label:'Clientes sem Compra (61 a 180 dias)', desc:'Clientes ativos que pararam de comprar há 61 a 180 dias, por gerente.', extractor: apexExtractClientesSemCompra },
   { key:'risco', label:'Riscos & Oportunidades', desc:'Riscos e oportunidades priorizados, com severidade e valor estimado.', extractor: apexExtractRiscoOport },
   { key:'riscocat', label:'Riscos & Oport. por Categoria', desc:'Riscos e oportunidades por categoria de produto.', extractor: apexExtractRiscoOportCat },
   { key:'diario', label:'Resultados Diários', desc:'Receita, cash margem e positivação dia a dia, por categoria.', extractor: apexExtractDiario },
