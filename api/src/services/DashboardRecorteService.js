@@ -176,7 +176,7 @@ class DashboardRecorteService {
     const client = await db.getClient();
     let tot, porMes, porAnomes, porCat, porGrp, porCli, topProd, porVend;
     let porDia, porDiaCat, porGer, porSup, fullVend, porMesCli, porMesCatCliCod, pag, janProd, janRange, abcdCli, qual, casc, fumo, mesCatProd, mixCliCatMes;
-    let cliDetCat, cliDetVend, prodDetVend, porHora, porHoraCat, horaProd;
+    let cliDetCat, cliDetVend, prodDetVend, porHora, porHoraCat, horaCli;
     try {
       await client.query('BEGIN');
       await client.query(`CREATE TEMP TABLE tmp_recorte ON COMMIT DROP AS ${base}`, params);
@@ -244,9 +244,9 @@ class DashboardRecorteService {
       // Vendas por Horário — mesmas colunas/regra do ETL (ETL.buildPorHora).
       porHora = await q(`SELECT ${ETL.SQL_HORA_SELECT}, COUNT(DISTINCT NroPed) pedidos FROM tmp_recorte GROUP BY 1, 2, 3`);
       porHoraCat = await q(`SELECT ${ETL.SQL_HORA_CAT_SELECT} FROM tmp_recorte WHERE categoria IS NOT NULL GROUP BY 1, 2, 3`);
-      // Cascata Hora → Categoria → Produto só no grão da própria seleção (o
-      // recorte já vem filtrado pelos meses escolhidos), sem quebra por mês.
-      horaProd = await q(`SELECT ${ETL.SQL_HORA_PROD_SELECT} FROM tmp_recorte ${ETL.SQL_HORA_PROD_WHERE} GROUP BY 1, 2`);
+      // Cascata Hora → Cliente → Categoria → Produto só no grão da própria
+      // seleção (o recorte já vem filtrado pelos meses escolhidos), sem quebra por mês.
+      horaCli = await q(ETL.sqlHoraCliente('tmp_recorte', false));
       porGer = await q(`SELECT gerente, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq,
                                SUM(realpapel) rp, SUM(realkg) rkg, SUM(estrategico) rest
                         FROM tmp_recorte WHERE gerente IS NOT NULL GROUP BY gerente`);
@@ -418,7 +418,7 @@ class DashboardRecorteService {
     }
 
     Object.assign(dados, ETL.buildPorHora(porHora, porHoraCat));
-    dados.por_hora_produto = ETL.buildHoraProduto(horaProd);
+    dados.por_hora_cliente = ETL.buildHoraCliente(horaCli);
 
     dados.por_gerente = {};
     // rp/rkg/rest: realizado de Papel/Kg/Estratégico — a aba Meta x Realizado depende

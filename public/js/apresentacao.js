@@ -513,8 +513,6 @@ function apexExtractTop50Cash(){
   const tables = [
     { titulo:'Top 10 Clientes por Cash Margem', headers:['Cliente','Receita','Cash Margem'],
       rows: (res.topClientesCash||[]).map(c=>[c.nome, fF(c.r), fF(c.r-c.c)]) },
-    { titulo:'Top 10 Produtos por Cash Margem', headers:['Produto','Receita','Cash Margem'],
-      rows: (res.topProdutosCash||[]).map(p=>[p.nome, fF(p.r), fF(p.r-p.c)]) },
     { titulo:'Vendedores por Cash Margem', headers:['Vendedor','Receita','Cash Margem'],
       rows: (res.topVendedoresCash||[]).map(v=>[v.nome, fF(v.r), fF(v.cash)]) },
   ];
@@ -890,7 +888,7 @@ const APEX_TABS = [
   { key:'comp', label:'Comparativos', desc:'Receita, margem, cash margem e qtde — ano atual vs. ano anterior.', extractor: apexExtractComparativos },
   { key:'obj', label:'Acompanhamento Objetivos', desc:'Meta x Realizado x Tendência x Margem x Positivação por categoria.', extractor: apexExtractObjetivos },
   { key:'mc', label:'Margem & Cash Margem', desc:'Cash Margem total, tendência de fechamento e ranking por categoria.', extractor: apexExtractMargemCash },
-  { key:'top50cash', label:'Top 50 Cash Margem', desc:'Top clientes, produtos e vendedores por Cash Margem (R$).', extractor: apexExtractTop50Cash },
+  { key:'top50cash', label:'Top 50 Cash Margem', desc:'Top clientes e vendedores por Cash Margem (R$).', extractor: apexExtractTop50Cash },
   { key:'top50margem', label:'Top 50 Margem %', desc:'Top clientes, produtos e vendedores por Margem % (razão).', extractor: apexExtractTop50Margem },
   { key:'kgfumo', label:'Metas KG Fumo, Papel e Estratégico', desc:'Meta x tendência x ano anterior das 3 métricas especiais.', extractor: apexExtractKgFumo },
   { key:'cascata', label:'Análise em Cascata', desc:'Faturamento e margem por categoria (fechado por semestre).', extractor: apexExtractCascata },

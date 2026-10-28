@@ -1041,7 +1041,7 @@ function recorteVazio(){
     full_vendedores:{}, por_dia:{}, por_dia_categoria:{}, por_mes_clientes:{},
     por_mes_categoria_clientes_cod:{}, por_mes_categoria_clientes:{}, por_anomes:{},
     por_mes_fumokg:{}, realizado_fumokg:{ por_gerente:{}, por_supervisor:{}, por_vendedor:{} },
-    por_hora:{}, por_hora_categoria:{}, por_hora_produto:{ total:{} },
+    por_hora:{}, por_hora_categoria:{}, por_hora_cliente:{ total:{} },
     clientes:[], top_produtos:[], vendedores:[],
     top_clientes_cash:[], top_produtos_cash:[], top_vendedores_cash:[],
     top_clientes_margem:[], top_produtos_margem:[],
@@ -1094,7 +1094,7 @@ function mesclarRecorte(p, rec){
     // de cache antigo, sem o campo — a aba avisa "dado indisponível".
     por_hora: rec.por_hora || null,
     por_hora_categoria: rec.por_hora_categoria || null,
-    por_hora_produto: rec.por_hora_produto || null,
+    por_hora_cliente: rec.por_hora_cliente || null,
     // FUMO KG: sem isso a aba Meta comparava meta do escopo com realizado da empresa.
     por_mes_fumokg: rec.por_mes_fumokg,
     realizado_fumokg: rec.realizado_fumokg,
@@ -2707,7 +2707,7 @@ function prodCascadeParts(d, r, nColunas, mes, semestralDict){
   const linhas = det.vendedores.map(v =>
     `<tr class="casc-info"><td></td><td colspan="${nColunas}" style="padding-left:24px">${escAttr(v.nome)}` +
     `<span style="color:var(--t3)"> · ${escAttr(v.supervisor||'—')}</span> — ` +
-    `Faturamento <strong>${fF(v.r)}</strong> · Cash <strong>${fF(v.r - v.c)}</strong> · Margem <strong>${fPct(v.m)}</strong> · Qtde <strong>${fN(v.q)}</strong></td></tr>`
+    `Faturamento <strong>${fF(v.r)}</strong> · Margem <strong>${fPct(v.m)}</strong> · Qtde <strong>${fN(v.q)}</strong></td></tr>`
   ).join('');
   return { toggle, linhas };
 }
@@ -2764,13 +2764,13 @@ function tblMargemCli(rows, d, prev, mes){
       return html;
     }).join("")}</tbody>`;
 }
+// Sem Cash Margem por produto (regra do negócio: não é exibida para ninguém).
 function tblMargemProd(rows, prev, d, mes){
-  return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Margem %</th><th class="tv">Δ Margem (p.p.)</th><th class="tv">Faturamento</th><th class="tv">Cash Margem</th><th class="tv">Qtde Vendida</th><th class="tv">Δ Qtde (ano ant.)</th></tr></thead><tbody>${
+  return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Margem %</th><th class="tv">Δ Margem (p.p.)</th><th class="tv">Faturamento</th><th class="tv">Qtde Vendida</th><th class="tv">Δ Qtde (ano ant.)</th></tr></thead><tbody>${
     rows.map((r,i)=>{
       const prevFull = prevLookupListFull(prev,"top_produtos_margem","nome",r.nome);
-      const cm = r.cash_margin!=null ? r.cash_margin : (r.r-r.c);
-      const casc = prodCascadeParts(d, r, 7, mes, d.top_produtos_margem_detalhe);
-      return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${casc.toggle}${escAttr(r.nome)}</td><td class="tv tn">${margemBadge(r.m)}</td><td class="tv">${deltaPP(r.m,prevFull?prevFull.m:null,false)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${fF(cm)}</td><td class="tv">${fN(r.q)}</td><td class="tv">${deltaPillSmall(r.q,prevFull?prevFull.q:null)}</td></tr>` + casc.linhas;
+      const casc = prodCascadeParts(d, r, 6, mes, d.top_produtos_margem_detalhe);
+      return `<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${casc.toggle}${escAttr(r.nome)}</td><td class="tv tn">${margemBadge(r.m)}</td><td class="tv">${deltaPP(r.m,prevFull?prevFull.m:null,false)}</td><td class="tv">${fF(r.r)}</td><td class="tv">${fN(r.q)}</td><td class="tv">${deltaPillSmall(r.q,prevFull?prevFull.q:null)}</td></tr>` + casc.linhas;
     }).join("")}</tbody>`;
 }
 let margemVendExpanded = new Set();
@@ -2970,7 +2970,8 @@ function renderMargemCash(){
   document.getElementById("margemVendSub").textContent = vendSubTxt;
 
   document.getElementById("tCashCli").innerHTML = tblCashCli(cliList.slice(0,50), d, prev, ST.mes);
-  document.getElementById("tCashProd").innerHTML = tblCashProd(prodList.slice(0,50), prev, d, ST.mes);
+  // Top 50 Produtos por Cash Margem removido (Cash Margem por produto não é
+  // exibida para ninguém) — tblCashProd fica sem uso.
   document.getElementById("tCashVend").innerHTML = tblCashVend(vendRowsCash, d, prev);
   document.getElementById("tMargemCli").innerHTML = tblMargemCli(cliListM.slice(0,50), d, prev, ST.mes);
   document.getElementById("tMargemProd").innerHTML = tblMargemProd(prodListM.slice(0,50), prev, d, ST.mes);
@@ -4481,7 +4482,7 @@ function renderDowCascata(){
         if (catExpanded){
           items.forEach((p,i)=>{
             html += `<tr class="casc-lvl2"><td style="padding-left:36px;color:var(--t2);font-style:italic">${i+1}. ${escAttr(p.nome)}</td>
-              <td class="tv">${fF(p.r)}</td><td class="tv">${fF(p.r-p.c)}</td><td class="tv">${margemBadge(p.r>0?100*(1-p.c/p.r):0)}</td></tr>`;
+              <td class="tv">${fF(p.r)}</td><td class="tv"></td><td class="tv">${margemBadge(p.r>0?100*(1-p.c/p.r):0)}</td></tr>`;
           });
         }
       });
@@ -5357,7 +5358,7 @@ function renderRank(){
 
   const prod = prodBase.filter(p=>ST.cat.length===0||ST.cat.includes(p.categoria)).slice(0,50);
   document.getElementById("tTopProd").innerHTML = tblRank(prod,"nome",
-    r=>prevLookupList(prev,"top_produtos","nome",r.nome), r=>prevLookupListMargin(prev,"top_produtos","nome",r.nome));
+    r=>prevLookupList(prev,"top_produtos","nome",r.nome), r=>prevLookupListMargin(prev,"top_produtos","nome",r.nome), true);
 
   const vend = d.top_vendedores.filter(v=>(ST.sup.length===0||ST.sup.includes(v.supervisor))&&(ST.vend.length===0||ST.vend.includes(v.nome))).slice(0,50);
   document.getElementById("tTopVend").innerHTML = tblRank(vend,"nome",
@@ -5379,9 +5380,10 @@ function renderRank(){
 }
 // prevFn/prevMarginFn: opcionais — recebem a linha e retornam a receita/margem do
 // mesmo item no período anterior (null se o item não estava no Top-N daquele período).
-function tblRank(rows,nameKey,prevFn,prevMarginFn){
-  return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Receita</th><th class="tv">Δ vs ano ant.</th><th class="tv">Cash Margem</th><th class="tv">Margem %</th><th class="tv">Δ Margem (ano ant.)</th></tr></thead><tbody>${
-    rows.map((r,i)=>`<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${r[nameKey]}</td><td class="tv">${fF(r.r)}</td><td class="tv">${deltaPillSmall(r.r, prevFn?prevFn(r):null)}</td><td class="tv">${fF(r.r-r.c)}</td><td class="tv">${margemBadge(r.m)}</td><td class="tv">${deltaPP(r.m, prevMarginFn?prevMarginFn(r):null, false)}</td></tr>`).join("")}</tbody>`;
+// semCash: true na tabela de produtos (Cash Margem por produto não é exibida).
+function tblRank(rows,nameKey,prevFn,prevMarginFn,semCash){
+  return `<thead><tr><th>#</th><th>Nome</th><th class="tv">Receita</th><th class="tv">Δ vs ano ant.</th>${semCash?'':'<th class="tv">Cash Margem</th>'}<th class="tv">Margem %</th><th class="tv">Δ Margem (ano ant.)</th></tr></thead><tbody>${
+    rows.map((r,i)=>`<tr><td><span class="badge-rk ${i===0?'g1':i===1?'g2':i===2?'g3':''}">${i+1}</span></td><td class="tn">${r[nameKey]}</td><td class="tv">${fF(r.r)}</td><td class="tv">${deltaPillSmall(r.r, prevFn?prevFn(r):null)}</td>${semCash?'':`<td class="tv">${fF(r.r-r.c)}</td>`}<td class="tv">${margemBadge(r.m)}</td><td class="tv">${deltaPP(r.m, prevMarginFn?prevMarginFn(r):null, false)}</td></tr>`).join("")}</tbody>`;
 }
 
 // ── 5. MIX & POSITIVAÇÃO ──────────────────────────────────────

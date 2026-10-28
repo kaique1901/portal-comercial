@@ -289,11 +289,10 @@
 <!-- 3A. TOP 50 CASH MARGEM -->
 <div class="mod" id="m-top-cash">
   <div class="mod-header"><div><div class="mod-title">Top 50 Cash Margem</div><div class="mod-sub">Ranking por Cash Margem (R$) — o "dinheiro que fica", valor absoluto</div></div></div>
-  <div class="alert">⚠ Sem filtro de hierarquia, Cliente/Produto vêm de um Top 50 por Cash Margem calculado direto na base (cobre corretamente clientes/produtos de menor faturamento mas margem alta). <strong>Com filtro de Gerente/Supervisor/Vendedor</strong>, Cliente/Produto usam o Top 50 por Receita daquele recorte reordenado por Cash Margem — uma aproximação (pode não incluir um cliente de baixo faturamento e altíssima margem que ficou fora do Top 50 por receita daquela entidade). <strong>Vendedor não usa Top 50</strong>: sem filtro mostra o Top 50 da empresa; com filtro de Gerente/Supervisor/Vendedor mostra <strong>todos</strong> os vendedores daquele recorte.</div>
+  <div class="alert">⚠ Sem filtro de hierarquia, Clientes vêm de um Top 50 por Cash Margem calculado sobre todos os clientes (cobre corretamente clientes de menor faturamento mas margem alta). <strong>Com filtro de Gerente/Supervisor/Vendedor</strong>, Clientes usam o Top 50 por Receita daquele recorte reordenado por Cash Margem — uma aproximação (pode não incluir um cliente de baixo faturamento e altíssima margem que ficou fora do Top 50 por receita daquela entidade). <strong>Vendedor não usa Top 50</strong>: sem filtro mostra o Top 50 da empresa; com filtro de Gerente/Supervisor/Vendedor mostra <strong>todos</strong> os vendedores daquele recorte.</div>
   <div id="cashHierNote"></div>
-  <div class="row2">
+  <div class="row1">
     <div class="card"><div class="card-h"><div><div class="card-title">Top 50 Clientes por Cash Margem</div><div class="card-sub">Clique em + para ver o faturamento por categoria e o vendedor/supervisor responsável</div></div></div><div class="tbl-wrap"><table id="tCashCli"></table></div></div>
-    <div class="card"><div class="card-h"><div><div class="card-title">Top 50 Produtos por Cash Margem</div></div></div><div class="tbl-wrap"><table id="tCashProd"></table></div></div>
   </div>
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Vendedores por Cash Margem</div><div class="card-sub" id="cashVendSub">—</div></div></div><div class="tbl-wrap"><table id="tCashVend"></table></div></div></div>
 </div>
@@ -434,7 +433,7 @@
 
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Receita e Pedidos por Hora</div><div class="card-sub">Barras = receita · linha = nº de pedidos (eixo direito)</div></div></div><canvas id="cHorario" height="120"></canvas></div></div>
 
-  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Resultado por Faixa Horária — Cascata Hora → Categoria → Produto</div><div class="card-sub" id="horarioCascNota">—</div></div>
+  <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Resultado por Faixa Horária — Cascata Hora → Cliente → Categoria → Produto</div><div class="card-sub" id="horarioCascNota">—</div></div>
     <div style="display:flex;gap:6px"><button class="fsel" onclick="horarioExpandirTudo(true)">Expandir horas</button><button class="fsel" onclick="horarioExpandirTudo(false)">Recolher tudo</button></div></div><div class="tbl-wrap"><table id="tHorario"></table></div></div></div>
 
   <div class="row1"><div class="card"><div class="card-h"><div><div class="card-title">Mapa de Calor — Dia da Semana × Hora</div><div class="card-sub">Quanto mais escuro, maior o valor</div></div>

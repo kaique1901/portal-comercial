@@ -136,16 +136,47 @@ const SQL_HORA_SELECT = `to_char(DataPed,'YYYY-MM') anomes, EXTRACT(ISODOW FROM 
   EXTRACT(HOUR FROM horaped)::int hora, SUM(Total) r, SUM(customedio) c`;
 const SQL_HORA_CAT_SELECT = `to_char(DataPed,'YYYY-MM') anomes, EXTRACT(HOUR FROM horaped)::int hora,
   categoria, SUM(Total) r, SUM(customedio) c`;
-// Produto: chave só com int (hora, Codigo); categoria/Descricao por MIN() — são
-// dependentes do produto (mesma otimização de _buildDowCascata). Pedido sem hora
-// fica fora da cascata (aparece só como "Sem hora" na tabela).
-const SQL_HORA_PROD_SELECT = `EXTRACT(HOUR FROM horaped)::int hora, Codigo codigo,
-  MIN(categoria) categoria, MIN(Descricao) produto, SUM(Total) r, SUM(customedio) c, SUM(Qtde) q`;
-const SQL_HORA_PROD_WHERE = `WHERE categoria IS NOT NULL AND Descricao IS NOT NULL AND horaped IS NOT NULL`;
-// Top 20 por (hora, categoria): medido em 2026_2 = ~95% da receita de cada
-// célula, ~0,6 MB por semestre. O resto o front mostra como "Demais produtos"
-// (total exato da categoria em por_hora_categoria − soma do Top N).
-const HORA_PROD_TOP_N = 20;
+// Cascata Hora → Cliente → Categoria → Produto (ver buildHoraCliente).
+// Top N clientes por hora (pela receita) e, dentro de cada cliente, TODAS as
+// categorias (total exato) com o Top N de produtos de cada uma. O que fica de
+// fora o front mostra como "Demais clientes"/"Demais produtos" = total exato
+// do nível de cima − soma do que foi listado — nada é estimado.
+// porMes=true agrupa por ano-mês (filtro de 1 mês); false = a seleção inteira.
+// Pedido sem hora fica fora da cascata (aparece só como "Sem hora").
+const HORA_CLI_TOP_N = 20;
+const HORA_CLI_PROD_TOP_N = 10;
+function sqlHoraCliente(tabela, porMes) {
+  const g = porMes ? `to_char(DataPed,'YYYY-MM')` : `'*'`;
+  return `
+    WITH b AS (
+      SELECT ${g} g, EXTRACT(HOUR FROM horaped)::int hora, CodCli, Cliente, categoria, Codigo, Descricao,
+             Total, customedio, Qtde, NroPed
+      FROM ${tabela} WHERE horaped IS NOT NULL AND CodCli IS NOT NULL
+    ),
+    ch AS (
+      SELECT g, hora, CodCli, MIN(Cliente) cliente, SUM(Total) r, SUM(customedio) c, COUNT(DISTINCT NroPed) ped,
+             row_number() OVER (PARTITION BY g, hora ORDER BY SUM(Total) DESC, CodCli) rk,
+             COUNT(*) OVER (PARTITION BY g, hora) n_cli
+      FROM b GROUP BY g, hora, CodCli
+    ),
+    t AS (SELECT * FROM ch WHERE rk <= ${HORA_CLI_TOP_N}),
+    cp AS (
+      SELECT b.g, b.hora, b.CodCli, b.categoria, b.Codigo, MIN(b.Descricao) produto,
+             SUM(b.Total) r, SUM(b.customedio) c, SUM(b.Qtde) q
+      FROM b JOIN t ON t.g = b.g AND t.hora = b.hora AND t.CodCli = b.CodCli
+      WHERE b.categoria IS NOT NULL
+      GROUP BY b.g, b.hora, b.CodCli, b.categoria, b.Codigo
+    ),
+    cpr AS (
+      SELECT cp.*, SUM(r) OVER w cat_r, SUM(c) OVER w cat_c,
+             row_number() OVER (PARTITION BY g, hora, CodCli, categoria ORDER BY r DESC, Codigo) prk
+      FROM cp WINDOW w AS (PARTITION BY g, hora, CodCli, categoria)
+    )
+    SELECT t.g anomes, t.hora, t.n_cli, t.CodCli codcli, t.cliente, t.r cli_r, t.c cli_c, t.ped,
+           cpr.categoria, cpr.cat_r, cpr.cat_c, cpr.Codigo codigo, cpr.produto, cpr.r, cpr.c, cpr.q
+    FROM t LEFT JOIN cpr ON cpr.g = t.g AND cpr.hora = t.hora AND cpr.CodCli = t.CodCli
+                        AND cpr.prk <= ${HORA_CLI_PROD_TOP_N}`;
+}
 
 const num = v => parseFloat(v) || 0;
 const round2 = v => Math.round(v * 100) / 100;
@@ -207,12 +238,11 @@ class DashboardETLService {
       // contaria 2x ao somar; ali só receita/custo.
       const porHora = await q(`SELECT ${SQL_HORA_SELECT}, COUNT(DISTINCT NroPed) pedidos FROM tmp_base_vendas GROUP BY 1, 2, 3`);
       const porHoraCat = await q(`SELECT ${SQL_HORA_CAT_SELECT} FROM tmp_base_vendas WHERE categoria IS NOT NULL GROUP BY 1, 2, 3`);
-      // Cascata Hora → Categoria → Produto: por ano-mês (filtro de 1 mês) e no
-      // período inteiro (sem filtro de mês). Top N por (hora, categoria) — ver
-      // buildHoraProduto. Os dois grãos são necessários: somar o Top N de cada
-      // mês não dá o Top N do semestre.
-      const horaProdMes = await q(`SELECT to_char(DataPed,'YYYY-MM') anomes, ${SQL_HORA_PROD_SELECT} FROM tmp_base_vendas ${SQL_HORA_PROD_WHERE} GROUP BY 1, 2, 3`);
-      const horaProdTot = await q(`SELECT ${SQL_HORA_PROD_SELECT} FROM tmp_base_vendas ${SQL_HORA_PROD_WHERE} GROUP BY 1, 2`);
+      // Cascata Hora → Cliente → Categoria → Produto: por ano-mês (filtro de 1
+      // mês) e no período inteiro (sem filtro de mês). Os dois grãos são
+      // necessários: somar o Top N de cada mês não dá o Top N do semestre.
+      const horaCliMes = await q(sqlHoraCliente('tmp_base_vendas', true));
+      const horaCliTot = await q(sqlHoraCliente('tmp_base_vendas', false));
       const porCanal = await q(`SELECT canal_vendas, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq, COUNT(DISTINCT CodCli) n_clientes FROM tmp_base_vendas WHERE canal_vendas IS NOT NULL GROUP BY canal_vendas`);
       const porInadimplente = await q(`SELECT inadimplente, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq, COUNT(DISTINCT CodCli) n_clientes FROM tmp_base_vendas GROUP BY inadimplente`);
       const porStatus = await q(`SELECT status_cliente, SUM(Total) r, SUM(customedio) c, SUM(Qtde) qq, COUNT(DISTINCT CodCli) n_clientes FROM tmp_base_vendas GROUP BY status_cliente`);
@@ -487,7 +517,7 @@ class DashboardETLService {
         hierTopCli, hierTopProd, hierCat, hierPag, hierAbcdRows, hierDiaGer, hierDiaCatGer, meta, mixDetalhe,
         porCliMesAtivo, mesCatProd, mixCliCatMes, hierTopCliVendCapped,
         cascCat, cascGrp, cascForn, cascProd,
-        porCanal, porInadimplente, porStatus, bonif, porHora, porHoraCat, horaProdMes, horaProdTot
+        porCanal, porInadimplente, porStatus, bonif, porHora, porHoraCat, horaCliMes, horaCliTot
       });
     } catch (err) {
       await client.query('ROLLBACK').catch(() => {});
@@ -1061,7 +1091,7 @@ class DashboardETLService {
       por_inadimplente: (() => { const o = {}; for (const r of d.porInadimplente || []) o[r.inadimplente] = { r: round2(num(r.r)), c: round2(num(r.c)), q: round2(num(r.qq)), m: margem(num(r.r), num(r.c)), n_clientes: parseInt(r.n_clientes, 10) }; return o; })(),
       por_status: (() => { const o = {}; for (const r of d.porStatus || []) o[r.status_cliente] = { r: round2(num(r.r)), c: round2(num(r.c)), q: round2(num(r.qq)), m: margem(num(r.r), num(r.c)), n_clientes: parseInt(r.n_clientes, 10) }; return o; })(),
       ...buildPorHora(d.porHora, d.porHoraCat),
-      por_hora_produto: buildHoraProduto(d.horaProdTot, d.horaProdMes),
+      por_hora_cliente: buildHoraCliente(d.horaCliTot, d.horaCliMes),
       bonificacao: d.bonif || { por_mes_categoria: {}, hier: { gerente: {}, supervisor: {}, vendedor: {} } },
     };
   }
@@ -2108,26 +2138,40 @@ function buildPorHora(rowsHora, rowsHoraCat) {
   return { por_hora, por_hora_categoria };
 }
 
-// por_hora_produto.total[hora][categoria]          = [{codigo,nome,r,c,q}] (Top N)
-// por_hora_produto.por_mes[anomes][hora][categoria] = idem, por ano-mês
-// rowsMes é opcional (o /recorte só manda o total da própria seleção).
-function buildHoraProduto(rowsTot, rowsMes) {
-  const add = (alvo, row) => {
-    const h = alvo[row.hora] || (alvo[row.hora] = {});
-    (h[row.categoria] || (h[row.categoria] = [])).push({
-      codigo: String(row.codigo), nome: row.produto, r: round2(num(row.r)), c: round2(num(row.c)), q: round2(num(row.q)),
-    });
+// por_hora_cliente.total[hora]          = {n_cli, clientes:[{codigo,nome,r,c,ped,cats:[{nome,r,c,prods:[{codigo,nome,r,c,q}]}]}]}
+// por_hora_cliente.por_mes[anomes][hora] = idem, por ano-mês
+// n_cli = nº total de clientes que compraram naquela hora (não só o Top N).
+// Clientes (Top N da hora) e categorias por receita decrescente; cat.r/cat.c
+// são o total EXATO do cliente na categoria (não só a soma do Top N de produtos).
+function buildHoraCliente(rowsTot, rowsMes) {
+  const montar = rows => {
+    const porG = {};
+    for (const row of rows || []) {
+      const g = porG[row.anomes] || (porG[row.anomes] = {});
+      const hh = g[row.hora] || (g[row.hora] = { n_cli: parseInt(row.n_cli, 10) || 0, m: new Map() });
+      const h = hh.m;
+      let cli = h.get(row.codcli);
+      if (!cli) {
+        cli = { codigo: String(row.codcli), nome: row.cliente, r: round2(num(row.cli_r)), c: round2(num(row.cli_c)), ped: parseInt(row.ped, 10) || 0, _cats: new Map() };
+        h.set(row.codcli, cli);
+      }
+      if (row.categoria == null) continue;
+      let cat = cli._cats.get(row.categoria);
+      if (!cat) { cat = { nome: row.categoria, r: round2(num(row.cat_r)), c: round2(num(row.cat_c)), prods: [] }; cli._cats.set(row.categoria, cat); }
+      cat.prods.push({ codigo: String(row.codigo), nome: row.produto, r: round2(num(row.r)), c: round2(num(row.c)), q: round2(num(row.q)) });
+    }
+    for (const gk in porG) for (const h in porG[gk]) {
+      const hh = porG[gk][h];
+      porG[gk][h] = { n_cli: hh.n_cli, clientes: [...hh.m.values()].sort((a, b) => b.r - a.r).map(cli => {
+        const cats = [...cli._cats.values()].sort((a, b) => b.r - a.r);
+        cats.forEach(cat => cat.prods.sort((a, b) => b.r - a.r));
+        delete cli._cats; cli.cats = cats; return cli;
+      }) };
+    }
+    return porG;
   };
-  const corta = alvo => { for (const h in alvo) for (const cat in alvo[h]) alvo[h][cat] = alvo[h][cat].sort((a, b) => b.r - a.r).slice(0, HORA_PROD_TOP_N); };
-  const total = {};
-  for (const row of rowsTot || []) add(total, row);
-  corta(total);
-  const out = { top_n: HORA_PROD_TOP_N, total };
-  if (rowsMes) {
-    out.por_mes = {};
-    for (const row of rowsMes) add(out.por_mes[row.anomes] || (out.por_mes[row.anomes] = {}), row);
-    for (const am in out.por_mes) corta(out.por_mes[am]);
-  }
+  const out = { top_clientes: HORA_CLI_TOP_N, top_produtos: HORA_CLI_PROD_TOP_N, total: montar(rowsTot)['*'] || {} };
+  if (rowsMes) out.por_mes = montar(rowsMes);
   return out;
 }
 
@@ -2146,6 +2190,5 @@ module.exports.isoDay = isoDay;
 module.exports.buildPorHora = buildPorHora;
 module.exports.SQL_HORA_SELECT = SQL_HORA_SELECT;
 module.exports.SQL_HORA_CAT_SELECT = SQL_HORA_CAT_SELECT;
-module.exports.buildHoraProduto = buildHoraProduto;
-module.exports.SQL_HORA_PROD_SELECT = SQL_HORA_PROD_SELECT;
-module.exports.SQL_HORA_PROD_WHERE = SQL_HORA_PROD_WHERE;
+module.exports.buildHoraCliente = buildHoraCliente;
+module.exports.sqlHoraCliente = sqlHoraCliente;
