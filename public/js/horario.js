@@ -97,8 +97,8 @@ function horarioAgregar(p, meses){
   return { porHora, porDowHora, porHoraCat, porCat, semHora, tot, faixa };
 }
 
-// Cash Margem NÃO aparece na linha de produto (regra do negócio: margem em R$
-// por produto não é exibida para ninguém) — só Margem % no produto.
+// Sem coluna Cash Margem nesta tabela (regra do negócio: margem em R$ não é
+// exibida em visões que descem até produto) — só Margem %.
 function horarioTabelaCascata(){
   const tEl = document.getElementById('tHorario');
   const ctx = HORARIO._ctx;
@@ -113,48 +113,48 @@ function horarioTabelaCascata(){
   linhas.forEach(l=>{
     acum += l.r;
     const kH = 'H|'+l.h, abertoH = HORARIO.abertos.has(kH);
-    html += `<tr class="casc-lvl0"><td class="tn">${cli?tog(kH, abertoH):''}${horarioFaixa(l.h)}</td><td class="tv">${fF(l.r)}</td><td class="tv">${pct(l.r, comHoraR)}</td><td class="tv">${pct(acum, comHoraR)}</td><td class="tv">${fF(l.r-l.c)}</td><td class="tv">${mg(l.r, l.c)}</td><td class="tv">${fN(l.ped)}</td><td class="tv">${l.ped>0?fF(l.r/l.ped):vazio}</td></tr>`;
+    html += `<tr class="casc-lvl0"><td class="tn">${cli?tog(kH, abertoH):''}${horarioFaixa(l.h)}</td><td class="tv">${fF(l.r)}</td><td class="tv">${pct(l.r, comHoraR)}</td><td class="tv">${pct(acum, comHoraR)}</td><td class="tv">${mg(l.r, l.c)}</td><td class="tv">${fN(l.ped)}</td><td class="tv">${l.ped>0?fF(l.r/l.ped):vazio}</td></tr>`;
     if (!cli || !abertoH) return;
     const hh = cli.porHora[l.h] || { n_cli: 0, clientes: [] };
-    if (!hh.clientes.length){ html += `<tr class="casc-lvl1"><td colspan="8" style="${pad(1)};color:var(--t3)">Sem clientes identificados nesta faixa.</td></tr>`; return; }
+    if (!hh.clientes.length){ html += `<tr class="casc-lvl1"><td colspan="7" style="${pad(1)};color:var(--t3)">Sem clientes identificados nesta faixa.</td></tr>`; return; }
     let sr = 0, sc = 0, sp = 0;
     hh.clientes.forEach((cl, i)=>{
       sr += cl.r; sc += cl.c; sp += cl.ped;
       const kC = kH+'|'+cl.codigo, abertoC = HORARIO.abertos.has(kC);
-      html += `<tr class="casc-lvl1"><td style="${pad(1)}">${tog(kC, abertoC)}${i+1}. ${escAttr(cl.nome||('Cliente '+cl.codigo))} <span style="color:var(--t3)">(${escAttr(cl.codigo)})</span></td><td class="tv">${fF(cl.r)}</td><td class="tv" title="% da receita desta faixa">${pct(cl.r, l.r)}</td><td class="tv"></td><td class="tv">${fF(cl.r-cl.c)}</td><td class="tv">${mg(cl.r, cl.c)}</td><td class="tv">${fN(cl.ped)}</td><td class="tv">${cl.ped>0?fF(cl.r/cl.ped):vazio}</td></tr>`;
+      html += `<tr class="casc-lvl1"><td style="${pad(1)}">${tog(kC, abertoC)}${i+1}. ${escAttr(cl.nome||('Cliente '+cl.codigo))} <span style="color:var(--t3)">(${escAttr(cl.codigo)})</span></td><td class="tv">${fF(cl.r)}</td><td class="tv" title="% da receita desta faixa">${pct(cl.r, l.r)}</td><td class="tv"></td><td class="tv">${mg(cl.r, cl.c)}</td><td class="tv">${fN(cl.ped)}</td><td class="tv">${cl.ped>0?fF(cl.r/cl.ped):vazio}</td></tr>`;
       if (!abertoC) return;
       let cr = 0, cc = 0;
       cl.cats.forEach(cat=>{
         cr += cat.r; cc += cat.c;
         const kK = kC+'|'+cat.nome, abertoK = HORARIO.abertos.has(kK);
-        html += `<tr class="casc-lvl2"><td style="${pad(2)}">${tog(kK, abertoK)}${escAttr(cat.nome)}</td><td class="tv">${fF(cat.r)}</td><td class="tv" title="% da receita do cliente nesta faixa">${pct(cat.r, cl.r)}</td><td class="tv"></td><td class="tv">${fF(cat.r-cat.c)}</td><td class="tv">${mg(cat.r, cat.c)}</td><td class="tv"></td><td class="tv"></td></tr>`;
+        html += `<tr class="casc-lvl2"><td style="${pad(2)}">${tog(kK, abertoK)}${escAttr(cat.nome)}</td><td class="tv">${fF(cat.r)}</td><td class="tv" title="% da receita do cliente nesta faixa">${pct(cat.r, cl.r)}</td><td class="tv"></td><td class="tv">${mg(cat.r, cat.c)}</td><td class="tv"></td><td class="tv"></td></tr>`;
         if (!abertoK) return;
         let pr = 0, pc = 0;
         cat.prods.forEach((it, j)=>{
           pr += it.r; pc += it.c;
-          html += `<tr class="casc-lvl3"><td style="${pad(3)};font-style:italic">${j+1}. ${escAttr(it.nome||('Produto '+it.codigo))}</td><td class="tv">${fF(it.r)}</td><td class="tv" title="% da receita da categoria neste cliente/faixa">${pct(it.r, cat.r)}</td><td class="tv"></td><td class="tv"></td><td class="tv">${mg(it.r, it.c)}</td><td class="tv" colspan="2" style="color:var(--t3)">Qtde ${fN(it.q)}</td></tr>`;
+          html += `<tr class="casc-lvl3"><td style="${pad(3)};font-style:italic">${j+1}. ${escAttr(it.nome||('Produto '+it.codigo))}</td><td class="tv">${fF(it.r)}</td><td class="tv" title="% da receita da categoria neste cliente/faixa">${pct(it.r, cat.r)}</td><td class="tv"></td><td class="tv">${mg(it.r, it.c)}</td><td class="tv" colspan="2" style="color:var(--t3)">Qtde ${fN(it.q)}</td></tr>`;
         });
         // Demais = total EXATO do cliente na categoria − soma do Top N exibido.
         const dr = cat.r - pr, dc = cat.c - pc;
         if (Math.abs(dr) >= 0.5)
-          html += `<tr class="casc-lvl3"><td style="${pad(3)}">Demais produtos (fora do Top ${cli.topProd||cat.prods.length})</td><td class="tv">${fF(dr)}</td><td class="tv">${pct(dr, cat.r)}</td><td class="tv"></td><td class="tv"></td><td class="tv">${mg(dr, dc)}</td><td class="tv"></td><td class="tv"></td></tr>`;
+          html += `<tr class="casc-lvl3"><td style="${pad(3)}">Demais produtos (fora do Top ${cli.topProd||cat.prods.length})</td><td class="tv">${fF(dr)}</td><td class="tv">${pct(dr, cat.r)}</td><td class="tv"></td><td class="tv">${mg(dr, dc)}</td><td class="tv"></td><td class="tv"></td></tr>`;
       });
       // Itens do cliente sem categoria cadastrada (total do cliente − soma das categorias).
       const xr = cl.r - cr, xc = cl.c - cc;
       if (Math.abs(xr) >= 0.5)
-        html += `<tr class="casc-lvl2"><td style="${pad(2)};color:var(--t2)">Sem categoria</td><td class="tv">${fF(xr)}</td><td class="tv">${pct(xr, cl.r)}</td><td class="tv"></td><td class="tv">${fF(xr-xc)}</td><td class="tv">${mg(xr, xc)}</td><td class="tv"></td><td class="tv"></td></tr>`;
+        html += `<tr class="casc-lvl2"><td style="${pad(2)};color:var(--t2)">Sem categoria</td><td class="tv">${fF(xr)}</td><td class="tv">${pct(xr, cl.r)}</td><td class="tv"></td><td class="tv">${mg(xr, xc)}</td><td class="tv"></td><td class="tv"></td></tr>`;
     });
     // Demais clientes = total EXATO da faixa − soma do Top N exibido.
     const dr = l.r - sr, dc = l.c - sc, dp = l.ped - sp, dn = hh.n_cli - hh.clientes.length;
     if (Math.abs(dr) >= 0.5)
-      html += `<tr class="casc-lvl1"><td style="${pad(1)};color:var(--t2)">Demais clientes${dn>0?` (${fN(dn)} clientes fora do Top ${cli.topCli||hh.clientes.length})`:''}</td><td class="tv">${fF(dr)}</td><td class="tv">${pct(dr, l.r)}</td><td class="tv"></td><td class="tv">${fF(dr-dc)}</td><td class="tv">${mg(dr, dc)}</td><td class="tv">${dp>0?fN(dp):vazio}</td><td class="tv">${dp>0?fF(dr/dp):vazio}</td></tr>`;
+      html += `<tr class="casc-lvl1"><td style="${pad(1)};color:var(--t2)">Demais clientes${dn>0?` (${fN(dn)} clientes fora do Top ${cli.topCli||hh.clientes.length})`:''}</td><td class="tv">${fF(dr)}</td><td class="tv">${pct(dr, l.r)}</td><td class="tv"></td><td class="tv">${mg(dr, dc)}</td><td class="tv">${dp>0?fN(dp):vazio}</td><td class="tv">${dp>0?fF(dr/dp):vazio}</td></tr>`;
   });
   const sh = A.semHora;
   if (sh[2]>0 || sh[0]!==0){
-    html += `<tr style="color:var(--t2)"><td class="tn">Sem hora</td><td class="tv">${fF(sh[0])}</td><td class="tv">${vazio}</td><td class="tv">${vazio}</td><td class="tv">${fF(sh[0]-sh[1])}</td><td class="tv">${mg(sh[0], sh[1])}</td><td class="tv">${fN(sh[2])}</td><td class="tv">${sh[2]>0?fF(sh[0]/sh[2]):vazio}</td></tr>`;
+    html += `<tr style="color:var(--t2)"><td class="tn">Sem hora</td><td class="tv">${fF(sh[0])}</td><td class="tv">${vazio}</td><td class="tv">${vazio}</td><td class="tv">${mg(sh[0], sh[1])}</td><td class="tv">${fN(sh[2])}</td><td class="tv">${sh[2]>0?fF(sh[0]/sh[2]):vazio}</td></tr>`;
   }
-  html += `<tr style="font-weight:700"><td class="tn">TOTAL</td><td class="tv">${fF(A.tot[0])}</td><td class="tv"></td><td class="tv"></td><td class="tv">${fF(A.tot[0]-A.tot[1])}</td><td class="tv">${mg(A.tot[0], A.tot[1])}</td><td class="tv">${fN(A.tot[2])}</td><td class="tv">${A.tot[2]>0?fF(A.tot[0]/A.tot[2]):vazio}</td></tr>`;
-  tEl.innerHTML = `<thead><tr><th>Hora / Cliente / Categoria / Produto</th><th class="tv">Receita</th><th class="tv">% Receita</th><th class="tv">% Acumulado</th><th class="tv">Cash Margem</th><th class="tv">Margem %</th><th class="tv">Pedidos</th><th class="tv">Ticket Médio</th></tr></thead><tbody>${html}</tbody>`;
+  html += `<tr style="font-weight:700"><td class="tn">TOTAL</td><td class="tv">${fF(A.tot[0])}</td><td class="tv"></td><td class="tv"></td><td class="tv">${mg(A.tot[0], A.tot[1])}</td><td class="tv">${fN(A.tot[2])}</td><td class="tv">${A.tot[2]>0?fF(A.tot[0]/A.tot[2]):vazio}</td></tr>`;
+  tEl.innerHTML = `<thead><tr><th>Hora / Cliente / Categoria / Produto</th><th class="tv">Receita</th><th class="tv">% Receita</th><th class="tv">% Acumulado</th><th class="tv">Margem %</th><th class="tv">Pedidos</th><th class="tv">Ticket Médio</th></tr></thead><tbody>${html}</tbody>`;
   const notaEl = document.getElementById('horarioCascNota');
   if (notaEl) notaEl.textContent = cli
     ? `Clique em + para abrir Hora → Cliente → Categoria → Produto. % do cliente = sobre a receita da faixa; % da categoria = sobre o cliente; % do produto = sobre a categoria. Top ${cli.topCli||20} clientes por faixa (o restante em "Demais clientes") e Top ${cli.topProd||10} produtos por categoria (o restante em "Demais produtos").`

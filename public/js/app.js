@@ -4435,6 +4435,8 @@ function toggleDowCascata(pathKey){
   if (dowCascataExpanded.has(pathKey)) dowCascataExpanded.delete(pathKey); else dowCascataExpanded.add(pathKey);
   renderDowCascata();
 }
+// Sem coluna Cash Margem nesta tabela (regra do negócio: margem em R$ não é
+// exibida em visões que descem até produto) — só Margem %.
 function renderDowCascata(){
   const level = hierLevelActive();
   const names = level ? hierSelectedNames(level) : [];
@@ -4471,18 +4473,18 @@ function renderDowCascata(){
     const dowExpanded = dowCascataExpanded.has(dowKey);
     const dowToggle = `<span class="casc-toggle" onclick="toggleDowCascata('${dowKey}')">${dowExpanded?'−':'+'}</span>`;
     let html = `<tr class="casc-lvl0"><td>${dowToggle}${DOW_NAMES[dow]}</td>
-      <td class="tv">${fF(totR)}</td><td class="tv">${fF(totR-totC)}</td><td class="tv">${margemBadge(totR>0?100*(1-totC/totR):0)}</td></tr>`;
+      <td class="tv">${fF(totR)}</td><td class="tv">${margemBadge(totR>0?100*(1-totC/totR):0)}</td></tr>`;
     if (dowExpanded){
       cats.forEach(({cat,items,r,c})=>{
         const catKey = dowKey+'|||'+cat;
         const catExpanded = dowCascataExpanded.has(catKey);
         const catToggle = `<span class="casc-toggle" onclick="toggleDowCascata('${catKey}')">${catExpanded?'−':'+'}</span>`;
         html += `<tr class="casc-lvl1"><td style="padding-left:18px">${catToggle}${escAttr(cat)}</td>
-          <td class="tv">${fF(r)}</td><td class="tv">${fF(r-c)}</td><td class="tv">${margemBadge(r>0?100*(1-c/r):0)}</td></tr>`;
+          <td class="tv">${fF(r)}</td><td class="tv">${margemBadge(r>0?100*(1-c/r):0)}</td></tr>`;
         if (catExpanded){
           items.forEach((p,i)=>{
             html += `<tr class="casc-lvl2"><td style="padding-left:36px;color:var(--t2);font-style:italic">${i+1}. ${escAttr(p.nome)}</td>
-              <td class="tv">${fF(p.r)}</td><td class="tv"></td><td class="tv">${margemBadge(p.r>0?100*(1-p.c/p.r):0)}</td></tr>`;
+              <td class="tv">${fF(p.r)}</td><td class="tv">${margemBadge(p.r>0?100*(1-p.c/p.r):0)}</td></tr>`;
           });
         }
       });
@@ -4490,7 +4492,7 @@ function renderDowCascata(){
     return html;
   }).join("");
 
-  el.innerHTML = `<thead><tr><th>Dia da Semana / Categoria / Produto</th><th class="tv">Faturamento</th><th class="tv">Cash Margem</th><th class="tv">Margem %</th></tr></thead><tbody>${rowsHtml}</tbody>`;
+  el.innerHTML = `<thead><tr><th>Dia da Semana / Categoria / Produto</th><th class="tv">Faturamento</th><th class="tv">Margem %</th></tr></thead><tbody>${rowsHtml}</tbody>`;
 }
 
 
