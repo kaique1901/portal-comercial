@@ -986,6 +986,16 @@ function sincronizarMes(){
 function selecaoCruzaSemestres(){
   return new Set(ST.meses.map(anomesPeriodo)).size > 1;
 }
+// Meses (como string, "9", "10") cuja META deve ser somada quando há 2+ meses
+// selecionados. Com 2+ meses ST.mes é null, e as funções de meta caíam no total
+// do SEMESTRE (meta.por_gerente etc.) enquanto o realizado vinha do recorte só
+// dos meses escolhidos — Set+Out comparava realizado de 2 meses com meta de 6.
+// Só os meses de ST.per (meta é por semestre; ver avisoSelecaoCruzada).
+// null = caminho de sempre (1 mês → por_mes; nenhum mês → semestre).
+function mesesMetaSel(){
+  if (ST.meses.length < 2) return null;
+  return [...new Set(ST.meses.filter(am => anomesPeriodo(am) === ST.per).map(anomesMes))].sort((a,b)=>a-b).map(String);
+}
 // Aviso para as visões que dependem de META ou BONIFICAÇÃO. Realizado, rankings,
 // cascatas e positivação vêm do /recorte e cobrem TODOS os meses selecionados,
 // inclusive de anos diferentes. Meta e bonificação vêm do cubo, que é montado por
@@ -2140,6 +2150,17 @@ function mesParcialInfo(period){
 function metaRentabilidade(d, mes){
   const vazio = { valor: 0, permargem: null, nivel: null };
   if (!d || !d.meta) return vazio;
+  // 2+ meses: soma valor e meta de receita mês a mês (ver mesesMetaSel) e
+  // pondera a margem alvo pelo conjunto — nunca o semestre inteiro.
+  const multi = mes == null ? mesesMetaSel() : null;
+  if (multi){
+    let valor = 0, receita = 0, nivel = null;
+    multi.forEach(m => {
+      const x = metaRentabilidade(d, m);
+      valor += x.valor; receita += x.receita || 0; nivel = x.nivel || nivel;
+    });
+    return { valor, permargem: receita > 0 ? valor / receita : null, nivel };
+  }
   const mensal = (mes != null && d.meta.por_mes) ? d.meta.por_mes[String(mes)] : null;
   const fonte = nivel => mensal ? (mensal[nivel] || {}) : (d.meta['por_' + nivel] || {});
   const somar = (nivel, nomes) => {
@@ -2148,7 +2169,7 @@ function metaRentabilidade(d, mes){
     nomes.forEach(n => { const m = dict[n]; if (m){ valor += (m.meta_valrentabilidade || 0); receita += (m.meta_geral || 0); } });
     // Margem alvo PONDERADA (meta de margem ÷ meta de receita). O permargem gravado
     // varia por categoria (9,7% a 34,7%); o máximo não representa o alvo do conjunto.
-    return { valor, permargem: receita > 0 ? valor / receita : null, nivel };
+    return { valor, receita, permargem: receita > 0 ? valor / receita : null, nivel };
   };
   if (ST.vend.length) return somar('vendedor', ST.vend);
   if (ST.sup.length)  return somar('supervisor', ST.sup);
@@ -2430,6 +2451,8 @@ function margemMFrom(r,c){ return r>0 ? +(100*(1-c/r)).toFixed(2) : 0; }
 // Meta Cash Margem (R$) de um nível — meta_valrentabilidade já vem pronta do
 // ETL (meta de receita x margem alvo), com quebra mensal em meta.por_mes.
 function metaValRentFor(d, level, name, mes){
+  const multi = mes==null ? mesesMetaSel() : null;
+  if (multi) return multi.reduce((s,m)=>s+metaValRentFor(d, level, name, m), 0);
   if (mes!=null){
     const mesKey = String(mes);
     const m = d.meta.por_mes && d.meta.por_mes[mesKey] && d.meta.por_mes[mesKey][level] && d.meta.por_mes[mesKey][level][name];
@@ -2441,6 +2464,12 @@ function metaValRentFor(d, level, name, mes){
 // Meta Cash Margem por CATEGORIA — meta de receita da categoria x margem alvo
 // daquela categoria especificamente (não a margem média da empresa).
 function metaValRentCategoriaFor(d, mes){
+  const multi = mes==null ? mesesMetaSel() : null;
+  if (multi){
+    const out = {};
+    multi.forEach(m=>{ const src = metaValRentCategoriaFor(d, m); Object.keys(src).forEach(cat=>{ out[cat] = (out[cat]||0) + (src[cat]||0); }); });
+    return out;
+  }
   if (mes!=null) return (d.meta.por_mes_categoria_valrentabilidade && d.meta.por_mes_categoria_valrentabilidade[String(mes)]) || {};
   return d.meta.por_categoria_valrentabilidade || {};
 }
@@ -2882,13 +2911,17 @@ function renderMargemCash(){
   // Gerente/Supervisor/Vendedor tanto no Realizado quanto na Meta).
   let metaCashCat, metaFatCat;
   if (catInfo.level){
-    const mesesSel = ST.mes!=null ? [ST.mes] : Object.keys(d.meta.por_mes||{}).map(Number);
+    const mesesSel = ST.mes!=null ? [ST.mes] : (mesesMetaSel() || Object.keys(d.meta.por_mes||{})).map(Number);
     const agg = metaCategoriaHierMesFor(d, catInfo.level, catInfo.names, mesesSel);
     metaCashCat = {}; metaFatCat = {};
     Object.keys(agg).forEach(cat=>{ metaCashCat[cat]=agg[cat].metaCash; metaFatCat[cat]=agg[cat].meta; });
   } else {
     metaCashCat = metaValRentCategoriaFor(d, ST.mes);
-    metaFatCat = ST.mes!=null ? ((d.meta.por_mes_categoria&&d.meta.por_mes_categoria[ST.mes])||{}) : (d.meta.por_categoria||{});
+    if (ST.mes!=null) metaFatCat = (d.meta.por_mes_categoria&&d.meta.por_mes_categoria[ST.mes])||{};
+    else if (mesesMetaSel()){
+      metaFatCat = {};
+      mesesMetaSel().forEach(m=>{ const mc = (d.meta.por_mes_categoria&&d.meta.por_mes_categoria[m])||{}; Object.keys(mc).forEach(cat=>{ metaFatCat[cat] = (metaFatCat[cat]||0) + mc[cat]; }); });
+    } else metaFatCat = d.meta.por_categoria||{};
   }
   // catRowsFull: mesmo cálculo linha a linha abaixo, só que devolvendo dado
   // cru (não HTML) — aditivo p/ Apresentação Executiva, que precisa das
@@ -3039,6 +3072,8 @@ function metaTable(names, fn, level, d, prev, meses){
 // logado) somava os meses já fechados do semestre em vez de mostrar só o
 // mês escolhido (ex.: Julho aparecia como Julho+Agosto).
 function metaGeralFor(d, level, name, mesKey){
+  const multi = mesKey==null ? mesesMetaSel() : null;
+  if (multi) return multi.reduce((s,m)=>s+metaGeralFor(d, level, name, m), 0);
   // Quando mesKey é um mês específico, SEMPRE fica dentro do grão mensal — se a
   // entidade não tem linha naquele mês, o valor é 0, nunca o total do semestre
   // (usado por objMetaGeralFor pra somar vários meses; cair pro semestre num
@@ -3063,6 +3098,12 @@ function realGeralFor(d, level, name, mesKey){
 // semestre, que misturaria unidades diferentes.
 function prevMetaGeralFor(prev, level, name, mesKey){
   if (!prev || !prev.meta) return null;
+  const multi = mesKey==null ? mesesMetaSel() : null;
+  if (multi){
+    let sum=0, any=false;
+    multi.forEach(m=>{ const v=prevMetaGeralFor(prev, level, name, m); if(v!=null){ sum+=v; any=true; } });
+    return any ? sum : null;
+  }
   if (mesKey!=null) {
     const m = prev.meta.por_mes && prev.meta.por_mes[mesKey] && prev.meta.por_mes[mesKey][level][name];
     return m ? m.meta_geral : null;
@@ -3853,6 +3894,8 @@ function metaExtraFocusToggle(level, nome){
 // para a mesma categoria 13) — usar meta_kg uniformemente porque é o único
 // presente no cubo mensal (meta.por_mes não tem "meta_fumokg").
 function metaExtraFor(d, level, name, mesKey, metaField){
+  const multi = mesKey==null ? mesesMetaSel() : null;
+  if (multi) return multi.reduce((s,m)=>s+metaExtraFor(d, level, name, m, metaField), 0);
   if (mesKey!=null){
     const m = d.meta.por_mes && d.meta.por_mes[mesKey] && d.meta.por_mes[mesKey][level][name];
     return (m && m[metaField]) || 0;

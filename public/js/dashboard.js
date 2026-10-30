@@ -321,6 +321,53 @@ function dashBonifCascataCard(t, bonifDet){
   </table></div></div>`;
 }
 
+// Veredito e Mix por Categoria do Dashboard nos MESES DO FILTRO (não no ano
+// acumulado da Visão Geral, que segue só nos KPIs-herói) — assim batem com o
+// bloco "Meta x Realizado". Só lê o que já existe, sem conta nova:
+//   • com recorte (qualquer filtro ou 2+ meses): totais do /recorte, que já vem
+//     filtrado pelos meses escolhidos (curPeriod() mesclado);
+//   • sem filtro e 1 mês: grão mensal do cubo (por_mes, por_mes_clientes,
+//     realizado_por_mes) — conferido igual ao /recorte do mesmo mês;
+//   • sem mês: o semestre inteiro do cubo.
+// Ano anterior: o mesmo recorte um ano antes (prevPeriod()/PREV_SCOPE).
+function dashTotaisMeses(p){
+  if (!p) return null;
+  if (p._recorte || ST.mes==null){
+    return { r:p.receita, c:p.custo, pedidos:p.n_pedidos, nCli:p.n_cli, nVend:p.n_vend,
+      cats:p.por_categoria||{}, carregando:!!p._carregando };
+  }
+  const mk = String(ST.mes);
+  const m = p.por_mes && p.por_mes[mk];
+  if (!m) return null;
+  const rpm = p.realizado_por_mes && p.realizado_por_mes[mk];
+  const nCli = p.por_mes_clientes ? p.por_mes_clientes[mk] : null;
+  return { r:m.r, c:m.c, pedidos:m.pedidos, nCli: nCli!=null ? nCli : null,
+    nVend: (rpm && rpm.vendedor) ? Object.keys(rpm.vendedor).length : null,
+    cats: monthlyCategoriaAgg(p, ST.mes), carregando:false };
+}
+function dashHeroMeses(){
+  const a = dashTotaisMeses(curPeriod());
+  if (!a) return null;
+  const b = (typeof prevPeriod === 'function') ? dashTotaisMeses(prevPeriod()) : null;
+  const pb = (b && !b.carregando && b.r>0) ? b : null;
+  const marg = t => t.r>0 ? 100*(1-t.c/t.r) : 0;
+  const tick = t => (t.pedidos>0) ? t.r/t.pedidos : null;
+  const kpis = [
+    { label:'Receita', value: fM(a.r), delta: apexDeltaTxt(a.r, pb?pb.r:null) },
+    { label:'Margem %', value: fPct(marg(a)), delta: apexDeltaTxt(marg(a), pb?marg(pb):null) },
+    { label:'Cash Margem', value: fM(a.r-a.c), delta: apexDeltaTxt(a.r-a.c, pb?pb.r-pb.c:null) },
+    { label:'Ticket Médio/Pedido', value: tick(a)!=null?fF(tick(a)):'—', delta: apexDeltaTxt(tick(a), pb?tick(pb):null) },
+    { label:'Clientes Ativos', value: a.nCli!=null?fN(a.nCli):'—', delta: apexDeltaTxt(a.nCli, pb?pb.nCli:null) },
+    { label:'Vendedores Ativos', value: a.nVend!=null?fN(a.nVend):'—', delta: apexDeltaTxt(a.nVend, pb?pb.nVend:null) },
+  ];
+  const notas = [];
+  if (recorteErro && activeFilterCount()>0 && !recorteDados()) notas.push(`⚠ Falha ao consultar o recorte (<strong>${recorteErro}</strong>) — os valores estão zerados por segurança. Recarregue a página.`);
+  else if (a.carregando) notas.push('⏳ Calculando o recorte dos meses selecionados — os valores aparecem em alguns segundos.');
+  const cats = Object.entries(a.cats).filter(([n,v])=>v && v.r>0 && (ST.cat.length===0 || ST.cat.includes(n)))
+    .sort((x,y)=>y[1].r-x[1].r).map(([n,v])=>({ label:n, value:v.r }));
+  return { kpis, notas, ranking: cats.length ? { items: cats } : null };
+}
+
 function renderDashboard(){
   const subEl = document.getElementById('dash-sub'), metaEl = document.getElementById('dash-meta');
   const ctx = (typeof apexContextoAtivo === 'function') ? apexContextoAtivo() : { escopoLabel: '—', periodoLabel: '—' };
@@ -328,7 +375,11 @@ function renderDashboard(){
   if (metaEl) metaEl.textContent = ctx.escopoLabel;
 
   // 0) Dados-base usados em mais de um bloco abaixo — calculados uma vez só.
+  // KPIs-herói = Visão Geral (ano acumulado), como sempre foram. Veredito e
+  // Mix por Categoria seguem os MESES DO FILTRO (dashHeroMeses), batendo com o
+  // bloco de Meta.
   const visao = (typeof apexExtractVisaoGeral === 'function') ? apexExtractVisaoGeral() : null;
+  const hero = dashHeroMeses();
   const obj = (typeof apexExtractObjetivos === 'function') ? apexExtractObjetivos() : null;
   const compRes = (typeof renderComp === 'function') ? renderComp() : null;
   const mesesReceita = (compRes && compRes.mesesReceita) || [];
@@ -344,7 +395,7 @@ function renderDashboard(){
   // dashboard de diretoria: status agregado + frase, sem precisar rolar).
   const veredEl = document.getElementById('dash-veredito');
   if (veredEl){
-    const vd = dashVeredito(visao, obj);
+    const vd = dashVeredito(hero, obj);
     const etlInfo = (typeof DIAG !== 'undefined' && DIAG.etl && DIAG.etl.atualizadoEm) ? new Date(DIAG.etl.atualizadoEm).toLocaleString('pt-BR',{dateStyle:'short',timeStyle:'short'}) : null;
     veredEl.innerHTML = `<span class="dash-verdict-badge ${vd.status}">${vd.label}</span>
       <div class="dash-verdict-text-wrap"><div class="dash-verdict-txt">${vd.texto}</div><div class="dash-verdict-meta">Escopo: ${ctx.escopoLabel} · Período: ${ctx.periodoLabel}${etlInfo?` · Dados atualizados em ${etlInfo}`:''}</div></div>`;
@@ -426,7 +477,7 @@ function renderDashboard(){
     ]}, options:{ responsive:true, plugins:{ legend:{position:'top',labels:{boxWidth:10,font:{size:10}}}, tooltip:{callbacks:{label:c=>' '+c.dataset.label+': '+fF(c.raw)}} }, scales:{ y:{ ticks:{ callback:v=>fM(v) } } } } });
   } else if (charts['cDashMes']) { charts['cDashMes'].destroy(); delete charts['cDashMes']; }
 
-  const catItems = (visao && visao.ranking && visao.ranking.items) || [];
+  const catItems = (hero && hero.ranking && hero.ranking.items) || [];
   if (catItems.length){
     mkChart('cDashCat', { type:'doughnut', data:{ labels: catItems.map(c=>c.label), datasets:[{ data: catItems.map(c=>c.value), backgroundColor: catItems.map((_,i)=>P[i%P.length]) }] },
       options:{ responsive:true, plugins:{ legend:{position:'right',labels:{boxWidth:10,font:{size:10}}}, tooltip:{callbacks:{label:c=>' '+c.label+': '+fF(c.raw)}} } } });
